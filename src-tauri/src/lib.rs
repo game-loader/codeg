@@ -44,6 +44,7 @@ pub mod pets;
 #[cfg(feature = "tauri-runtime")]
 pub mod preferences;
 pub mod process;
+pub mod ssh_askpass;
 pub mod supervise;
 mod terminal;
 pub mod turn_timings;
@@ -93,7 +94,7 @@ mod tauri_app {
         deepseek_settings as deepseek_settings_commands, delegation as delegation_commands,
         experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
         folder_links, office_tools as office_tools_commands, open_in,
-        folders, logging as logging_commands, mcp as mcp_commands,
+        folders, logging as logging_commands, machines as machines_commands, mcp as mcp_commands,
         model_provider as model_provider_commands, notification, pet as pet_commands, project_boot,
         question as question_commands, quick_messages as quick_messages_commands,
         remote_proxy as remote_proxy_commands,
@@ -1739,6 +1740,10 @@ mod tauri_app {
                 system_settings::resolve_close_request,
                 logging_commands::get_log_settings,
                 logging_commands::set_log_settings,
+                machines_commands::list_machines,
+                machines_commands::probe_machine,
+                machines_commands::save_manual_machine,
+                machines_commands::delete_manual_machine,
                 logging_commands::get_recent_logs,
                 logging_commands::list_log_files,
                 logging_commands::open_logs_dir,

@@ -840,6 +840,16 @@ pub fn build_router(
             "/set_log_settings",
             post(handlers::logging::set_log_settings),
         )
+        .route("/list_machines", post(handlers::machines::list_machines))
+        .route("/probe_machine", post(handlers::machines::probe_machine))
+        .route(
+            "/save_manual_machine",
+            post(handlers::machines::save_manual_machine),
+        )
+        .route(
+            "/delete_manual_machine",
+            post(handlers::machines::delete_manual_machine),
+        )
         .route("/get_recent_logs", post(handlers::logging::get_recent_logs))
         .route("/list_log_files", post(handlers::logging::list_log_files))
         .route("/read_log_file", post(handlers::logging::read_log_file))

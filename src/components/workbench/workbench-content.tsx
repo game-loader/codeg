@@ -1,5 +1,9 @@
 "use client"
 
+import {
+  MachinesPage,
+  MachinesPageTitle,
+} from "@/components/machines/machines-page"
 import type { ComponentType } from "react"
 import {
   AcademicPage,
@@ -37,6 +41,7 @@ const WORKBENCH_ROUTES: Partial<Record<WorkbenchRouteId, ComponentType>> = {
   tokenUsage: TokenUsagePage,
   canvas: CanvasPage,
   academic: AcademicPage,
+  machines: MachinesPage,
 }
 
 /** Optional per-route content for the window-chrome strip above the page
@@ -49,6 +54,7 @@ const WORKBENCH_ROUTE_STRIPS: Partial<Record<WorkbenchRouteId, ComponentType>> =
     tokenUsage: TokenUsagePageTitle,
     canvas: CanvasPageTitle,
     academic: AcademicPageTitle,
+    machines: MachinesPageTitle,
   }
 
 /** What a chrome cluster hands its route's buttons: the host's own button

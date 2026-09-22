@@ -10,6 +10,10 @@ use codeg_lib::web::{
 };
 
 fn main() -> ExitCode {
+    if let Some(code) = codeg_lib::ssh_askpass::run_if_requested() {
+        return ExitCode::from(code);
+    }
+
     // Capture our own executable path before anything can rename it (an
     // in-place upgrade swaps the binary mid-run; `current_exe()` would then
     // resolve to a `" (deleted)"` path on Linux). Cheap, single-shot.
