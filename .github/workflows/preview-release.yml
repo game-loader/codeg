@@ -1,0 +1,345 @@
+name: Preview Release
+
+on:
+  push:
+    branches:
+      - feat/academic-zotero
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_BACKTRACE: short
+  HUSKY: 0
+  CARGO_BUILD_JOBS: 2
+  INSTA_UPDATE: "no"
+
+concurrency:
+  group: preview-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    if: github.repository == 'game-loader/codeg'
+    name: Check and build web + Zotero plugin
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint and check browser agent
+        run: |
+          pnpm lint .
+          pnpm browser:agent:check
+          pnpm browser:agent:types
+
+      - name: Frontend tests
+        env:
+          NODE_OPTIONS: --no-experimental-webstorage
+        run: pnpm test
+
+      - name: Zotero plugin tests and build
+        run: |
+          pnpm --dir zotero-plugin test
+          pnpm --dir zotero-plugin build
+
+      - name: Static export build
+        run: pnpm build
+
+      - name: Package web and plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s out/index.html
+          mkdir -p staging release
+          cp -R out staging/web
+          tar -czf release/codeg-web.tar.gz -C staging web
+          plugin_files=(zotero-plugin/dist/codeg-academic-bridge-*.xpi)
+          test "${#plugin_files[@]}" -eq 1
+          test -s "${plugin_files[0]}"
+          cp "${plugin_files[0]}" release/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: out/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-web-plugin
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+
+  desktop:
+    name: Desktop ${{ matrix.platform }} ${{ matrix.arch }}
+    needs: frontend
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin
+            arch: x64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            bundle: dmg
+          - platform: darwin
+            arch: arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            bundle: dmg
+          - platform: linux
+            arch: x64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundle: deb
+          - platform: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            bundle: deb
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+          shared-key: preview-desktop-${{ matrix.target }}
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config libssl-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: out/
+
+      # Stage an actual native binary before Tauri's build.rs can create a
+      # development placeholder. Every matrix entry uses a native runner.
+      - name: Build and verify MCP sidecar
+        shell: bash
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          cargo build --manifest-path src-tauri/Cargo.toml --locked \
+            --release --no-default-features --bin codeg-mcp --target "$BUILD_TARGET"
+          mkdir -p src-tauri/binaries
+          sidecar="src-tauri/binaries/codeg-mcp-$BUILD_TARGET"
+          cp "src-tauri/target/$BUILD_TARGET/release/codeg-mcp" "$sidecar"
+          chmod +x "$sidecar"
+          test -s "$sidecar"
+          "$sidecar" --help | grep -F 'codeg-mcp --parent-connection-id'
+
+      - name: Build desktop installer without release signing secrets
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          BUNDLE_FORMAT: ${{ matrix.bundle }}
+        run: |
+          pnpm tauri build --target "$BUILD_TARGET" --bundles "$BUNDLE_FORMAT" \
+            --config src-tauri/tauri.preview.conf.json -- --locked
+
+      - name: Collect installer
+        shell: bash
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          BUNDLE_FORMAT: ${{ matrix.bundle }}
+          PACKAGE_NAME: codeg-desktop-${{ matrix.platform }}-${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          installers=(src-tauri/target/"$BUILD_TARGET"/release/bundle/"$BUNDLE_FORMAT"/*."$BUNDLE_FORMAT")
+          test "${#installers[@]}" -eq 1
+          test -s "${installers[0]}"
+          mkdir -p release
+          cp "${installers[0]}" "release/$PACKAGE_NAME.$BUNDLE_FORMAT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+
+  server:
+    name: Server Linux ${{ matrix.arch }}
+    needs: frontend
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+          shared-key: preview-server-${{ matrix.target }}
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: out/
+
+      - name: Build server and MCP companion
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          cargo build --manifest-path src-tauri/Cargo.toml --locked --release \
+            --no-default-features --bin codeg-server --bin codeg-mcp --target "$BUILD_TARGET"
+
+      - name: Package and smoke test native executables
+        shell: bash
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          PACKAGE_NAME: codeg-server-linux-${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          package_dir="staging/$PACKAGE_NAME"
+          mkdir -p "$package_dir" release
+          cp "src-tauri/target/$BUILD_TARGET/release/codeg-server" "$package_dir/"
+          cp "src-tauri/target/$BUILD_TARGET/release/codeg-mcp" "$package_dir/"
+          chmod +x "$package_dir/codeg-server" "$package_dir/codeg-mcp"
+          test -s "$package_dir/codeg-server"
+          test -s "$package_dir/codeg-mcp"
+          "$package_dir/codeg-server" --version
+          "$package_dir/codeg-mcp" --help | grep -F 'codeg-mcp --parent-connection-id'
+          cp -R out "$package_dir/web"
+          test -s "$package_dir/web/index.html"
+          tar -czf "release/$PACKAGE_NAME.tar.gz" -C staging "$PACKAGE_NAME"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-server-linux-${{ matrix.arch }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish complete preview
+    needs: [frontend, desktop, server]
+    if: github.repository == 'game-loader/codeg'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release/
+
+      - name: Verify assets and write checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release
+          assets=(
+            codeg-desktop-darwin-x64.dmg
+            codeg-desktop-darwin-arm64.dmg
+            codeg-desktop-linux-x64.deb
+            codeg-desktop-linux-arm64.deb
+            codeg-server-linux-x64.tar.gz
+            codeg-server-linux-arm64.tar.gz
+            codeg-web.tar.gz
+            codeg-academic-bridge-*.xpi
+          )
+          test "${#assets[@]}" -eq 8
+          for asset in "${assets[@]}"; do
+            test -s "$asset"
+          done
+          sha256sum "${assets[@]}" > SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - name: Create and publish preview release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="preview-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          cat > "$RUNNER_TEMP/preview-notes.md" <<EOF
+          Fork preview built from commit $GITHUB_SHA.
+
+          Build: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          Packages: macOS Intel/Apple Silicon DMG, Linux x64/ARM64 DEB,
+          Linux Server (with codeg-mcp and web/), standalone web/, and Zotero 10 plugin.
+          Linux x64 builds use Ubuntu 22.04; ARM64 builds use Ubuntu 24.04.
+
+          macOS packages have ad-hoc signatures, without Developer ID signing or
+          Apple notarization. First launch may require allowing this application
+          in System Settings > Privacy & Security after checking the download source.
+
+          Install and update these previews manually from this fork. No signed
+          updater feed is provided. The existing in-app updater points upstream
+          and can replace fork features with an upstream build. For server setup,
+          retain the executables and web/ together and set CODEG_STATIC_DIR to web/.
+
+          Installation details: https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/docs/preview-release.md
+          Verify downloads using SHA256SUMS.
+          EOF
+          gh release create "$tag" release/* --target "$GITHUB_SHA" \
+            --title "Codeg preview $GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT" \
+            --draft --prerelease --latest=false --notes-file "$RUNNER_TEMP/preview-notes.md"
+          gh release edit "$tag" --draft=false --latest=false
+          echo "Published: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$tag" >> "$GITHUB_STEP_SUMMARY"
