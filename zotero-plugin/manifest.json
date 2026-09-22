@@ -1,0 +1,14 @@
+{
+  "manifest_version": 2,
+  "name": "Codeg Academic Bridge",
+  "version": "0.1.0",
+  "description": "Authenticated local access to your Zotero library for Codeg Academic.",
+  "author": "Codeg contributors",
+  "applications": {
+    "zotero": {
+      "id": "academic-bridge@codeg.dev",
+      "strict_min_version": "10.0",
+      "strict_max_version": "10.*"
+    }
+  }
+}

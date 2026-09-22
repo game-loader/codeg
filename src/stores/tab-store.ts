@@ -81,6 +81,10 @@ export interface TabItemInternal {
   title: string
   isPinned: boolean
   workingDir?: string
+  /** Explicit agent choices made while a draft may be retargeting. */
+  draftAgentRevision?: number
+  draftRetargetRevision?: number
+  draftRetargetPending?: boolean
   status?: ConversationStatus
   /**
    * Marks `agentType` as a system best-guess that should be replaced once
@@ -106,17 +110,20 @@ export interface TabItemInternal {
    * composer hides the branch picker and shows the "no-folder" chip.
    */
   isChat?: boolean
+  academicPaperId?: string
 }
 
 export type TabItem = TabItemInternal
 
 interface DraftRetargetRequest {
+  revision: number
   tabId: string
-  expectedAgent: AgentType
+  expectedAgentRevision: number
   folderId: number
   workingDir: string
   agentType: AgentType
   provisional: boolean
+  academicPaperId?: string
 }
 
 /**
@@ -265,6 +272,7 @@ export interface TabStoreState {
        *  agent (e.g. "ask about this selection" continues the conversation the
        *  text came from), not merely suggest one. */
       forceAgent?: AgentType
+      academicPaperId?: string
       /** rawTabs slot for the draft (clamped); omitted = append / leave put.
        *  Reopening a closed draft passes the slot it was closed from — and
        *  since the per-group singleton may hand it the group's EXISTING draft
@@ -276,7 +284,13 @@ export interface TabStoreState {
     targetGroup?: string
     /** See `openNewConversationTab`'s `forceAgent`. */
     forceAgent?: AgentType
+    academicPaperId?: string
   }) => OpenedDraftTarget
+  setTabAcademicPaper: (
+    tabId: string,
+    conversationId: number,
+    paperId: string | undefined
+  ) => void
   setChatDraftWorkingDir: (tabId: string, workingDir: string) => void
   confirmDraftAgent: (tabId: string, agentType: AgentType) => void
   setDraftAgentFromFallback: (tabId: string, agentType: AgentType) => void
@@ -637,6 +651,7 @@ interface PersistedDraft {
   index: number
   folderId: number
   isChat?: boolean
+  academicPaperId?: string
   workingDir?: string
   agentType?: AgentType
 }
@@ -660,6 +675,9 @@ function sanitizeDrafts(value: unknown): PersistedDraft[] {
       index,
       folderId: e.folderId,
       ...(e.isChat === true ? { isChat: true } : {}),
+      ...(typeof e.academicPaperId === "string" && e.academicPaperId.length > 0
+        ? { academicPaperId: e.academicPaperId }
+        : {}),
       ...(typeof e.workingDir === "string" && e.workingDir.length > 0
         ? { workingDir: e.workingDir }
         : {}),
@@ -746,6 +764,7 @@ function persistGroupState() {
       index,
       folderId: tab.folderId,
       ...(tab.isChat === true ? { isChat: true } : {}),
+      ...(tab.academicPaperId ? { academicPaperId: tab.academicPaperId } : {}),
       // Chat drafts get a fresh scratch dir on focus; persisting the old one
       // would point the connection at a directory the GC may have removed.
       ...(tab.isChat !== true && tab.workingDir
@@ -822,6 +841,7 @@ function mergeRestoredDrafts(restored: TabItemInternal[]): {
       workingDir: draft.workingDir,
       agentTypeProvisional: resolved.provisional,
       ...(draft.isChat === true ? { isChat: true } : {}),
+      academicPaperId: draft.academicPaperId,
     }
     tabs.splice(Math.min(draft.index, tabs.length), 0, tab)
     groupOf[draft.id] = draft.group
@@ -1470,6 +1490,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         kind: "conversation",
         folderId: 0,
         conversationId: null,
+        academicPaperId: tab.academicPaperId,
         agentType,
         title: runtime.labels.newConversation,
         isPinned: true,
@@ -1487,6 +1508,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         kind: "conversation",
         folderId: tab.folderId,
         conversationId: null,
+        academicPaperId: tab.academicPaperId,
         agentType,
         title: runtime.labels.newConversation,
         isPinned: true,
@@ -1678,6 +1700,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         ?.kind === "chat"
     ) {
       return get().openChatModeTab({
+        academicPaperId: options?.academicPaperId,
         ...(options?.targetGroup != null
           ? { targetGroup: options.targetGroup }
           : {}),
@@ -1730,6 +1753,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         isPinned: true,
         workingDir,
         agentTypeProvisional: provisional,
+        academicPaperId: options?.academicPaperId,
       }
       set({
         rawTabs: insertTab(prevState.rawTabs, newTab, options?.index),
@@ -1741,9 +1765,12 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       return { tabId, agentType: targetAgent, folderId }
     }
 
+    const revision = (existingTab.draftRetargetRevision ?? 0) + 1
     const folderChanged = existingTab.folderId !== folderId
     const workingDirChanged = existingTab.workingDir !== workingDir
     const agentChanged = existingTab.agentType !== targetAgent
+    const paperChanged =
+      existingTab.academicPaperId !== options?.academicPaperId
     const provisionalChanged =
       (existingTab.agentTypeProvisional ?? false) !== provisional
 
@@ -1758,28 +1785,43 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         : moveTabToSlot(prevState.rawTabs, existingTab.id, options.index)
     const moved = nextRawTabs !== prevState.rawTabs
 
-    if (folderChanged || agentChanged) {
+    if (folderChanged || agentChanged || existingTab.draftRetargetPending) {
       set({
-        ...(moved ? { rawTabs: nextRawTabs } : {}),
+        rawTabs: nextRawTabs.map((tab) =>
+          tab.id === existingTab.id
+            ? {
+                ...tab,
+                draftRetargetRevision: revision,
+                draftRetargetPending: true,
+              }
+            : tab
+        ),
         draftRetargetRequests: [
           ...prevState.draftRetargetRequests,
           {
             tabId: existingTab.id,
-            expectedAgent: existingTab.agentType,
+            expectedAgentRevision: existingTab.draftAgentRevision ?? 0,
+            revision,
             folderId,
             workingDir,
             agentType: targetAgent,
             provisional,
+            academicPaperId: options?.academicPaperId,
           },
         ],
       })
       focusTab(existingTab.id)
-      if (moved) recomputeTabs()
-    } else if (workingDirChanged || provisionalChanged) {
+      recomputeTabs()
+    } else if (workingDirChanged || provisionalChanged || paperChanged) {
       set({
         rawTabs: nextRawTabs.map((tab) =>
           tab.id === existingTab.id
-            ? { ...tab, workingDir, agentTypeProvisional: provisional }
+            ? {
+                ...tab,
+                workingDir,
+                agentTypeProvisional: provisional,
+                academicPaperId: options?.academicPaperId,
+              }
             : tab
         ),
         activeTabId: existingTab.id,
@@ -1798,6 +1840,20 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
   },
 
   openChatModeTab: (options) => {
+    const before = get()
+    const chatGroup = resolveTargetGroup(before, options?.targetGroup)
+    set({
+      rawTabs: before.rawTabs.map((tab) =>
+        tab.conversationId == null &&
+        groupOfTab(before.groupOf, before.groupLayout, tab.id) === chatGroup
+          ? {
+              ...tab,
+              draftRetargetRevision: (tab.draftRetargetRevision ?? 0) + 1,
+              draftRetargetPending: false,
+            }
+          : tab
+      ),
+    })
     const st = get()
     // Inherit the agent like openNewConversationTab's inherit path.
     const activeTab = st.rawTabs.find((x) => x.id === st.activeTabId)
@@ -1843,6 +1899,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         isPinned: true,
         workingDir: undefined,
         agentTypeProvisional: provisional,
+        academicPaperId: options?.academicPaperId,
         isChat: true,
       }
       set({
@@ -1860,9 +1917,10 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       // lifecycle is keyed on the agent and tears the old one down itself, the
       // same way the agent picker's `confirmDraftAgent` relies on.
       if (
-        options?.forceAgent != null &&
-        (existingTab.agentType !== targetAgent ||
-          (existingTab.agentTypeProvisional ?? false) !== provisional)
+        existingTab.academicPaperId !== options?.academicPaperId ||
+        (options?.forceAgent != null &&
+          (existingTab.agentType !== targetAgent ||
+            (existingTab.agentTypeProvisional ?? false) !== provisional))
       ) {
         set({
           activeTabId: existingTab.id,
@@ -1872,6 +1930,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
                   ...tab,
                   agentType: targetAgent,
                   agentTypeProvisional: provisional,
+                  academicPaperId: options?.academicPaperId,
                 }
               : tab
           ),
@@ -1896,6 +1955,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
                 isChat: true,
                 agentType: targetAgent,
                 agentTypeProvisional: provisional,
+                academicPaperId: options?.academicPaperId,
               }
             : tab
         ),
@@ -1924,6 +1984,22 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     }
   },
 
+  setTabAcademicPaper: (tabId, conversationId, paperId) => {
+    const tab = get().rawTabs.find((t) => t.id === tabId)
+    if (
+      !tab ||
+      tab.conversationId !== conversationId ||
+      tab.academicPaperId === paperId
+    )
+      return
+    set({
+      rawTabs: get().rawTabs.map((t) =>
+        t.id === tabId ? { ...t, academicPaperId: paperId } : t
+      ),
+    })
+    recomputeTabs()
+  },
+
   setChatDraftWorkingDir: (tabId, workingDir) => {
     const prev = get().rawTabs
     const next = prev.map((tab) => {
@@ -1950,8 +2026,18 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const next = prev.map((t) => {
       if (t.id !== tabId) return t
       if (t.conversationId != null) return t // not a draft
-      if (t.agentType === agentType && !t.agentTypeProvisional) return t
-      return { ...t, agentType, agentTypeProvisional: false }
+      if (
+        t.agentType === agentType &&
+        !t.agentTypeProvisional &&
+        !t.draftRetargetPending
+      )
+        return t
+      return {
+        ...t,
+        agentType,
+        agentTypeProvisional: false,
+        draftAgentRevision: (t.draftAgentRevision ?? 0) + 1,
+      }
     })
     if (next.every((t, i) => t === prev[i])) return
     set({ rawTabs: next })
@@ -2559,12 +2645,14 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         const target = rawTabs.find((tab) => tab.id === request.tabId)
         if (!target) return
         if (target.conversationId != null) return
-        if (
-          target.agentType !== request.expectedAgent &&
-          !target.agentTypeProvisional
-        ) {
-          return
-        }
+        if (target.draftRetargetRevision !== request.revision) return
+        // The current request still owns its folder and paper, even when the
+        // user chose another agent during disconnect. Settle that destination
+        // and preserve the newer explicit choice instead of stranding Send.
+        // A revision also detects choosing the *same* old agent again while a
+        // request intended to replace it with another agent.
+        const agentWasChosen =
+          (target.draftAgentRevision ?? 0) !== request.expectedAgentRevision
         set({
           rawTabs: rawTabs.map((tab) =>
             tab.id === request.tabId
@@ -2572,9 +2660,15 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
                   ...tab,
                   folderId: request.folderId,
                   workingDir: request.workingDir,
-                  agentType: request.agentType,
-                  agentTypeProvisional: request.provisional,
+                  agentType: agentWasChosen
+                    ? target.agentType
+                    : request.agentType,
+                  agentTypeProvisional: agentWasChosen
+                    ? target.agentTypeProvisional
+                    : request.provisional,
                   isChat: false,
+                  academicPaperId: request.academicPaperId,
+                  draftRetargetPending: false,
                 }
               : tab
           ),

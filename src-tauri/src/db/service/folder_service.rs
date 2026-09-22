@@ -30,7 +30,7 @@ pub const DEFAULT_FOLDER_COLOR: &str = "inherit";
 /// The folder side is deliberately unfiltered — worktree children and hidden
 /// chat folders count too — so the result only ever moves forward. That is the
 /// pre-groups behavior, kept as-is.
-async fn next_sort_order(conn: &DatabaseConnection) -> Result<i32, DbError> {
+async fn next_sort_order<C: sea_orm::ConnectionTrait>(conn: &C) -> Result<i32, DbError> {
     let max_folder = folder::Entity::find()
         .order_by_desc(folder::Column::SortOrder)
         .one(conn)
@@ -269,8 +269,8 @@ pub async fn ensure_folder_for_path(
 /// folder-bound chrome. `path` is a freshly generated per-conversation scratch dir, so it
 /// never collides on the `UNIQUE(path)` constraint. Returns the full
 /// [`FolderDetail`] so the caller can hand it straight to the frontend.
-pub async fn add_chat_folder(
-    conn: &DatabaseConnection,
+pub async fn add_chat_folder<C: sea_orm::ConnectionTrait>(
+    conn: &C,
     path: &str,
 ) -> Result<FolderDetail, DbError> {
     let now = Utc::now();

@@ -43,8 +43,13 @@ export function WorkspaceChromeController() {
   const { toggle } = useSidebarContext()
   const { toggle: toggleAuxPanel } = useAuxPanelContext()
   const { toggle: toggleTerminal } = useTerminalContext()
-  const { openNewConversationTab, openTab, switchTab, closeTab } =
-    useTabActions()
+  const {
+    openNewConversationTab,
+    openChatModeTab,
+    openTab,
+    switchTab,
+    closeTab,
+  } = useTabActions()
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
   // Tab-close/navigation shortcuts used to live in the visible tab strips.
@@ -250,6 +255,14 @@ export function WorkspaceChromeController() {
             )
             return
           }
+          if (closed.isChat) {
+            openConversations()
+            openChatModeTab({
+              forceAgent: closed.agentType,
+              academicPaperId: closed.academicPaperId,
+            })
+            return
+          }
           const folder = useAppWorkspaceStore
             .getState()
             .getFolder(closed.folderId)
@@ -258,6 +271,8 @@ export function WorkspaceChromeController() {
           openConversations()
           openNewConversationTab(closed.folderId, workingDir, {
             index: closed.index,
+            forceAgent: closed.agentType,
+            academicPaperId: closed.academicPaperId,
           })
           return
         }
@@ -271,6 +286,7 @@ export function WorkspaceChromeController() {
     handleOpenSettings,
     openConversations,
     openNewConversationTab,
+    openChatModeTab,
     openTab,
     openFilePreview,
     openBrowserTab,

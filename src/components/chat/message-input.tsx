@@ -109,6 +109,7 @@ import {
   clearMessageInputDraftV2,
   loadMessageInputDraftV2,
   saveMessageInputDraftV2,
+  registerMessageInputDraftReader,
 } from "@/lib/message-input-draft"
 import { rankByTextMatch } from "@/lib/fuzzy-text-match"
 import {
@@ -594,6 +595,25 @@ export function MessageInput({
     draftSaveTimerRef.current = null
     writeDraftNow()
   }, [writeDraftNow])
+
+  // Academic draft handoff reads this synchronously before reusing a tab.
+  // Flush only a pending save: untouched/recalled text must not overwrite the
+  // stored draft. isEmpty reads the actual document, including inline badges.
+  useEffect(() => {
+    if (!effectiveDraftStorageKey || !composerReady || isEditingQueueItem)
+      return
+    return registerMessageInputDraftReader(effectiveDraftStorageKey, () => {
+      const ed = editorRef.current
+      if (!ed || !hydratedRef.current) return undefined
+      flushDraftSave()
+      return !ed.isEmpty()
+    })
+  }, [
+    effectiveDraftStorageKey,
+    composerReady,
+    isEditingQueueItem,
+    flushDraftSave,
+  ])
 
   useEffect(() => {
     return () => {

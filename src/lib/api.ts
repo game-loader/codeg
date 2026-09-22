@@ -3315,12 +3315,14 @@ export async function createHyperframesProject(params: {
 export async function createConversation(
   folderId: number,
   agentType: AgentType,
-  title?: string
+  title?: string,
+  academicPaperId?: string
 ): Promise<number> {
   return getTransport().call("create_conversation", {
     folderId,
     agentType,
     title: title ?? null,
+    ...(academicPaperId ? { academicPaperId } : {}),
   })
 }
 
@@ -3335,11 +3337,13 @@ export async function createChatConversation(
   title?: string,
   // Reuse a scratch dir already minted by `createChatDir` (eager connect) so the
   // ACP cwd never moves across the first send; omit to let the backend mint one.
-  existingDir?: string
+  existingDir?: string,
+  academicPaperId?: string
 ): Promise<CreateChatConversationResult> {
   return getTransport().call("create_chat_conversation", {
     agentType,
     title: title ?? null,
+    ...(academicPaperId ? { academicPaperId } : {}),
     existingDir: existingDir ?? null,
   })
 }

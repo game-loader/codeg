@@ -23,6 +23,42 @@ const pendingPersistDocs = new Map<string, JSONContent>()
 let idlePersistHandle: number | null = null
 let persistenceListenersBound = false
 
+type LiveDraftReader = () => boolean | undefined
+const liveDraftReaders = new Map<string, Map<symbol, LiveDraftReader>>()
+
+/** Register a live composer without serializing its document on every keystroke.
+ * Each mount owns a token: cleaning up an old/mirrored composer cannot remove a
+ * newer reader for the same key. Undefined means the editor is not ready. */
+export function registerMessageInputDraftReader(
+  draftKey: string,
+  reader: LiveDraftReader
+): () => void {
+  const token = Symbol(draftKey)
+  const readers =
+    liveDraftReaders.get(draftKey) ?? new Map<symbol, LiveDraftReader>()
+  readers.set(token, reader)
+  liveDraftReaders.set(draftKey, readers)
+  return () => {
+    readers.delete(token)
+    if (readers.size === 0 && liveDraftReaders.get(draftKey) === readers) {
+      liveDraftReaders.delete(draftKey)
+    }
+  }
+}
+
+/** Check the editor before the debounced snapshot. Any live nonempty document
+ * protects the draft, including reference/image-only content that has no text
+ * or cannot be persisted. Unmounted/unready editors use the saved snapshot. */
+export function hasMessageInputDraftContent(draftKey: string): boolean {
+  const readers = liveDraftReaders.get(draftKey)
+  if (readers) {
+    for (const read of readers.values()) {
+      if (read() === true) return true
+    }
+  }
+  return loadMessageInputDraftV2(draftKey) !== null
+}
+
 function storageKeyForDraftKey(draftKey: string): string {
   return `${STORAGE_PREFIX}:${draftKey}`
 }

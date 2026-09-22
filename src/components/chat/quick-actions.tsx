@@ -369,9 +369,14 @@ interface QuickActionsProps {
    *  detection: a card whose skill isn't linked to this agent is locked, and
    *  clicking it shows a hint instead of injecting an unusable badge. */
   agentType: AgentType | null
+  initialTab?: QuickActionsTab
 }
 
-export function QuickActions({ onSelect, agentType }: QuickActionsProps) {
+export function QuickActions({
+  onSelect,
+  agentType,
+  initialTab,
+}: QuickActionsProps) {
   const t = useTranslations("Folder.chat.welcomePanel.quickActions")
   const locale = useLocale()
   const experts = useBuiltInExperts()
@@ -417,7 +422,9 @@ export function QuickActions({ onSelect, agentType }: QuickActionsProps) {
   // localStorage on each mount (QuickActions only renders client-side in
   // welcome mode, so there is no SSR hydration mismatch), so reopening a new
   // conversation shows the previous choice.
-  const [tab, setTab] = useState<QuickActionsTab>(() => loadQuickActionsTab())
+  const [tab, setTab] = useState<QuickActionsTab>(
+    () => initialTab ?? loadQuickActionsTab()
+  )
   const handleTabChange = useCallback((value: string) => {
     const next: QuickActionsTab =
       value === "office"

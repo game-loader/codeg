@@ -11,8 +11,8 @@ use crate::db::entities::{conversation, folder};
 use crate::db::error::DbError;
 use crate::models::{AgentType, DbConversationSummary};
 
-pub async fn create(
-    conn: &DatabaseConnection,
+pub async fn create<C: sea_orm::ConnectionTrait>(
+    conn: &C,
     folder_id: i32,
     agent_type: AgentType,
     title: Option<String>,
@@ -34,8 +34,8 @@ pub async fn create(
 /// shape but `kind = 'chat'`, so the sidebar routes the row to its flat "Chat"
 /// section. Callers must pair it with the hidden chat folder created in the
 /// same flow (`create_chat_conversation_core`).
-pub async fn create_chat(
-    conn: &DatabaseConnection,
+pub async fn create_chat<C: sea_orm::ConnectionTrait>(
+    conn: &C,
     folder_id: i32,
     agent_type: AgentType,
     title: Option<String>,
@@ -78,8 +78,8 @@ pub async fn create_with_delegation(
     .await
 }
 
-async fn create_inner(
-    conn: &DatabaseConnection,
+async fn create_inner<C: sea_orm::ConnectionTrait>(
+    conn: &C,
     folder_id: i32,
     agent_type: AgentType,
     title: Option<String>,

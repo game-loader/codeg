@@ -62,6 +62,16 @@ vi.mock("@/components/conversations/sidebar-conversation-list", async () => {
     },
   }
 })
+// The academic sidebar now subscribes in web mode as well as desktop. Keep
+// its real UI while stubbing the external transport boundary in this layout test.
+vi.mock("@/lib/transport", () => ({
+  getTransport: () => academicTransport,
+}))
+const academicTransport = vi.hoisted(() => ({
+  call: vi.fn(),
+  subscribe: vi.fn(async () => () => {}),
+  onReconnect: vi.fn(() => () => {}),
+}))
 vi.mock("@/contexts/sidebar-context", () => ({
   useSidebarContext: () => ({ isOpen: true, toggle: vi.fn() }),
 }))

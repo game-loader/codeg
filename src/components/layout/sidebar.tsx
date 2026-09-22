@@ -71,6 +71,7 @@ import {
   type SidebarSortMode,
   type SidebarSectionOrder,
 } from "@/lib/sidebar-view-mode-storage"
+import { AcademicSidebar } from "@/components/academic/academic-sidebar"
 import { SidebarSectionOrderControl } from "./sidebar-section-order-control"
 import { cn } from "@/lib/utils"
 
@@ -578,6 +579,7 @@ export function Sidebar() {
             }}
           />
         )}
+        <AcademicSidebar onNavigate={isMobile ? toggle : undefined} />
       </div>
 
       {/* On mobile, clicking a conversation card auto-closes the Drawer */}

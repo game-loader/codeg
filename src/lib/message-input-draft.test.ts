@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   adoptLegacyNewConversationDraft,
+  registerMessageInputDraftReader,
+  hasMessageInputDraftContent,
   buildNewConversationDraftStorageKey,
   clearMessageInputDraftV2,
   loadMessageInputDraftV2,
@@ -237,5 +239,46 @@ describe("per-draft-tab composer drafts", () => {
 
     expect(loadMessageInputDraftV2(late)).toEqual({ kind: "doc", doc: DOC })
     expect(loadMessageInputDraftV2(dead)).toBeNull()
+  })
+})
+
+describe("live composer draft readers", () => {
+  it("retains a second registration when an earlier composer unmounts", () => {
+    const reader = () => true
+    const first = registerMessageInputDraftReader("live-shared", reader)
+    const second = registerMessageInputDraftReader("live-shared", reader)
+    first()
+    first()
+    expect(hasMessageInputDraftContent("live-shared")).toBe(true)
+    second()
+    expect(hasMessageInputDraftContent("live-shared")).toBe(false)
+  })
+
+  it("does not let an empty composer mask another live reference-only draft", () => {
+    const empty = registerMessageInputDraftReader("live-multiple", () => false)
+    const referenceOnly = registerMessageInputDraftReader(
+      "live-multiple",
+      () => true
+    )
+    try {
+      expect(hasMessageInputDraftContent("live-multiple")).toBe(true)
+    } finally {
+      empty()
+      referenceOnly()
+    }
+  })
+
+  it("falls back to saved documents while the editor has not hydrated", () => {
+    saveMessageInputDraftV2("live-hydrating", DOC)
+    const stop = registerMessageInputDraftReader(
+      "live-hydrating",
+      () => undefined
+    )
+    try {
+      expect(hasMessageInputDraftContent("live-hydrating")).toBe(true)
+    } finally {
+      stop()
+      clearMessageInputDraftV2("live-hydrating")
+    }
   })
 })

@@ -21,6 +21,7 @@ import {
 } from "./composer/to-prompt-blocks"
 import {
   clearMessageInputDraftV2,
+  hasMessageInputDraftContent,
   loadMessageInputDraftV2,
 } from "@/lib/message-input-draft"
 import {
@@ -2105,5 +2106,45 @@ describe("MessageInput prompt history", () => {
 
     // A recall here would replace the queued message being edited.
     expect(handle.getText()).toBe("queued edit")
+  })
+})
+
+describe("MessageInput live draft protection", () => {
+  afterEach(() => cleanup())
+
+  it("exposes text synchronously before the draft debounce and unregisters on unmount", async () => {
+    const key = "test:live-draft-before-debounce"
+    clearMessageInputDraftV2(key)
+    const { unmount } = renderInput({ draftStorageKey: key })
+    await waitFor(() =>
+      expect(composerHandle.current?.getEditor()).toBeTruthy()
+    )
+    const editor = composerHandle.current!.getEditor()!
+    act(() => editor.commands.insertContent("Just typed"))
+    expect(loadMessageInputDraftV2(key)).toBeNull()
+    expect(hasMessageInputDraftContent(key)).toBe(true)
+    unmount()
+    clearMessageInputDraftV2(key)
+    expect(hasMessageInputDraftContent(key)).toBe(false)
+  })
+
+  it("protects a live reference-only document without relying on text content", async () => {
+    const key = "test:live-reference-before-debounce"
+    clearMessageInputDraftV2(key)
+    const { unmount } = renderInput({ draftStorageKey: key })
+    await waitFor(() =>
+      expect(composerHandle.current?.getEditor()).toBeTruthy()
+    )
+    const editor = composerHandle.current!.getEditor()!
+    act(() =>
+      editor.commands.insertContent({
+        type: "reference",
+        attrs: { type: "file", uri: "file:///paper.pdf", label: "paper.pdf" },
+      })
+    )
+    expect(editor.state.doc.textContent).toBe("")
+    expect(hasMessageInputDraftContent(key)).toBe(true)
+    unmount()
+    clearMessageInputDraftV2(key)
   })
 })

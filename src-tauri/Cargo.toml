@@ -131,6 +131,8 @@ zstd = "0.13"
 tar = "0.4"
 zip = "2"
 regex = "1"
+roxmltree = "0.20"
+pdf-extract = "0.9"
 portable-pty = "0.8"
 urlencoding = "2"
 # WHATWG URL parsing outside the desktop runtime. `tauri::Url` is this same

@@ -252,6 +252,7 @@ pub struct CreateConversationParams {
     pub folder_id: i32,
     pub agent_type: AgentType,
     pub title: Option<String>,
+    pub academic_paper_id: Option<String>,
 }
 
 pub async fn create_conversation(
@@ -259,11 +260,12 @@ pub async fn create_conversation(
     Json(params): Json<CreateConversationParams>,
 ) -> Result<Json<i32>, AppCommandError> {
     let db = &state.db;
-    let result = conv_commands::create_conversation_core(
+    let result = conv_commands::create_conversation_with_academic_core(
         &db.conn,
         params.folder_id,
         params.agent_type,
         params.title,
+        params.academic_paper_id.as_deref(),
     )
     .await?;
     conv_commands::emit_conversation_upsert(&state.emitter, &db.conn, result).await;
@@ -275,6 +277,7 @@ pub async fn create_conversation(
 pub struct CreateChatConversationParams {
     pub agent_type: AgentType,
     pub title: Option<String>,
+    pub academic_paper_id: Option<String>,
     /// Reuse an eagerly-created scratch dir (from `create_chat_dir`) instead of
     /// minting a new one, so the ACP cwd stays put across the first send.
     pub existing_dir: Option<String>,
@@ -284,12 +287,13 @@ pub async fn create_chat_conversation(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<CreateChatConversationParams>,
 ) -> Result<Json<conv_commands::CreateChatConversationResult>, AppCommandError> {
-    let result = conv_commands::create_chat_conversation_core(
+    let result = conv_commands::create_chat_conversation_with_academic_core(
         &state.db.conn,
         &state.data_dir,
         params.agent_type,
         params.title,
         params.existing_dir.as_deref(),
+        params.academic_paper_id.as_deref(),
     )
     .await?;
     conv_commands::emit_conversation_upsert(&state.emitter, &state.db.conn, result.conversation_id)

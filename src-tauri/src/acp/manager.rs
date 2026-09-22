@@ -1477,6 +1477,15 @@ impl ConnectionManager {
         // conversation row to InProgress. This MUST happen on every call
         // (including the already-linked path) so that a follow-up turn whose
         // row is currently `pending_review` correctly transitions back. The
+        // Academic material stays ordinary, explicitly untrusted reference data.
+        // Append after the question so title/preview selection still starts with it.
+        if let Some(cid) = state_arc.read().await.conversation_id {
+            if let Some(context) = crate::academic::store::conversation_context(&db.conn, cid)
+                .await.map_err(AcpError::protocol)? {
+                blocks.push(PromptInputBlock::Text { text: context });
+            }
+        }
+
         // DB write precedes the event emit so any subscriber observing
         // `ConversationStatusChanged` can assume the row is consistent.
         // `update_status` is a single UPDATE — idempotent with respect to

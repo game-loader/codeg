@@ -302,6 +302,21 @@ async fn async_main() -> ExitCode {
         .connection_manager
         .install_chat_channel(state.chat_channel_manager.clone_ref());
 
+    // Share the server database, agent manager and WebSocket broadcaster with
+    // the academic pipeline before the HTTP listener starts accepting requests.
+    if let Err(error) = codeg_lib::academic::initialize(
+        codeg_lib::db::AppDatabase {
+            conn: state.db.conn.clone(),
+        },
+        state.connection_manager.clone_ref(),
+        state.emitter.clone(),
+        state.data_dir.clone(),
+    )
+    .await
+    {
+        tracing::warn!(%error, "Academic workbench initialization failed");
+    }
+
     // Logging phase 3: wire the emitter so the Logs viewer's live tail
     // (`logs://appended`) reaches WS clients.
     if let Some(hub) = codeg_lib::logging::hub::log_hub() {

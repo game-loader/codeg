@@ -40,6 +40,51 @@ pub fn build_router(
             "/debug/event_metrics",
             get(handlers::event_metrics::get_event_metrics),
         )
+        // ─── Academic workbench (same server authentication as other APIs) ───
+        .route(
+            "/academic_settings_get",
+            post(handlers::academic::academic_settings_get),
+        )
+        .route(
+            "/academic_settings_set",
+            post(handlers::academic::academic_settings_set),
+        )
+        .route(
+            "/academic_library",
+            post(handlers::academic::academic_library),
+        )
+        .route(
+            "/academic_select",
+            post(handlers::academic::academic_select),
+        )
+        .route(
+            "/academic_paper_get",
+            post(handlers::academic::academic_paper_get),
+        )
+        .route(
+            "/academic_import",
+            post(handlers::academic::academic_import),
+        )
+        .route(
+            "/academic_prepare",
+            post(handlers::academic::academic_prepare),
+        )
+        .route(
+            "/academic_cancel",
+            post(handlers::academic::academic_cancel),
+        )
+        .route(
+            "/academic_open_target",
+            post(handlers::academic::academic_open_target),
+        )
+        .route(
+            "/academic_bind_conversation",
+            post(handlers::academic::academic_bind_conversation),
+        )
+        .route(
+            "/academic_conversation_paper",
+            post(handlers::academic::academic_conversation_paper),
+        )
         // ─── Conversations ───
         .route(
             "/list_conversations",

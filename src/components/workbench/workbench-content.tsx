@@ -2,6 +2,10 @@
 
 import type { ComponentType } from "react"
 import {
+  AcademicPage,
+  AcademicPageTitle,
+} from "@/components/academic/academic-page"
+import {
   useWorkbenchRoute,
   type WorkbenchRouteId,
 } from "@/contexts/workbench-route-context"
@@ -32,6 +36,7 @@ const WORKBENCH_ROUTES: Partial<Record<WorkbenchRouteId, ComponentType>> = {
   forge: ForgePage,
   tokenUsage: TokenUsagePage,
   canvas: CanvasPage,
+  academic: AcademicPage,
 }
 
 /** Optional per-route content for the window-chrome strip above the page
@@ -43,6 +48,7 @@ const WORKBENCH_ROUTE_STRIPS: Partial<Record<WorkbenchRouteId, ComponentType>> =
     forge: ForgePageTitle,
     tokenUsage: TokenUsagePageTitle,
     canvas: CanvasPageTitle,
+    academic: AcademicPageTitle,
   }
 
 /** What a chrome cluster hands its route's buttons: the host's own button

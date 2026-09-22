@@ -7,6 +7,7 @@
 // `acp/connection.rs` for the sibling *runtime* mitigation of the same frame.
 #![recursion_limit = "256"]
 
+pub mod academic;
 pub mod acp;
 pub mod acp_transcript;
 pub use acp::{
@@ -1147,6 +1148,16 @@ mod tauri_app {
                     ));
                 }
 
+                {
+                    let db = crate::db::AppDatabase { conn: app.state::<crate::db::AppDatabase>().conn.clone() };
+                    let manager = app.state::<ConnectionManager>().clone_ref();
+                    let emitter = crate::web::event_bridge::EventEmitter::Tauri(app.handle().clone());
+                    let data_dir = effective_data_dir.clone();
+                    if let Err(error) = tauri::async_runtime::block_on(crate::academic::initialize(db, manager, emitter, data_dir)) {
+                        tracing::warn!(%error, "Academic workbench initialization failed");
+                    }
+                }
+
                 // Automation engine: drives manual + scheduled fires, settles
                 // runs off the event bus, reconciles, and recovers on boot. One
                 // per process; mirrored in `bin/codeg_server.rs`.
@@ -1842,6 +1853,17 @@ mod tauri_app {
                 experts_commands::experts_apply_links,
                 experts_commands::experts_read_content,
                 experts_commands::experts_open_central_dir,
+                crate::commands::academic::academic_settings_get,
+                crate::commands::academic::academic_settings_set,
+                crate::commands::academic::academic_library,
+                crate::commands::academic::academic_select,
+                crate::commands::academic::academic_paper_get,
+                crate::commands::academic::academic_import,
+                crate::commands::academic::academic_prepare,
+                crate::commands::academic::academic_cancel,
+                crate::commands::academic::academic_open_target,
+                crate::commands::academic::academic_bind_conversation,
+                crate::commands::academic::academic_conversation_paper,
                 science_commands::science_list,
                 science_commands::science_get_install_status,
                 science_commands::science_list_all_install_statuses,

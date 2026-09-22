@@ -2112,6 +2112,37 @@ pub async fn create_conversation_core(
     Ok(model.id)
 }
 
+/// Create and associate atomically so a failed paper binding never leaves an
+/// unrelated conversation behind. Shared by desktop and remote HTTP creation.
+pub async fn create_conversation_with_academic_core(
+    conn: &sea_orm::DatabaseConnection,
+    folder_id: i32,
+    agent_type: AgentType,
+    title: Option<String>,
+    academic_paper_id: Option<&str>,
+) -> Result<i32, AppCommandError> {
+    let Some(paper_id) = academic_paper_id else {
+        return create_conversation_core(conn, folder_id, agent_type, title).await;
+    };
+    use sea_orm::TransactionTrait;
+    let folder = folder_service::get_folder_by_id(conn, folder_id)
+        .await?
+        .ok_or_else(|| AppCommandError::not_found("Folder not found"))?;
+    let branch = detect_git_branch(&folder.path).await;
+    let txn = conn
+        .begin()
+        .await
+        .map_err(crate::db::error::DbError::from)?;
+    let model = conversation_service::create(&txn, folder_id, agent_type, title, branch).await?;
+    crate::academic::store::bind_conversation_in(&txn, paper_id, model.id)
+        .await
+        .map_err(AppCommandError::invalid_input)?;
+    txn.commit()
+        .await
+        .map_err(crate::db::error::DbError::from)?;
+    Ok(model.id)
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn create_conversation(
@@ -2120,8 +2151,16 @@ pub async fn create_conversation(
     folder_id: i32,
     agent_type: AgentType,
     title: Option<String>,
+    academic_paper_id: Option<String>,
 ) -> Result<i32, AppCommandError> {
-    let id = create_conversation_core(&db.conn, folder_id, agent_type, title).await?;
+    let id = create_conversation_with_academic_core(
+        &db.conn,
+        folder_id,
+        agent_type,
+        title,
+        academic_paper_id.as_deref(),
+    )
+    .await?;
     emit_conversation_upsert(&EventEmitter::Tauri(app), &db.conn, id).await;
     Ok(id)
 }
@@ -2364,6 +2403,46 @@ pub async fn create_chat_conversation_core(
     })
 }
 
+/// The optional academic association and both chat rows commit together.
+pub async fn create_chat_conversation_with_academic_core(
+    conn: &sea_orm::DatabaseConnection,
+    data_dir: &std::path::Path,
+    agent_type: AgentType,
+    title: Option<String>,
+    existing_dir: Option<&str>,
+    academic_paper_id: Option<&str>,
+) -> Result<CreateChatConversationResult, AppCommandError> {
+    let Some(paper_id) = academic_paper_id else {
+        return create_chat_conversation_core(conn, data_dir, agent_type, title, existing_dir)
+            .await;
+    };
+    use sea_orm::TransactionTrait;
+    let path = match existing_dir {
+        Some(dir) => {
+            std::fs::create_dir_all(dir).map_err(AppCommandError::io)?;
+            dir.to_owned()
+        }
+        None => create_chat_dir_core(data_dir)?,
+    };
+    let txn = conn
+        .begin()
+        .await
+        .map_err(crate::db::error::DbError::from)?;
+    let folder = folder_service::add_chat_folder(&txn, &path).await?;
+    let model = conversation_service::create_chat(&txn, folder.id, agent_type, title, None).await?;
+    crate::academic::store::bind_conversation_in(&txn, paper_id, model.id)
+        .await
+        .map_err(AppCommandError::invalid_input)?;
+    txn.commit()
+        .await
+        .map_err(crate::db::error::DbError::from)?;
+    Ok(CreateChatConversationResult {
+        conversation_id: model.id,
+        folder_id: folder.id,
+        folder,
+    })
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn create_chat_conversation(
@@ -2372,6 +2451,7 @@ pub async fn create_chat_conversation(
     agent_type: AgentType,
     title: Option<String>,
     existing_dir: Option<String>,
+    academic_paper_id: Option<String>,
 ) -> Result<CreateChatConversationResult, AppCommandError> {
     use tauri::Manager;
     let data_dir = app
@@ -2379,12 +2459,13 @@ pub async fn create_chat_conversation(
         .app_data_dir()
         .map(|p| crate::paths::resolve_effective_data_dir(&p))
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let result = create_chat_conversation_core(
+    let result = create_chat_conversation_with_academic_core(
         &db.conn,
         &data_dir,
         agent_type,
         title,
         existing_dir.as_deref(),
+        academic_paper_id.as_deref(),
     )
     .await?;
     emit_conversation_upsert(&EventEmitter::Tauri(app), &db.conn, result.conversation_id).await;

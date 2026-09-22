@@ -17,6 +17,8 @@ export type ClosedConversationTab = {
   agentType: AgentType
   title: string
   workingDir?: string
+  academicPaperId?: string
+  isChat?: boolean
   isPinned: boolean
 }
 
@@ -136,6 +138,8 @@ export function snapshotConversationTab(
     agentType: AgentType
     title: string
     workingDir?: string
+    academicPaperId?: string
+    isChat?: boolean
     isPinned: boolean
   },
   index: number
@@ -149,6 +153,8 @@ export function snapshotConversationTab(
     agentType: tab.agentType,
     title: tab.title,
     workingDir: tab.workingDir,
+    academicPaperId: tab.academicPaperId,
+    isChat: tab.isChat,
     isPinned: tab.isPinned,
   }
 }

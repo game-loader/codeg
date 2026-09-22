@@ -53,3 +53,5 @@ pub mod version_control;
 pub mod windows;
 pub mod work_task;
 pub mod workspace_state;
+
+pub mod academic;

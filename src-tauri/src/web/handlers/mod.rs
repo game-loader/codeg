@@ -1,3 +1,4 @@
+pub mod academic;
 pub mod acp;
 pub mod app_update;
 pub mod automation;

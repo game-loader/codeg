@@ -58,6 +58,8 @@ import { useSessionFeedback } from "@/hooks/use-session-feedback"
 import { AgentSelector } from "@/components/chat/agent-selector"
 import { ChatInput } from "@/components/chat/chat-input"
 import { WelcomeHero, WelcomeTip } from "@/components/chat/welcome-hero"
+import { AcademicContextBar } from "@/components/academic/academic-context-bar"
+import { academicConversationPaper } from "@/lib/academic"
 import { QuickActions } from "@/components/chat/quick-actions"
 import type { ComposerInjectContent } from "@/components/chat/message-input"
 import { TileScrollContainer } from "@/components/conversations/tile-scroll-container"
@@ -321,6 +323,29 @@ const ConversationTabView = memo(function ConversationTabView({
     number | null
   >(null)
   const dbConversationId = conversationId ?? createdConversationId
+  const [persistedPaperId, setPersistedPaperId] = useState<string | undefined>()
+  const academicPaperId = ownTab?.academicPaperId ?? persistedPaperId
+  useEffect(() => {
+    let cancelled = false
+    setPersistedPaperId(undefined)
+    if (dbConversationId == null) return
+    void academicConversationPaper(dbConversationId)
+      .then((paper) => {
+        if (!cancelled) {
+          setPersistedPaperId(paper?.id)
+          useTabStore
+            .getState()
+            .setTabAcademicPaper(tabId, dbConversationId, paper?.id)
+        }
+      })
+      .catch((error) =>
+        console.error("[Academic] load conversation association:", error)
+      )
+    return () => {
+      cancelled = true
+    }
+  }, [dbConversationId, tabId])
+
   const [draftAgentType, setDraftAgentType] = useState<AgentType>(agentType)
   const selectedAgent = conversationId != null ? agentType : draftAgentType
   // Seed from localStorage so the React state reflects the user's saved
@@ -1068,7 +1093,12 @@ const ConversationTabView = memo(function ConversationTabView({
       // `connStatus === "connected"` is not enough: a chat draft mid-reconnect can
       // read a stale "connected" for the old cwd, and an inline send then would
       // deliver to the wrong workspace. Same predicate the flush effect uses.
-      if (!connectionReady) return
+      if (
+        !connectionReady ||
+        useTabStore.getState().rawTabs.find((tab) => tab.id === tabId)
+          ?.draftRetargetPending
+      )
+        return
 
       const fromQueueFlush = opts?.fromQueueFlush ?? false
       // Preserve FIFO: a direct send issued while the queue is non-empty joins
@@ -1189,7 +1219,8 @@ const ConversationTabView = memo(function ConversationTabView({
             const res = await createChatConversation(
               selectedAgent,
               title,
-              chatExistingDir
+              chatExistingDir,
+              academicPaperId
             )
             newConversationId = res.conversationId
             sendFolderId = res.folderId
@@ -1223,7 +1254,8 @@ const ConversationTabView = memo(function ConversationTabView({
             newConversationId = await createConversation(
               folderId,
               selectedAgent,
-              title
+              title,
+              academicPaperId
             )
             dbConvIdRef.current = newConversationId
             // Set external ID on the stable virtual session (no migration needed —
@@ -1313,6 +1345,7 @@ const ConversationTabView = memo(function ConversationTabView({
       setSyncState,
       sharedT,
       ownTab,
+      academicPaperId,
       tWelcome,
       tabId,
       upsertFolder,
@@ -1722,7 +1755,7 @@ const ConversationTabView = memo(function ConversationTabView({
       const target = openNewConversationTab(
         askFolderId,
         workingDirForConnection,
-        { targetGroup: groupId, forceAgent: selectedAgent }
+        { targetGroup: groupId, forceAgent: selectedAgent, academicPaperId }
       )
       // Park against the identity the store PROMISED that tab, not against what
       // it looks like right now — reusing a draft from another folder/agent
@@ -1739,6 +1772,7 @@ const ConversationTabView = memo(function ConversationTabView({
       groupId,
       openNewConversationTab,
       selectedAgent,
+      academicPaperId,
       workingDirForConnection,
     ]
   )
@@ -2270,6 +2304,7 @@ const ConversationTabView = memo(function ConversationTabView({
       }
       steerChannel={feedback.channel}
     >
+      {academicPaperId && <AcademicContextBar paperId={academicPaperId} />}
       {isWelcomeMode ? (
         // Same overlay scrollbar as the sidebar / file lists (os-theme-codeg)
         // instead of the platform's native bar. `min-h-full` on the inner column
@@ -2285,6 +2320,8 @@ const ConversationTabView = memo(function ConversationTabView({
             <div className="mx-auto flex w-full max-w-3xl shrink-0 flex-col gap-6 px-4 py-4">
               <WelcomeHero />
               <QuickActions
+                key={academicPaperId ?? "ordinary"}
+                initialTab={academicPaperId ? "research" : undefined}
                 onSelect={handleQuickAction}
                 agentType={selectedAgent}
               />
