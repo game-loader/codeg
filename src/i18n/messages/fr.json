@@ -1993,7 +1993,8 @@
         "removeFromGroup": "Aucun groupe",
         "newGroupAndMove": "Nouveau groupe…",
         "dropToUngroup": "Déposer ici pour retirer du groupe"
-      }
+      },
+      "machines": "Machines"
     },
     "conversation": {
       "reloadFailed": "Échec du rechargement de la conversation : {message}",
@@ -6447,6 +6448,50 @@
       "error": {
         "switchedOff": "Cet onglet a été ouvert alors que l’inspecteur web était désactivé. Activez-le dans les réglages du navigateur, puis rouvrez la page."
       }
+    }
+  },
+  "Machines": {
+    "title": "Machines",
+    "description": "Découvrez les machines via Tailscale et consultez leur état par SSH depuis le backend Codeg actif, sans le modifier.",
+    "search": "Rechercher des machines",
+    "refresh": "Actualiser",
+    "autoRefresh": "Toutes les 30 secondes",
+    "discoveryFailed": "Impossible de découvrir les machines.",
+    "setupHint": "Installez Tailscale et connectez-vous. Codeg doit pouvoir exécuter tailscale et ssh. Le serveur ou conteneur Docker doit aussi avoir accès à votre réseau Tailscale.",
+    "loading": "Chargement des machines…",
+    "empty": "Aucune machine trouvée.",
+    "noMatches": "Aucune machine ne correspond à la recherche.",
+    "self": "Cette machine",
+    "online": "En ligne",
+    "offline": "Hors ligne",
+    "selectMachine": "Sélectionnez une machine pour afficher ses détails.",
+    "tailnetStatus": "État Tailscale",
+    "lastSeen": "Dernière connexion",
+    "sshUser": "Utilisateur SSH",
+    "defaultUser": "Configuration SSH par défaut",
+    "probe": "Consulter l’état",
+    "probing": "Consultation en cours…",
+    "probeFailed": "Échec de la consultation par SSH.",
+    "sampledAt": "Date de collecte",
+    "unknown": "Aucune donnée",
+    "insert": "Insérer dans la conversation",
+    "commandHint": "Saisissez /machine dans une conversation pour choisir une machine et joindre ses informations.",
+    "pickerTitle": "Choisir une machine",
+    "pickerDescription": "Choisissez une machine, vérifiez les résultats SSH et insérez les informations dans le brouillon actuel.",
+    "commandDescription": "Choisir une machine et joindre son état.",
+    "draftChanged": "Le brouillon a changé pendant la sélection. Veuillez insérer à nouveau les informations de la machine.",
+    "metrics": {
+      "hostname": "Nom d’hôte",
+      "os": "Système d’exploitation",
+      "architecture": "Architecture",
+      "cpu": "CPU",
+      "cpu_cores": "Cœurs CPU",
+      "memory_total": "Mémoire totale",
+      "memory_available": "Mémoire disponible",
+      "disk": "Disque racine",
+      "load": "Charge du système",
+      "uptime": "Durée de fonctionnement",
+      "gpu": "GPU"
     }
   }
 }

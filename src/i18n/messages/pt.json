@@ -1993,7 +1993,8 @@
         "removeFromGroup": "Sem grupo",
         "newGroupAndMove": "Novo grupo…",
         "dropToUngroup": "Solte aqui para remover do grupo"
-      }
+      },
+      "machines": "Máquinas"
     },
     "conversation": {
       "reloadFailed": "Falha ao recarregar conversa: {message}",
@@ -6447,6 +6448,50 @@
       "error": {
         "switchedOff": "Esta aba foi aberta com o inspetor web desligado. Ligue-o nas configurações do navegador e abra a página novamente."
       }
+    }
+  },
+  "Machines": {
+    "title": "Máquinas",
+    "description": "Descubra máquinas pelo Tailscale e consulte seu estado por SSH a partir do backend ativo do Codeg, sem alterá-lo.",
+    "search": "Buscar máquinas",
+    "refresh": "Atualizar",
+    "autoRefresh": "A cada 30 segundos",
+    "discoveryFailed": "Não foi possível descobrir as máquinas.",
+    "setupHint": "Instale o Tailscale e entre na sua conta. O Codeg precisa executar tailscale e ssh. O servidor ou contêiner Docker também precisa de acesso à sua rede Tailscale.",
+    "loading": "Carregando máquinas…",
+    "empty": "Nenhuma máquina encontrada.",
+    "noMatches": "Nenhuma máquina corresponde à busca.",
+    "self": "Esta máquina",
+    "online": "Online",
+    "offline": "Offline",
+    "selectMachine": "Selecione uma máquina para ver os detalhes.",
+    "tailnetStatus": "Estado do Tailscale",
+    "lastSeen": "Última conexão",
+    "sshUser": "Usuário SSH",
+    "defaultUser": "Configuração SSH padrão",
+    "probe": "Consultar estado",
+    "probing": "Consultando estado…",
+    "probeFailed": "Falha ao consultar o estado por SSH.",
+    "sampledAt": "Data da coleta",
+    "unknown": "Sem dados",
+    "insert": "Inserir na conversa",
+    "commandHint": "Digite /machine em uma conversa para escolher uma máquina e anexar suas informações.",
+    "pickerTitle": "Escolher máquina",
+    "pickerDescription": "Escolha uma máquina, confira o resultado do SSH e insira as informações no rascunho atual.",
+    "commandDescription": "Escolher uma máquina e anexar seu estado.",
+    "draftChanged": "O rascunho mudou durante a seleção. Insira as informações da máquina novamente.",
+    "metrics": {
+      "hostname": "Nome do host",
+      "os": "Sistema operacional",
+      "architecture": "Arquitetura",
+      "cpu": "CPU",
+      "cpu_cores": "Núcleos de CPU",
+      "memory_total": "Memória total",
+      "memory_available": "Memória disponível",
+      "disk": "Disco raiz",
+      "load": "Carga do sistema",
+      "uptime": "Tempo de atividade",
+      "gpu": "GPU"
     }
   }
 }

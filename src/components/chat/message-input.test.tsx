@@ -28,6 +28,7 @@ import {
   emitAttachPageToSession,
   emitAttachSessionToSession,
 } from "@/lib/session-attachment-events"
+import { listMachines, probeMachine } from "@/lib/machines"
 import type { DbConversationSummary } from "@/lib/types"
 
 // MessageInput holds its RichComposer handle internally and does not forward a
@@ -120,6 +121,11 @@ vi.mock("@/lib/api", async (importOriginal) => ({
 }))
 // Real classifier only recognizes actual backend NoActiveTurn payloads; the
 // steering tests flip this per-case to drive the enqueue fallback.
+vi.mock("@/lib/machines", async (original) => ({
+  ...(await original<typeof import("@/lib/machines")>()),
+  listMachines: vi.fn(async () => []),
+  probeMachine: vi.fn(),
+}))
 vi.mock("@/lib/turn-busy", () => ({
   isNoActiveTurnRejection: vi.fn(() => false),
 }))
@@ -1123,7 +1129,7 @@ describe("MessageInput slash menu while the agent connects", () => {
     )
   })
 
-  it("closes the loading row when the session comes up with no commands", async () => {
+  it("keeps the local machine command when the agent comes up with no commands", async () => {
     const { view } = await mountAndType({
       commandsLoading: true,
       availableCommands: [],
@@ -1132,7 +1138,10 @@ describe("MessageInput slash menu while the agent connects", () => {
 
     // A commandless agent: the wait ends, so the panel must not spin forever.
     rerenderInput(view, { commandsLoading: false, availableCommands: [] })
-    await waitFor(() => expect(screen.queryByTestId("slash-menu")).toBeNull())
+    await waitFor(() => expect(screen.queryByText(LOADING)).toBeNull())
+    expect(
+      within(screen.getByTestId("slash-menu")).getByText("/machine")
+    ).toBeInTheDocument()
   })
 
   // `useAgentSkills` reports an in-flight disk scan as an empty list, so `$`
@@ -1165,11 +1174,11 @@ describe("MessageInput slash menu while the agent connects", () => {
     }
   })
 
-  it("stays closed when nothing is loading and the agent has no commands", async () => {
+  it("offers the local machine command even when the agent has no commands", async () => {
     await mountAndType({ commandsLoading: false, availableCommands: [] })
-    // Give the trigger detection a turn to run before asserting the absence.
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    expect(screen.queryByTestId("slash-menu")).toBeNull()
+    expect(
+      within(await screen.findByTestId("slash-menu")).getByText("/machine")
+    ).toBeInTheDocument()
   })
 
   it("does not send on Enter while the loading panel owns the keys", async () => {
@@ -2105,5 +2114,92 @@ describe("MessageInput prompt history", () => {
 
     // A recall here would replace the queued message being edited.
     expect(handle.getText()).toBe("queued edit")
+  })
+})
+
+describe("MessageInput machine context", () => {
+  afterEach(() => {
+    cleanup()
+    composerHandle.current = null
+  })
+  it("opens /machine before an agent connects and preserves the draft when cancelled", async () => {
+    renderInput({ availableCommands: [], commandsLoading: false })
+    await waitFor(() =>
+      expect(composerHandle.current?.getEditor()).toBeTruthy()
+    )
+    const editor = composerHandle.current!.getEditor()!
+    act(() => {
+      editor.commands.insertContent("Inspect /machine")
+    })
+    const menu = await screen.findByTestId("slash-menu")
+    fireEvent.mouseDown(within(menu).getByText("/machine"))
+    await screen.findByRole("dialog")
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" })
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    expect(serializeDocToText(editor.state.doc)).toBe("Inspect /machine")
+  })
+})
+
+describe("MessageInput machine snapshot sending", () => {
+  afterEach(() => {
+    cleanup()
+    composerHandle.current = null
+    vi.mocked(listMachines).mockResolvedValue([])
+  })
+  it("replaces only the command token and sends the sampled data as literal text", async () => {
+    const machine = {
+      id: "gpu",
+      name: "lab-gpu",
+      dns_name: "lab-gpu.ts.net",
+      addresses: ["100.64.0.2"],
+      os: "linux",
+      online: true,
+      last_seen: null,
+      is_self: false,
+    }
+    vi.mocked(listMachines).mockResolvedValue([machine])
+    vi.mocked(probeMachine).mockResolvedValue({
+      machine,
+      sampled_at: "2026-09-22T08:00:00Z",
+      ssh_target: "root@lab-gpu.ts.net",
+      metrics: {
+        cpu: "EPYC <script>literal</script>",
+        gpu: "[secret](file:///tmp/secret)",
+      },
+    })
+    const onSend = vi.fn()
+    renderInput({ onSend, availableCommands: [] })
+    await waitFor(() =>
+      expect(composerHandle.current?.getEditor()).toBeTruthy()
+    )
+    const editor = composerHandle.current!.getEditor()!
+    act(() => {
+      editor.commands.insertContent("Inspect /machine")
+    })
+    fireEvent.mouseDown(
+      within(await screen.findByTestId("slash-menu")).getByText("/machine")
+    )
+    fireEvent.click(await screen.findByRole("button", { name: /lab-gpu/ }))
+    await screen.findByText("EPYC <script>literal</script>")
+    fireEvent.click(
+      screen.getByRole("button", { name: "Insert into conversation" })
+    )
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    const text = serializeDocToText(editor.state.doc)
+    expect(text).toContain("Inspect")
+    expect(text).not.toContain("/machine")
+    expect(text).toContain("root@lab-gpu.ts.net")
+    expect(text).toContain("EPYC <script>literal</script>")
+    fireEvent.click(screen.getByTitle("Send"))
+    expect(onSend).toHaveBeenCalledOnce()
+    const draft = onSend.mock.calls[0][0]
+    expect(
+      draft.blocks.every((block: { type: string }) => block.type === "text")
+    ).toBe(true)
+    expect(
+      draft.blocks
+        .map((block: { text?: string }) => block.text ?? "")
+        .join("\n")
+    ).toContain("2026-09-22T08:00:00Z")
   })
 })

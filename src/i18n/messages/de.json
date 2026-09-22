@@ -1993,7 +1993,8 @@
         "removeFromGroup": "Keine Gruppe",
         "newGroupAndMove": "Neue Gruppe…",
         "dropToUngroup": "Hier ablegen, um aus der Gruppe zu entfernen"
-      }
+      },
+      "machines": "Maschinen"
     },
     "conversation": {
       "reloadFailed": "Konversation konnte nicht neu geladen werden: {message}",
@@ -6447,6 +6448,50 @@
       "error": {
         "switchedOff": "Dieser Tab wurde bei ausgeschaltetem Web-Inspektor geöffnet. Schalte ihn in den Browser-Einstellungen ein und öffne die Seite erneut."
       }
+    }
+  },
+  "Machines": {
+    "title": "Maschinen",
+    "description": "Maschinen über Tailscale finden und ihren Status vom aktiven Codeg-Backend aus per SSH schreibgeschützt abfragen.",
+    "search": "Maschinen suchen",
+    "refresh": "Aktualisieren",
+    "autoRefresh": "Alle 30 Sekunden",
+    "discoveryFailed": "Maschinen konnten nicht gefunden werden.",
+    "setupHint": "Tailscale installieren und anmelden. Codeg muss tailscale und ssh ausführen können. Auch Server oder Docker-Container benötigen Zugriff auf dein Tailscale-Netzwerk.",
+    "loading": "Maschinen werden geladen…",
+    "empty": "Keine Maschinen gefunden.",
+    "noMatches": "Keine Maschinen entsprechen der Suche.",
+    "self": "Diese Maschine",
+    "online": "Online",
+    "offline": "Offline",
+    "selectMachine": "Eine Maschine auswählen, um Details anzuzeigen.",
+    "tailnetStatus": "Tailscale-Status",
+    "lastSeen": "Zuletzt online",
+    "sshUser": "SSH-Benutzername",
+    "defaultUser": "SSH-Standardeinstellung",
+    "probe": "Status abfragen",
+    "probing": "Status wird abgefragt…",
+    "probeFailed": "SSH-Statusabfrage fehlgeschlagen.",
+    "sampledAt": "Erfasst am",
+    "unknown": "Keine Daten",
+    "insert": "In Unterhaltung einfügen",
+    "commandHint": "Gib /machine in einer Unterhaltung ein, um eine Maschine auszuwählen und ihre Informationen anzuhängen.",
+    "pickerTitle": "Maschine auswählen",
+    "pickerDescription": "Eine Maschine auswählen, die SSH-Ergebnisse prüfen und die Informationen in den aktuellen Entwurf einfügen.",
+    "commandDescription": "Maschine auswählen und ihren Status anhängen.",
+    "draftChanged": "Der Entwurf wurde während der Auswahl geändert. Bitte füge die Maschineninformationen erneut ein.",
+    "metrics": {
+      "hostname": "Hostname",
+      "os": "Betriebssystem",
+      "architecture": "Architektur",
+      "cpu": "CPU",
+      "cpu_cores": "CPU-Kerne",
+      "memory_total": "Gesamtspeicher",
+      "memory_available": "Verfügbarer Speicher",
+      "disk": "Root-Datenträger",
+      "load": "Systemlast",
+      "uptime": "Betriebszeit",
+      "gpu": "GPU"
     }
   }
 }

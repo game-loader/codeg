@@ -1993,7 +1993,8 @@
         "removeFromGroup": "بدون مجموعة",
         "newGroupAndMove": "مجموعة جديدة…",
         "dropToUngroup": "أفلِت هنا لإزالته من المجموعة"
-      }
+      },
+      "machines": "الأجهزة"
     },
     "conversation": {
       "reloadFailed": "فشل إعادة تحميل المحادثة: {message}",
@@ -6447,6 +6448,50 @@
       "error": {
         "switchedOff": "فُتحت هذه العلامة ومفتّش الويب مُعطّل. فعّله من إعدادات المتصفح ثم افتح الصفحة من جديد."
       }
+    }
+  },
+  "Machines": {
+    "title": "الأجهزة",
+    "description": "اكتشف الأجهزة عبر Tailscale واقرأ حالتها عبر SSH من خادم Codeg النشط دون تعديلها.",
+    "search": "البحث عن أجهزة",
+    "refresh": "تحديث",
+    "autoRefresh": "كل 30 ثانية",
+    "discoveryFailed": "تعذر اكتشاف الأجهزة.",
+    "setupHint": "ثبّت Tailscale وسجّل الدخول، وتأكد من قدرة Codeg على تشغيل tailscale وssh. يحتاج الخادم أو حاوية Docker أيضًا إلى الوصول إلى شبكة Tailscale الخاصة بك.",
+    "loading": "جارٍ تحميل الأجهزة…",
+    "empty": "لم يتم العثور على أجهزة.",
+    "noMatches": "لا توجد أجهزة تطابق البحث.",
+    "self": "هذا الجهاز",
+    "online": "متصل",
+    "offline": "غير متصل",
+    "selectMachine": "اختر جهازًا لعرض تفاصيله.",
+    "tailnetStatus": "حالة Tailscale",
+    "lastSeen": "آخر اتصال",
+    "sshUser": "اسم مستخدم SSH",
+    "defaultUser": "إعداد SSH الافتراضي",
+    "probe": "فحص الحالة",
+    "probing": "جارٍ فحص الحالة…",
+    "probeFailed": "فشل فحص الحالة عبر SSH.",
+    "sampledAt": "وقت جمع البيانات",
+    "unknown": "لا توجد بيانات",
+    "insert": "إدراج في المحادثة",
+    "commandHint": "اكتب /machine في المحادثة لاختيار جهاز وإرفاق معلوماته.",
+    "pickerTitle": "اختيار جهاز",
+    "pickerDescription": "اختر جهازًا وراجع نتائج SSH ثم أدرج المعلومات في المسودة الحالية.",
+    "commandDescription": "اختر جهازًا وأرفق معلومات حالته.",
+    "draftChanged": "تغيرت المسودة أثناء اختيار الجهاز. يرجى إدراج معلومات الجهاز مجددًا.",
+    "metrics": {
+      "hostname": "اسم المضيف",
+      "os": "نظام التشغيل",
+      "architecture": "البنية",
+      "cpu": "المعالج",
+      "cpu_cores": "أنوية المعالج",
+      "memory_total": "إجمالي الذاكرة",
+      "memory_available": "الذاكرة المتاحة",
+      "disk": "قرص الجذر",
+      "load": "حمل النظام",
+      "uptime": "مدة التشغيل",
+      "gpu": "معالج الرسوميات"
     }
   }
 }

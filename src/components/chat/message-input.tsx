@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { isImeCompositionKey } from "@/lib/ime-composition"
 import { Button } from "@/components/ui/button"
+import { MachinePickerDialog } from "@/components/machines/machine-picker-dialog"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   BookOpenText,
@@ -391,6 +392,7 @@ export function MessageInput({
   getSentHistory,
 }: MessageInputProps) {
   const t = useTranslations("Folder.chat.messageInput")
+  const tm = useTranslations("Machines")
   const tQueue = useTranslations("Folder.chat.messageQueue")
   // Kept as a separate binding from `t` so its call sites — exclusively
   // upload / attachment toasts — read as a single coherent group when
@@ -925,7 +927,7 @@ export function MessageInput({
 
   // ── Slash command autocomplete ──
   //
-  // The slash list shows the agent's own `availableCommands` verbatim —
+  // The slash list includes the local machine picker and agent commands —
   // experts are advertised as commands and now appear here alongside the
   // rest. Codex additionally gets a `$`-triggered skills list (experts are
   // symlinked skills, so they surface there) because its native command set
@@ -939,9 +941,20 @@ export function MessageInput({
     null
   )
   const [slashFilter, setSlashFilter] = useState("")
+  const [machinePickerOpen, setMachinePickerOpen] = useState(false)
+  const machineTriggerRef = useRef<{
+    from: number
+    to: number
+    doc: unknown
+  } | null>(null)
   const slashCommands = useMemo(
-    () => availableCommands ?? [],
-    [availableCommands]
+    () => [
+      ...(availableCommands ?? []).filter(
+        (command) => command.name !== "machine"
+      ),
+      { name: "machine", description: tm("commandDescription") },
+    ],
+    [availableCommands, tm]
   )
   const filteredSlashCommands = useMemo(() => {
     if (!slashMenuOpen || slashCommands.length === 0) return []
@@ -962,15 +975,14 @@ export function MessageInput({
   }, [slashMenuOpen, availableSkills, agentType, slashTriggerChar, slashFilter])
   const slashAutocompleteCount =
     filteredSlashCommands.length + filteredSlashSkills.length
-  // `/` is fed by the agent's own command list, which only exists once the
-  // connection is up — so while it is being established the panel shows a
-  // loading row rather than nothing at all. `$` (Codex skills) is read from
-  // disk and never waits on a connection.
+  // Agent commands arrive after connection. Keep their loading indicator
+  // alongside the local machine picker, which is immediately available.
+  // `$` (Codex skills) is read from disk and never waits on a connection.
   const slashLoading =
     slashMenuOpen &&
     slashTriggerChar === "/" &&
     commandsLoading &&
-    slashCommands.length === 0
+    (availableCommands?.length ?? 0) === 0
   // Whether the panel is actually on screen — it renders for either rows or the
   // loading row, and that is also what makes it own the editor's nav keys.
   const slashMenuVisible =
@@ -1039,14 +1051,9 @@ export function MessageInput({
     const match = before.match(regex)
     if (!match) return close()
     const trigger = match[2] as "/" | "$"
-    // Only `/` is gated here. Its source is the agent's own command list, which
-    // exists only once the connection is up — so an empty list means "nothing to
-    // show" unless the connection is still coming, where the panel opens on a
-    // loading row instead. `$` (the on-disk Codex skills) is deliberately
-    // ungated: `useAgentSkills` reports an in-flight scan as an empty list, so
-    // closing on empty would strand a `$` typed before the scan lands. Left
-    // open, the panel simply stays hidden until the skills arrive and then
-    // fills itself in — no second keystroke needed.
+    // The local machine command keeps `/` available before agent connection.
+    // `$` stays armed during an empty disk scan so late-arriving skills can
+    // populate the panel without requiring another keystroke.
     if (trigger === "/" && slashCommands.length === 0 && !commandsLoading) {
       return close()
     }
@@ -1124,9 +1131,52 @@ export function MessageInput({
 
   const handleSlashSelect = useCallback(
     (cmd: AvailableCommandInfo) => {
+      if (cmd.name === "machine") {
+        const editor = editorRef.current?.getEditor()
+        if (!editor) return
+        const { $from } = editor.state.selection
+        const before = $from.parent.textBetween(
+          0,
+          $from.parentOffset,
+          undefined,
+          " "
+        )
+        const match = before.match(/(^|\s)(\/)(\S*)$/)
+        machineTriggerRef.current = {
+          from: $from.pos - (match ? match[2].length + match[3].length : 0),
+          to: $from.pos,
+          doc: editor.state.doc,
+        }
+        closeSlashMenu()
+        setMachinePickerOpen(true)
+        return
+      }
       replaceTriggerWithReference(commandToReference(cmd))
     },
-    [replaceTriggerWithReference]
+    [replaceTriggerWithReference, closeSlashMenu]
+  )
+
+  const handleMachineInsert = useCallback(
+    (context: string) => {
+      const editor = editorRef.current?.getEditor()
+      const trigger = machineTriggerRef.current
+      setMachinePickerOpen(false)
+      machineTriggerRef.current = null
+      if (!editor || !trigger) return
+      // A queue/draft switch may replace the document while the picker is open.
+      if (editor.state.doc !== trigger.doc) {
+        toast.error(tm("draftChanged"))
+        return
+      }
+      editor
+        .chain()
+        .focus()
+        .deleteRange({ from: trigger.from, to: trigger.to })
+        .insertContent(textToInlineContent(`\n${context}\n`))
+        .run()
+      closeSlashMenu()
+    },
+    [closeSlashMenu, tm]
   )
 
   // Codex uses `$<id>`, other agents `/<id>` — matching the trigger prefix.
@@ -2044,6 +2094,11 @@ export function MessageInput({
       onKeyDown={handleContainerKeyDown}
       {...attach.containerDragProps}
     >
+      <MachinePickerDialog
+        open={machinePickerOpen}
+        onOpenChange={setMachinePickerOpen}
+        onInsert={handleMachineInsert}
+      />
       {slashMenuVisible && (
         <div
           data-testid="slash-menu"

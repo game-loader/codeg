@@ -1993,7 +1993,8 @@
         "removeFromGroup": "不分組",
         "newGroupAndMove": "新增分組…",
         "dropToUngroup": "拖到這裡可移出分組"
-      }
+      },
+      "machines": "機器"
     },
     "conversation": {
       "reloadFailed": "會話重新載入失敗：{message}",
@@ -6447,6 +6448,50 @@
       "error": {
         "switchedOff": "這個分頁是在網頁檢查器關閉時開啟的。請到瀏覽器設定中開啟它，然後重新開啟該頁面。"
       }
+    }
+  },
+  "Machines": {
+    "title": "機器",
+    "description": "透過 Tailscale 探索機器，從目前的 Codeg 後端透過 SSH 唯讀擷取狀態。",
+    "search": "搜尋機器",
+    "refresh": "重新整理",
+    "autoRefresh": "每 30 秒更新",
+    "discoveryFailed": "無法探索機器。",
+    "setupHint": "請安裝並登入 Tailscale，確保 Codeg 能執行 tailscale 與 ssh。伺服器或 Docker 容器也需要連上你的 Tailscale 網路。",
+    "loading": "正在載入機器…",
+    "empty": "尚未找到機器。",
+    "noMatches": "沒有符合搜尋條件的機器。",
+    "self": "本機",
+    "online": "上線",
+    "offline": "離線",
+    "selectMachine": "選取一台機器以查看詳細資料。",
+    "tailnetStatus": "Tailscale 狀態",
+    "lastSeen": "上次上線",
+    "sshUser": "SSH 使用者名稱",
+    "defaultUser": "沿用 SSH 預設設定",
+    "probe": "探測",
+    "probing": "正在探測…",
+    "probeFailed": "SSH 探測失敗。",
+    "sampledAt": "擷取時間",
+    "unknown": "暫無資料",
+    "insert": "插入對話",
+    "commandHint": "在對話中輸入 /machine，即可選取機器並附上基本資訊。",
+    "pickerTitle": "選取機器",
+    "pickerDescription": "選取機器並查看 SSH 探測結果，再將資訊插入目前的草稿。",
+    "commandDescription": "選取機器並引用其狀態資訊。",
+    "draftChanged": "選取機器期間草稿已變更，請重新插入機器資訊。",
+    "metrics": {
+      "hostname": "主機名稱",
+      "os": "作業系統",
+      "architecture": "架構",
+      "cpu": "CPU",
+      "cpu_cores": "CPU 核心數",
+      "memory_total": "總記憶體",
+      "memory_available": "可用記憶體",
+      "disk": "根磁碟",
+      "load": "系統負載",
+      "uptime": "運作時間",
+      "gpu": "GPU"
     }
   }
 }

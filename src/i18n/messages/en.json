@@ -1993,7 +1993,8 @@
         "removeFromGroup": "No group",
         "newGroupAndMove": "New group…",
         "dropToUngroup": "Drop here to remove from group"
-      }
+      },
+      "machines": "Machines"
     },
     "conversation": {
       "reloadFailed": "Failed to reload conversation: {message}",
@@ -6447,6 +6448,50 @@
       "error": {
         "switchedOff": "This tab was opened with the web inspector switched off. Turn it on in the browser settings, then open the page again."
       }
+    }
+  },
+  "Machines": {
+    "title": "Machines",
+    "description": "Discover machines on your tailnet with Tailscale and inspect read-only SSH snapshots from the active Codeg backend.",
+    "search": "Search machines",
+    "refresh": "Refresh",
+    "autoRefresh": "Every 30s",
+    "discoveryFailed": "Machine discovery failed.",
+    "setupHint": "Install and log in to Tailscale, and make the tailscale and ssh executables available to Codeg. A server or Docker backend needs access to your tailnet.",
+    "loading": "Loading machines...",
+    "empty": "No machines found.",
+    "noMatches": "No machines match your search.",
+    "self": "This machine",
+    "online": "Online",
+    "offline": "Offline",
+    "selectMachine": "Select a machine to view details.",
+    "tailnetStatus": "Tailnet status",
+    "lastSeen": "Last seen",
+    "sshUser": "SSH user",
+    "defaultUser": "Default user",
+    "probe": "Probe",
+    "probing": "Probing...",
+    "probeFailed": "SSH probe failed.",
+    "sampledAt": "Sampled at",
+    "unknown": "Unknown",
+    "insert": "Insert into conversation",
+    "commandHint": "Type /machine in a conversation to attach machine details.",
+    "pickerTitle": "Choose a machine",
+    "pickerDescription": "Select a machine and probe it over read-only SSH before inserting its details.",
+    "commandDescription": "Attach machine details to a conversation.",
+    "draftChanged": "The draft changed while choosing a machine. Please insert the machine information again.",
+    "metrics": {
+      "hostname": "Hostname",
+      "os": "Operating system",
+      "architecture": "Architecture",
+      "cpu": "CPU",
+      "cpu_cores": "CPU cores",
+      "memory_total": "Total memory",
+      "memory_available": "Available memory",
+      "disk": "Disk",
+      "load": "Load",
+      "uptime": "Uptime",
+      "gpu": "GPU"
     }
   }
 }

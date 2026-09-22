@@ -1993,7 +1993,8 @@
         "removeFromGroup": "グループなし",
         "newGroupAndMove": "新しいグループ…",
         "dropToUngroup": "ここにドロップしてグループから外す"
-      }
+      },
+      "machines": "マシン"
     },
     "conversation": {
       "reloadFailed": "会話の再読み込みに失敗しました: {message}",
@@ -6447,6 +6448,50 @@
       "error": {
         "switchedOff": "このタブは Web インスペクタがオフの状態で開かれました。ブラウザ設定でオンにしてから、ページを開き直してください。"
       }
+    }
+  },
+  "Machines": {
+    "title": "マシン",
+    "description": "Tailscale でマシンを検出し、現在の Codeg バックエンドから SSH で状態を読み取ります。",
+    "search": "マシンを検索",
+    "refresh": "更新",
+    "autoRefresh": "30 秒ごとに更新",
+    "discoveryFailed": "マシンを検出できませんでした。",
+    "setupHint": "Tailscale をインストールしてログインし、Codeg から tailscale と ssh を実行できるようにしてください。サーバーや Docker コンテナにも Tailscale ネットワークへの接続が必要です。",
+    "loading": "マシンを読み込み中…",
+    "empty": "マシンが見つかりません。",
+    "noMatches": "検索条件に一致するマシンがありません。",
+    "self": "このマシン",
+    "online": "オンライン",
+    "offline": "オフライン",
+    "selectMachine": "マシンを選択して詳細を表示します。",
+    "tailnetStatus": "Tailscale の状態",
+    "lastSeen": "最終オンライン",
+    "sshUser": "SSH ユーザー名",
+    "defaultUser": "SSH の既定の設定",
+    "probe": "状態を取得",
+    "probing": "状態を取得中…",
+    "probeFailed": "SSH による状態取得に失敗しました。",
+    "sampledAt": "取得日時",
+    "unknown": "データなし",
+    "insert": "会話に挿入",
+    "commandHint": "会話で /machine を入力すると、マシンを選択して基本情報を添付できます。",
+    "pickerTitle": "マシンを選択",
+    "pickerDescription": "マシンを選択して SSH の取得結果を確認し、現在の下書きに情報を挿入します。",
+    "commandDescription": "マシンを選択し、状態情報を添付します。",
+    "draftChanged": "マシンの選択中に下書きが変更されました。情報をもう一度挿入してください。",
+    "metrics": {
+      "hostname": "ホスト名",
+      "os": "OS",
+      "architecture": "アーキテクチャ",
+      "cpu": "CPU",
+      "cpu_cores": "CPU コア数",
+      "memory_total": "総メモリ",
+      "memory_available": "利用可能メモリ",
+      "disk": "ルートディスク",
+      "load": "システム負荷",
+      "uptime": "稼働時間",
+      "gpu": "GPU"
     }
   }
 }

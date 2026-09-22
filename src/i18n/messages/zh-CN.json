@@ -1993,7 +1993,8 @@
         "removeFromGroup": "不分组",
         "newGroupAndMove": "新建分组…",
         "dropToUngroup": "拖到这里可移出分组"
-      }
+      },
+      "machines": "机器"
     },
     "conversation": {
       "reloadFailed": "会话重新加载失败：{message}",
@@ -6447,6 +6448,50 @@
       "error": {
         "switchedOff": "这个标签页是在网页检查器关闭时打开的。请在浏览器设置里打开它，然后重新打开该页面。"
       }
+    }
+  },
+  "Machines": {
+    "title": "机器",
+    "description": "通过 Tailscale 发现机器，从当前 Codeg 后端通过 SSH 只读采集状态。",
+    "search": "搜索机器",
+    "refresh": "刷新",
+    "autoRefresh": "每 30 秒刷新",
+    "discoveryFailed": "无法发现机器。",
+    "setupHint": "请安装并登录 Tailscale，确保 Codeg 能执行 tailscale 和 ssh。服务器或 Docker 容器也需要接入你的 Tailscale 网络。",
+    "loading": "正在加载机器…",
+    "empty": "尚未发现机器。",
+    "noMatches": "没有匹配的机器。",
+    "self": "本机",
+    "online": "在线",
+    "offline": "离线",
+    "selectMachine": "选择一台机器查看详情。",
+    "tailnetStatus": "Tailscale 状态",
+    "lastSeen": "上次在线",
+    "sshUser": "SSH 用户名",
+    "defaultUser": "沿用 SSH 默认配置",
+    "probe": "探测",
+    "probing": "正在探测…",
+    "probeFailed": "SSH 探测失败。",
+    "sampledAt": "采集时间",
+    "unknown": "暂无数据",
+    "insert": "插入到对话",
+    "commandHint": "在对话中输入 /machine，可选择机器并附带基本信息。",
+    "pickerTitle": "选择机器",
+    "pickerDescription": "选择机器并查看 SSH 探测结果，再将信息插入当前草稿。",
+    "commandDescription": "选择机器并引用其状态信息。",
+    "draftChanged": "选择机器期间草稿已变更，请重新插入机器信息。",
+    "metrics": {
+      "hostname": "主机名",
+      "os": "操作系统",
+      "architecture": "架构",
+      "cpu": "CPU",
+      "cpu_cores": "CPU 核心数",
+      "memory_total": "总内存",
+      "memory_available": "可用内存",
+      "disk": "根磁盘",
+      "load": "系统负载",
+      "uptime": "运行时间",
+      "gpu": "GPU"
     }
   }
 }

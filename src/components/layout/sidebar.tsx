@@ -12,6 +12,7 @@ import {
   Menu,
   MessagesSquare,
   SquarePen,
+  Server,
   Zap,
   type LucideIcon,
 } from "lucide-react"
@@ -104,6 +105,7 @@ const NAV_ITEM_ICONS: Record<SidebarNavItemId, LucideIcon> = {
   tasks: ListTodo,
   forge: LayoutTemplate,
   canvas: MapIcon,
+  machines: Server,
 }
 
 /**
@@ -564,6 +566,17 @@ export function Sidebar() {
             onClick={() => {
               if (isMobile) toggle()
               setRoute("forge")
+            }}
+          />
+        )}
+        {isNavItemVisible(navItems, "machines") && (
+          <SidebarNavButton
+            icon={Server}
+            label={t("machines")}
+            active={routeId === "machines"}
+            onClick={() => {
+              if (isMobile) toggle()
+              setRoute("machines")
             }}
           />
         )}

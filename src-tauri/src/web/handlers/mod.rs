@@ -23,6 +23,7 @@ pub mod folders;
 pub mod forge;
 pub mod git;
 pub mod logging;
+pub mod machines;
 pub mod mcp;
 pub mod mcp_service;
 pub mod model_provider;
