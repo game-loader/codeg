@@ -43,6 +43,7 @@ pub mod pets;
 #[cfg(feature = "tauri-runtime")]
 pub mod preferences;
 pub mod process;
+pub mod ssh_askpass;
 pub mod supervise;
 mod terminal;
 pub mod turn_timings;
@@ -1730,6 +1731,8 @@ mod tauri_app {
                 logging_commands::set_log_settings,
                 machines_commands::list_machines,
                 machines_commands::probe_machine,
+                machines_commands::save_manual_machine,
+                machines_commands::delete_manual_machine,
                 logging_commands::get_recent_logs,
                 logging_commands::list_log_files,
                 logging_commands::open_logs_dir,

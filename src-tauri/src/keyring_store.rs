@@ -120,8 +120,26 @@ fn read_tokens_at_checked(
 }
 
 #[cfg(not(feature = "tauri-runtime"))]
-fn write_tokens(tokens: &std::collections::HashMap<String, String>) -> Result<(), String> {
-    write_tokens_at(&tokens_file_path(), tokens)
+fn update_tokens(
+    update: impl FnOnce(&mut std::collections::HashMap<String, String>),
+) -> Result<(), String> {
+    update_tokens_at(&tokens_file_path(), update)
+}
+
+#[cfg(not(feature = "tauri-runtime"))]
+fn update_tokens_at(
+    path: &std::path::Path,
+    update: impl FnOnce(&mut std::collections::HashMap<String, String>),
+) -> Result<(), String> {
+    // All token/secret writers share this lock: atomic rename alone does not
+    // prevent one read/modify/write cycle from replacing another's changes.
+    static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = WRITE_LOCK
+        .lock()
+        .map_err(|_| "token store write lock unavailable".to_string())?;
+    let mut tokens = read_tokens_at_checked(path)?;
+    update(&mut tokens);
+    write_tokens_at(path, &tokens)
 }
 
 /// Persist the token map without ever exposing a wide-permission file, even
@@ -186,9 +204,9 @@ fn write_tokens_at(
 
 #[cfg(not(feature = "tauri-runtime"))]
 pub fn set_token(account_id: &str, token: &str) -> Result<(), String> {
-    let mut tokens = read_tokens();
-    tokens.insert(token_key(account_id), token.to_string());
-    write_tokens(&tokens)
+    update_tokens(|tokens| {
+        tokens.insert(token_key(account_id), token.to_string());
+    })
 }
 
 #[cfg(not(feature = "tauri-runtime"))]
@@ -198,9 +216,9 @@ pub fn get_token(account_id: &str) -> Option<String> {
 
 #[cfg(not(feature = "tauri-runtime"))]
 pub fn delete_token(account_id: &str) -> Result<(), String> {
-    let mut tokens = read_tokens();
-    tokens.remove(&token_key(account_id));
-    write_tokens(&tokens)
+    update_tokens(|tokens| {
+        tokens.remove(&token_key(account_id));
+    })
 }
 
 // ── Chat channel token helpers ──
@@ -234,9 +252,9 @@ pub fn delete_channel_token(channel_id: i32) -> Result<(), String> {
 
 #[cfg(not(feature = "tauri-runtime"))]
 pub fn set_channel_token(channel_id: i32, token: &str) -> Result<(), String> {
-    let mut tokens = read_tokens();
-    tokens.insert(channel_token_key(channel_id), token.to_string());
-    write_tokens(&tokens)
+    update_tokens(|tokens| {
+        tokens.insert(channel_token_key(channel_id), token.to_string());
+    })
 }
 
 #[cfg(not(feature = "tauri-runtime"))]
@@ -246,9 +264,9 @@ pub fn get_channel_token(channel_id: i32) -> Option<String> {
 
 #[cfg(not(feature = "tauri-runtime"))]
 pub fn delete_channel_token(channel_id: i32) -> Result<(), String> {
-    let mut tokens = read_tokens();
-    tokens.remove(&channel_token_key(channel_id));
-    write_tokens(&tokens)
+    update_tokens(|tokens| {
+        tokens.remove(&channel_token_key(channel_id));
+    })
 }
 
 // ── Named secrets ──
@@ -294,9 +312,9 @@ pub fn delete_secret(name: &str) -> Result<(), String> {
 
 #[cfg(not(feature = "tauri-runtime"))]
 pub fn set_secret(name: &str, value: &str) -> Result<(), String> {
-    let mut tokens = read_tokens();
-    tokens.insert(secret_key(name), value.to_string());
-    write_tokens(&tokens)
+    update_tokens(|tokens| {
+        tokens.insert(secret_key(name), value.to_string());
+    })
 }
 
 #[cfg(not(feature = "tauri-runtime"))]
@@ -308,9 +326,9 @@ pub fn get_secret(name: &str) -> Result<Option<String>, String> {
 
 #[cfg(not(feature = "tauri-runtime"))]
 pub fn delete_secret(name: &str) -> Result<(), String> {
-    let mut tokens = read_tokens();
-    tokens.remove(&secret_key(name));
-    write_tokens(&tokens)
+    update_tokens(|tokens| {
+        tokens.remove(&secret_key(name));
+    })
 }
 
 #[cfg(all(test, not(feature = "tauri-runtime")))]
@@ -355,7 +373,11 @@ mod tests {
     #[cfg(unix)]
     fn mode_bits(path: &std::path::Path) -> u32 {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(path).expect("metadata").permissions().mode() & 0o777
+        std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777
     }
 
     /// A fresh store must be 0600 from its very first byte on disk — there is
@@ -371,12 +393,19 @@ mod tests {
         tokens.insert("github-token:a".to_string(), "secret".to_string());
         write_tokens_at(&path, &tokens).expect("write");
         assert_eq!(mode_bits(&path), 0o600);
-        assert_eq!(read_tokens_at(&path).get("github-token:a").unwrap(), "secret");
+        assert_eq!(
+            read_tokens_at(&path).get("github-token:a").unwrap(),
+            "secret"
+        );
         // No temp residue left behind.
         let leftovers: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().starts_with(".tokens.json.tmp"))
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".tokens.json.tmp")
+            })
             .collect();
         assert!(leftovers.is_empty(), "temp files must not survive a write");
     }
@@ -411,5 +440,44 @@ mod tests {
         let tokens = read_tokens_at(&path);
         assert_eq!(tokens.get("github-token:c").unwrap(), "s3");
         assert_eq!(mode_bits(&path), 0o600);
+    }
+
+    #[test]
+    fn corrupt_store_is_not_overwritten_by_a_new_machine_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tokens.json");
+        let original = r#"{"github-token:existing":"truncated"#;
+        std::fs::write(&path, original).unwrap();
+        let result = update_tokens_at(&path, |tokens| {
+            tokens.insert(secret_key("machine-password:test"), "dummy".into());
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn concurrent_secret_and_token_updates_preserve_all_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tokens.json");
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(12));
+        let threads: Vec<_> = (0..12)
+            .map(|index| {
+                let path = path.clone();
+                let gate = gate.clone();
+                std::thread::spawn(move || {
+                    gate.wait();
+                    update_tokens_at(&path, |tokens| {
+                        // Amplify the read/modify/write overlap without touching real credentials.
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                        tokens.insert(format!("secret:machine:{index}"), "dummy".into());
+                    })
+                    .unwrap();
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(read_tokens_at_checked(&path).unwrap().len(), 12);
     }
 }

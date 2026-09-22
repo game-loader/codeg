@@ -2,6 +2,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    if let Some(code) = codeg_lib::ssh_askpass::run_if_requested() {
+        std::process::exit(i32::from(code));
+    }
+
     // When called as a git credential helper, handle it immediately and exit.
     // This avoids starting the full Tauri GUI runtime.
     if std::env::args().any(|a| a == "--credential-helper") {

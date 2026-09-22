@@ -8,6 +8,10 @@ use tokio::process::{Child, Command};
 use tokio::sync::Semaphore;
 
 use crate::app_error::AppCommandError;
+use sea_orm::DatabaseConnection;
+
+mod manual;
+pub use manual::{delete_manual_machine_core, save_manual_machine_core, ManualMachineInput};
 
 const MAX_DISCOVERY_OUTPUT: usize = 256 * 1024;
 const MAX_PROBE_OUTPUT: usize = 64 * 1024;
@@ -23,9 +27,18 @@ pub struct Machine {
     pub dns_name: String,
     pub addresses: Vec<String>,
     pub os: String,
-    pub online: bool,
+    pub online: Option<bool>,
     pub last_seen: Option<String>,
     pub is_self: bool,
+    pub source: String,
+    pub ssh_port: u16,
+    pub ssh_user: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineInventory {
+    pub machines: Vec<Machine>,
+    pub discovery_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -57,7 +70,35 @@ const METRIC_KEYS: [&str; 11] = [
     "gpu",
 ];
 
-pub async fn list_machines_core() -> Result<Vec<Machine>, AppCommandError> {
+pub async fn list_machines_core(
+    conn: &DatabaseConnection,
+) -> Result<MachineInventory, AppCommandError> {
+    let manual = manual::list(conn).await?;
+    Ok(combine_inventory(manual, discover_tailscale().await))
+}
+
+fn combine_inventory(
+    mut machines: Vec<Machine>,
+    discovered: Result<Vec<Machine>, AppCommandError>,
+) -> MachineInventory {
+    let discovery_error = match discovered {
+        Ok(mut tailnet) => {
+            tailnet.append(&mut machines);
+            machines = tailnet;
+            None
+        }
+        Err(error) => Some(match error.detail {
+            Some(detail) => format!("{}: {detail}", error.message),
+            None => error.message,
+        }),
+    };
+    MachineInventory {
+        machines,
+        discovery_error,
+    }
+}
+
+async fn discover_tailscale() -> Result<Vec<Machine>, AppCommandError> {
     let mut command = Command::new("tailscale");
     command.args(["status", "--json"]);
     let output = run_process(command, None, MAX_DISCOVERY_OUTPUT).await?;
@@ -74,6 +115,7 @@ pub async fn list_machines_core() -> Result<Vec<Machine>, AppCommandError> {
 }
 
 pub async fn probe_machine_core(
+    conn: &DatabaseConnection,
     machine_id: String,
     ssh_user: Option<String>,
 ) -> Result<MachineSnapshot, AppCommandError> {
@@ -86,44 +128,31 @@ pub async fn probe_machine_core(
     if let Some(user) = ssh_user.as_deref() {
         validate_ssh_user(user)?;
     }
-    let machine = list_machines_core()
-        .await?
-        .into_iter()
-        .find(|machine| machine.id == machine_id)
-        .ok_or_else(|| AppCommandError::not_found("Machine was not found in Tailscale status"))?;
+    let (machine, password) = if machine_id.starts_with("manual:") {
+        let (machine, password) = manual::resolve(conn, &machine_id, ssh_user.as_deref()).await?;
+        (machine, Some(password))
+    } else {
+        let machine = discover_tailscale()
+            .await?
+            .into_iter()
+            .find(|machine| machine.id == machine_id)
+            .ok_or_else(|| {
+                AppCommandError::not_found("Machine was not found in Tailscale status")
+            })?;
+        (machine, None)
+    };
     let target = ssh_target(&machine)?;
-    let display_target = ssh_user
-        .as_deref()
+    let user = machine.ssh_user.as_deref().or(ssh_user.as_deref());
+    let display_target = user
         .map(|user| format!("{user}@{target}"))
         .unwrap_or_else(|| target.clone());
-
-    let mut command = Command::new("ssh");
-    let connect_timeout = format!("ConnectTimeout={SSH_CONNECT_TIMEOUT}");
-    command
-        .args(["-o", "BatchMode=yes"])
-        .args(["-o", connect_timeout.as_str()])
-        .args([
-            "-o",
-            "ConnectionAttempts=1",
-            "-o",
-            "StrictHostKeyChecking=accept-new",
-            "-o",
-            "PreferredAuthentications=publickey",
-            "-o",
-            "PasswordAuthentication=no",
-            "-o",
-            "KbdInteractiveAuthentication=no",
-            "-o",
-            "NumberOfPasswordPrompts=0",
-            "-T",
-        ]);
-    if let Some(user) = ssh_user.as_deref() {
-        command.args(["-l", user]);
-    }
-    command.args([target.as_str(), "sh", "-s"]);
+    let command = probe_command(&target, machine.ssh_port, user, password.as_deref())?;
     let output = run_process(command, Some(PROBE_SCRIPT.as_bytes()), MAX_PROBE_OUTPUT).await?;
     if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let mut detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if let Some(password) = &password {
+            detail = detail.replace(password, "[redacted]");
+        }
         return Err(AppCommandError::external_command(
             "SSH machine probe failed",
             if detail.is_empty() {
@@ -136,25 +165,133 @@ pub async fn probe_machine_core(
     let raw = std::str::from_utf8(&output.stdout).map_err(|e| {
         AppCommandError::external_command("SSH probe returned invalid output", e.to_string())
     })?;
+    snapshot_from_probe(machine, display_target, raw)
+}
+
+fn snapshot_from_probe(
+    mut machine: Machine,
+    target: String,
+    raw: &str,
+) -> Result<MachineSnapshot, AppCommandError> {
+    let metrics = parse_probe_output(raw)?;
+    if machine.source == "manual" {
+        machine.online = Some(true);
+        machine.os = metrics.get("os").cloned().unwrap_or_default();
+    }
     Ok(MachineSnapshot {
         machine,
         sampled_at: chrono::Utc::now().to_rfc3339(),
-        ssh_target: display_target,
-        metrics: parse_probe_output(raw)?,
+        ssh_target: target,
+        metrics,
     })
 }
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn list_machines() -> Result<Vec<Machine>, AppCommandError> {
-    list_machines_core().await
+fn probe_command(
+    target: &str,
+    port: u16,
+    user: Option<&str>,
+    password: Option<&str>,
+) -> Result<Command, AppCommandError> {
+    let mut command = Command::new("ssh");
+    command
+        .args(["-o", &format!("ConnectTimeout={SSH_CONNECT_TIMEOUT}")])
+        .args([
+            "-o",
+            "ConnectionAttempts=1",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-T",
+        ]);
+    if let Some(password) = password {
+        #[cfg(feature = "tauri-runtime")]
+        let helper = std::env::current_exe().map_err(AppCommandError::io)?;
+        #[cfg(not(feature = "tauri-runtime"))]
+        let helper = crate::update::runtime::self_exe();
+        // Direct IP connections intentionally ignore SSH configuration: in
+        // particular SendEnv/SetEnv/LocalCommand/ProxyCommand must not forward
+        // or expose the helper's child-only password environment.
+        command
+            .args(["-p", &port.to_string()])
+            .args([
+                "-F",
+                "none",
+                "-o",
+                "SendEnv=-*",
+                "-o",
+                "BatchMode=no",
+                "-o",
+                "NumberOfPasswordPrompts=1",
+                "-o",
+                "PreferredAuthentications=password,keyboard-interactive",
+                "-o",
+                "PasswordAuthentication=yes",
+                "-o",
+                "KbdInteractiveAuthentication=yes",
+                "-o",
+                "PubkeyAuthentication=no",
+            ])
+            .env("SSH_ASKPASS", helper)
+            .env("SSH_ASKPASS_REQUIRE", "force")
+            .env("DISPLAY", "codeg:0")
+            .env("LC_ALL", "C")
+            .env(crate::ssh_askpass::MODE_ENV, crate::ssh_askpass::MODE)
+            .env(crate::ssh_askpass::PASSWORD_ENV, password)
+            .env_remove("SSH_ASKPASS_PROMPT");
+    } else {
+        command.args([
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "PreferredAuthentications=publickey",
+            "-o",
+            "PasswordAuthentication=no",
+            "-o",
+            "KbdInteractiveAuthentication=no",
+            "-o",
+            "NumberOfPasswordPrompts=0",
+        ]);
+    }
+    if let Some(user) = user {
+        command.args(["-l", user]);
+    }
+    command.args([target, "sh", "-s"]);
+    Ok(command)
 }
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn list_machines(
+    db: tauri::State<'_, crate::db::AppDatabase>,
+) -> Result<MachineInventory, AppCommandError> {
+    list_machines_core(&db.conn).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
 pub async fn probe_machine(
+    db: tauri::State<'_, crate::db::AppDatabase>,
     machine_id: String,
     ssh_user: Option<String>,
 ) -> Result<MachineSnapshot, AppCommandError> {
-    probe_machine_core(machine_id, ssh_user).await
+    probe_machine_core(&db.conn, machine_id, ssh_user).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn save_manual_machine(
+    db: tauri::State<'_, crate::db::AppDatabase>,
+    input: ManualMachineInput,
+) -> Result<Machine, AppCommandError> {
+    save_manual_machine_core(&db.conn, input).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn delete_manual_machine(
+    db: tauri::State<'_, crate::db::AppDatabase>,
+    machine_id: String,
+) -> Result<(), AppCommandError> {
+    delete_manual_machine_core(&db.conn, machine_id).await
 }
 
 fn parse_discovery_json(raw: &str) -> Result<Vec<Machine>, AppCommandError> {
@@ -243,12 +380,17 @@ fn parse_node(
         dns_name,
         addresses,
         os: string_field(object, "OS").unwrap_or_default(),
-        online: object
-            .get("Online")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false),
+        online: Some(
+            object
+                .get("Online")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        ),
         last_seen: string_field(object, "LastSeen"),
         is_self,
+        source: "tailscale".into(),
+        ssh_port: 22,
+        ssh_user: None,
     })
 }
 
@@ -523,7 +665,94 @@ mod tests {
         assert_eq!(machines[0].dns_name, "zeta.tailnet.ts.net");
         assert_eq!(machines[1].name, "alpha");
         assert_eq!(machines[1].os, "darwin");
-        assert!(!machines[1].online);
+        assert_eq!(machines[1].online, Some(false));
+    }
+
+    #[test]
+    fn discovery_includes_connection_source_and_port() {
+        let machines = parse_discovery_json(DISCOVERY).unwrap();
+        let machine = serde_json::to_value(&machines[0]).unwrap();
+        assert_eq!(machine["source"], "tailscale");
+        assert_eq!(machine["ssh_port"], 22);
+        assert!(machine["ssh_user"].is_null());
+    }
+
+    #[test]
+    fn successful_manual_snapshot_marks_reachability_and_detected_os() {
+        let mut machine = machines_fixture();
+        machine.source = "manual".into();
+        machine.online = None;
+        machine.os.clear();
+        let snapshot = snapshot_from_probe(
+            machine.clone(),
+            "root@203.0.113.8".into(),
+            "hostname\tgpu\nos\tLinux\n",
+        )
+        .unwrap();
+        assert_eq!(snapshot.machine.online, Some(true));
+        assert_eq!(snapshot.machine.os, "Linux");
+        assert!(!snapshot.sampled_at.is_empty());
+        assert!(
+            snapshot_from_probe(machine, "root@203.0.113.8".into(), "hostname\tgpu\n").is_err()
+        );
+    }
+
+    #[test]
+    fn manual_inventory_survives_discovery_failure() {
+        let mut manual = machines_fixture();
+        manual.source = "manual".into();
+        manual.online = None;
+        let inventory = combine_inventory(
+            vec![manual.clone()],
+            Err(AppCommandError::io_error("tailscale not installed")),
+        );
+        assert_eq!(inventory.machines, vec![manual]);
+        assert!(inventory.discovery_error.unwrap().contains("tailscale"));
+        let empty = combine_inventory(Vec::new(), Err(AppCommandError::io_error("offline")));
+        assert!(empty.machines.is_empty());
+        assert!(empty.discovery_error.is_some());
+    }
+
+    #[test]
+    fn password_probe_uses_custom_port_and_child_environment_without_secret_argv() {
+        let command =
+            probe_command("2001:db8::8", 2222, Some("root"), Some("test-secret")).unwrap();
+        let process = command.as_std();
+        let args: Vec<_> = process
+            .get_args()
+            .map(|value| value.to_string_lossy().to_string())
+            .collect();
+        assert!(args.windows(2).any(|pair| pair == ["-p", "2222"]));
+        assert!(args.windows(2).any(|pair| pair == ["-l", "root"]));
+        assert!(args.windows(2).any(|pair| pair == ["-F", "none"]));
+        assert!(args.contains(&"StrictHostKeyChecking=accept-new".into()));
+        assert!(args.contains(&"SendEnv=-*".into()));
+        assert!(args.contains(&"BatchMode=no".into()));
+        assert!(args.contains(&"PubkeyAuthentication=no".into()));
+        assert!(!args.iter().any(|arg| arg.contains("test-secret")));
+        assert_eq!(&args[args.len() - 3..], ["2001:db8::8", "sh", "-s"]);
+        let env: std::collections::HashMap<_, _> = process.get_envs().collect();
+        assert_eq!(
+            env.get(std::ffi::OsStr::new(crate::ssh_askpass::PASSWORD_ENV)),
+            Some(&Some(std::ffi::OsStr::new("test-secret")))
+        );
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("SSH_ASKPASS_REQUIRE")),
+            Some(&Some(std::ffi::OsStr::new("force")))
+        );
+        let tailnet = probe_command("100.64.0.2", 22, None, None).unwrap();
+        assert!(tailnet
+            .as_std()
+            .get_args()
+            .any(|value| value == "BatchMode=yes"));
+        assert!(
+            !tailnet.as_std().get_args().any(|value| value == "-p"),
+            "Tailscale must preserve ports from SSH config"
+        );
+        assert!(!tailnet
+            .as_std()
+            .get_envs()
+            .any(|(key, _)| key == crate::ssh_askpass::PASSWORD_ENV));
     }
 
     #[test]
@@ -685,9 +914,12 @@ mod tests {
             dns_name: "host.tailnet.ts.net".to_string(),
             addresses: vec!["100.64.0.2".to_string()],
             os: "linux".to_string(),
-            online: true,
+            online: Some(true),
             last_seen: None,
             is_self: false,
+            source: "tailscale".into(),
+            ssh_port: 22,
+            ssh_user: None,
         }
     }
 }

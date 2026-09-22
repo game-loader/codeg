@@ -123,7 +123,7 @@ vi.mock("@/lib/api", async (importOriginal) => ({
 // steering tests flip this per-case to drive the enqueue fallback.
 vi.mock("@/lib/machines", async (original) => ({
   ...(await original<typeof import("@/lib/machines")>()),
-  listMachines: vi.fn(async () => []),
+  listMachines: vi.fn(async () => ({ machines: [], discovery_error: null })),
   probeMachine: vi.fn(),
 }))
 vi.mock("@/lib/turn-busy", () => ({
@@ -2144,7 +2144,10 @@ describe("MessageInput machine snapshot sending", () => {
   afterEach(() => {
     cleanup()
     composerHandle.current = null
-    vi.mocked(listMachines).mockResolvedValue([])
+    vi.mocked(listMachines).mockResolvedValue({
+      machines: [],
+      discovery_error: null,
+    })
   })
   it("replaces only the command token and sends the sampled data as literal text", async () => {
     const machine = {
@@ -2157,7 +2160,10 @@ describe("MessageInput machine snapshot sending", () => {
       last_seen: null,
       is_self: false,
     }
-    vi.mocked(listMachines).mockResolvedValue([machine])
+    vi.mocked(listMachines).mockResolvedValue({
+      machines: [machine],
+      discovery_error: null,
+    })
     vi.mocked(probeMachine).mockResolvedValue({
       machine,
       sampled_at: "2026-09-22T08:00:00Z",

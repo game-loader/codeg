@@ -2,21 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
-import { Loader2, RefreshCw, Server } from "lucide-react"
+import { Plus, RefreshCw, Server } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
-import {
-  formatMachineContext,
-  listMachines,
-  loadMachineUser,
-  MACHINE_METRICS,
-  machineError,
-  probeMachine,
-  saveMachineUser,
-  type Machine,
-  type MachineSnapshot,
-} from "@/lib/machines"
+import { listMachines, machineError, type Machine } from "@/lib/machines"
+import { MachineDetails, type MachineProbeStatus } from "./machine-details"
+import { ManualMachineDialog } from "./manual-machine-dialog"
+import { MachineRemoveDialog } from "./machine-remove-dialog"
 
 export function MachineBrowser({
   onInsert,
@@ -32,6 +25,17 @@ export function MachineBrowser({
   const [refresh, setRefresh] = useState(0)
   const [autoRefresh, setAutoRefresh] = useState(false)
   const loadingRef = useRef(false)
+  const [editing, setEditing] = useState<Machine | null | undefined>(undefined)
+  const [removing, setRemoving] = useState<Machine | null>(null)
+  const [probeStates, setProbeStates] = useState<
+    Record<string, MachineProbeStatus>
+  >({})
+  const updateProbeStatus = useCallback(
+    (id: string, status: MachineProbeStatus) => {
+      setProbeStates((current) => ({ ...current, [id]: status }))
+    },
+    []
+  )
 
   useEffect(() => {
     let active = true
@@ -42,7 +46,10 @@ export function MachineBrowser({
     setError(null)
     listMachines()
       .then((items) => {
-        if (active) setMachines(items)
+        if (active) {
+          setMachines(items.machines)
+          setError(items.discovery_error)
+        }
       })
       .catch((err: unknown) => {
         if (active) setError(machineError(err))
@@ -78,6 +85,39 @@ export function MachineBrowser({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
+      {editing !== undefined && (
+        <ManualMachineDialog
+          machine={editing}
+          onClose={() => setEditing(undefined)}
+          onSaved={(saved) => {
+            setEditing(undefined)
+            setProbeStates((current) => {
+              const next = { ...current }
+              delete next[saved.id]
+              return next
+            })
+            setMachines((current) => [
+              ...current.filter((item) => item.id !== saved.id),
+              saved,
+            ])
+            setSelectedId(saved.id)
+            setQuery("")
+            setRefresh((n) => n + 1)
+          }}
+        />
+      )}
+      {removing && (
+        <MachineRemoveDialog
+          machine={removing}
+          onClose={() => setRemoving(null)}
+          onRemoved={(id) => {
+            setRemoving(null)
+            setSelectedId((current) => (current === id ? null : current))
+            setMachines((current) => current.filter((item) => item.id !== id))
+            setRefresh((n) => n + 1)
+          }}
+        />
+      )}
       <p className="text-sm text-muted-foreground">{t("description")}</p>
       <div className="flex flex-wrap items-center gap-2">
         <Input
@@ -88,6 +128,10 @@ export function MachineBrowser({
           onChange={(event) => setQuery(event.target.value)}
           className="min-w-40 flex-1"
         />
+        <Button onClick={() => setEditing(null)}>
+          <Plus className="size-4" />
+          {t("addMachine")}
+        </Button>
         <Button
           variant="outline"
           disabled={loading}
@@ -149,32 +193,48 @@ export function MachineBrowser({
                 </span>
                 <span className="block truncate text-xs text-muted-foreground">
                   {machine.addresses.join(", ") || machine.dns_name}
+                  {machine.source === "manual" && ` · ${machine.ssh_port}`}
                 </span>
                 <span className="block text-xs text-muted-foreground">
-                  {machine.os}
+                  {machine.source === "manual" ? t("manual") : machine.os}
                   {machine.is_self ? ` · ${t("self")}` : ""}
                 </span>
               </span>
               <span
                 className={cn(
                   "mt-1 flex items-center gap-1 text-xs",
-                  machine.online
+                  (
+                    machine.source === "manual"
+                      ? probeStates[machine.id] === "reachable"
+                      : machine.online
+                  )
                     ? "text-emerald-600 dark:text-emerald-400"
                     : "text-muted-foreground"
                 )}
               >
                 <span className="size-1.5 rounded-full bg-current" />
-                {t(machine.online ? "online" : "offline")}
+                {t(
+                  machine.source === "manual"
+                    ? (probeStates[machine.id] ?? "notProbed")
+                    : machine.online === null
+                      ? "notProbed"
+                      : machine.online
+                        ? "online"
+                        : "offline"
+                )}
               </span>
             </button>
           ))}
         </div>
         {selected ? (
           <MachineDetails
-            key={selected.id}
+            key={`${selected.id}:${selected.ssh_port}:${selected.ssh_user}:${selected.addresses.join(",")}`}
             machine={selected}
             refresh={refresh}
             onInsert={onInsert}
+            onEdit={() => setEditing(selected)}
+            onRemove={() => setRemoving(selected)}
+            onProbeStatus={updateProbeStatus}
           />
         ) : (
           <div className="flex min-h-40 items-center justify-center rounded-xl border border-dashed p-6 text-sm text-muted-foreground">
@@ -183,144 +243,5 @@ export function MachineBrowser({
         )}
       </div>
     </div>
-  )
-}
-
-function MachineDetails({
-  machine,
-  refresh,
-  onInsert,
-}: {
-  machine: Machine
-  refresh: number
-  onInsert?: (context: string) => void
-}) {
-  const t = useTranslations("Machines")
-  const [user, setUser] = useState(() => loadMachineUser(machine.id))
-  const [appliedUser, setAppliedUser] = useState(user)
-  const [probeVersion, setProbeVersion] = useState(0)
-  const [snapshot, setSnapshot] = useState<MachineSnapshot | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [probing, setProbing] = useState(true)
-  const requestProbe = useCallback(() => {
-    saveMachineUser(machine.id, user)
-    setAppliedUser(user.trim())
-    setProbeVersion((n) => n + 1)
-  }, [machine.id, user])
-
-  useEffect(() => {
-    let active = true
-    // Each request invalidates the displayed telemetry until it resolves.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setProbing(true)
-    setSnapshot(null)
-    setError(null)
-    probeMachine(machine.id, appliedUser)
-      .then((result) => {
-        if (active) setSnapshot(result)
-      })
-      .catch((err: unknown) => {
-        if (active) setError(machineError(err))
-      })
-      .finally(() => {
-        if (active) setProbing(false)
-      })
-    return () => {
-      active = false
-    }
-  }, [machine.id, appliedUser, probeVersion, refresh])
-
-  return (
-    <section className="min-w-0 space-y-4 overflow-y-auto rounded-xl border p-4">
-      <div>
-        <h2 className="font-semibold">{machine.name}</h2>
-        <p className="break-all text-xs text-muted-foreground">
-          {machine.dns_name}
-        </p>
-        <p className="text-xs text-muted-foreground">
-          {t("tailnetStatus")}: {t(machine.online ? "online" : "offline")}
-        </p>
-        {machine.last_seen && (
-          <p className="text-xs text-muted-foreground">
-            {t("lastSeen")}: {new Date(machine.last_seen).toLocaleString()}
-          </p>
-        )}
-      </div>
-      <div className="flex flex-wrap items-end gap-2">
-        <label className="min-w-32 flex-1 space-y-1 text-xs text-muted-foreground">
-          {t("sshUser")}
-          <Input
-            value={user}
-            placeholder={t("defaultUser")}
-            onChange={(event) => setUser(event.target.value)}
-            autoComplete="off"
-          />
-        </label>
-        <Button variant="outline" onClick={requestProbe} disabled={probing}>
-          {probing ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <RefreshCw className="size-4" />
-          )}
-          {t("probe")}
-        </Button>
-      </div>
-      {probing && (
-        <p role="status" className="text-sm text-muted-foreground">
-          {t("probing")}
-        </p>
-      )}
-      {error && (
-        <div
-          role="alert"
-          className="space-y-1 rounded-lg bg-destructive/10 p-3 text-sm"
-        >
-          <p>{t("probeFailed")}</p>
-          <p className="whitespace-pre-wrap break-words text-muted-foreground">
-            {error}
-          </p>
-        </div>
-      )}
-      {snapshot && (
-        <>
-          <p className="break-all text-xs text-muted-foreground">
-            SSH: {snapshot.ssh_target}
-            <br />
-            {t("sampledAt")}: {new Date(snapshot.sampled_at).toLocaleString()}
-          </p>
-          <dl className="grid gap-3 sm:grid-cols-2">
-            {MACHINE_METRICS.map((key) => (
-              <div
-                key={key}
-                className={cn(
-                  "rounded-lg bg-muted/40 p-3",
-                  (key === "gpu" || key === "disk") && "sm:col-span-2"
-                )}
-              >
-                <dt className="text-xs text-muted-foreground">
-                  {t(`metrics.${key}`)}
-                </dt>
-                <dd className="mt-1 whitespace-pre-wrap break-words text-sm">
-                  {snapshot.metrics[key] || t("unknown")}
-                </dd>
-              </div>
-            ))}
-          </dl>
-        </>
-      )}
-      {onInsert && (
-        <Button
-          className="w-full"
-          disabled={
-            probing || (!snapshot && !error) || user.trim() !== appliedUser
-          }
-          onClick={() =>
-            onInsert(formatMachineContext(machine, snapshot, error))
-          }
-        >
-          {t("insert")}
-        </Button>
-      )}
-    </section>
   )
 }
