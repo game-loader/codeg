@@ -172,9 +172,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: "macOS x64"
-            runner: "macos-latest"
-            target: "x86_64-apple-darwin"
           - name: "macOS arm64"
             runner: "macos-latest"
             target: "aarch64-apple-darwin"
@@ -582,10 +579,6 @@ jobs:
             runner: "ubuntu-22.04"
             target: "aarch64-unknown-linux-gnu"
             artifact: "codeg-server-linux-arm64"
-          - name: "macOS x64"
-            runner: "macos-latest"
-            target: "x86_64-apple-darwin"
-            artifact: "codeg-server-darwin-x64"
           - name: "macOS arm64"
             runner: "macos-latest"
             target: "aarch64-apple-darwin"
@@ -703,7 +696,6 @@ jobs:
           # line. Only run it for native targets; cross-compiled arm64
           # binaries on x64 runners can't execute.
           if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ] || \
-             [ "${{ matrix.target }}" = "x86_64-apple-darwin" ] || \
              [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then
             "dist/${{ matrix.artifact }}/codeg-mcp" --help | grep -F 'codeg-mcp --parent-connection-id'
           else

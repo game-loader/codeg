@@ -14,7 +14,6 @@
 | 文件 | 用途 |
 | --- | --- |
 | `codeg-desktop-darwin-arm64.dmg` | Apple Silicon Mac 桌面客户端 |
-| `codeg-desktop-darwin-x64.dmg` | Intel Mac 桌面客户端 |
 | `codeg-desktop-linux-x64.deb` | Linux x64 桌面客户端，Ubuntu 22.04 或兼容系统 |
 | `codeg-desktop-linux-arm64.deb` | Linux ARM64 桌面客户端，Ubuntu 24.04 或兼容系统 |
 | `codeg-server-linux-x64.tar.gz` | Linux x64 Server、MCP 伴生程序及网页资源 |
@@ -22,6 +21,8 @@
 | `codeg-web.tar.gz` | 单独的网页静态资源，解压后为 `web/` |
 | `codeg-academic-bridge-*.xpi` | Zotero 10 插件 |
 | `SHA256SUMS` | 所有安装包的 SHA-256 校验值 |
+
+macOS 仅构建 Apple Silicon（ARM64）版本，不再构建 Intel Mac 版本。
 
 Linux Server 与对应桌面包使用相同架构和构建系统版本；更旧系统需要自行编译。工作流同时打包真正的 `codeg-mcp`，不会使用本地开发时可能生成的零字节占位文件。
 

@@ -98,11 +98,6 @@ jobs:
       matrix:
         include:
           - platform: darwin
-            arch: x64
-            runner: macos-15-intel
-            target: x86_64-apple-darwin
-            bundle: dmg
-          - platform: darwin
             arch: arm64
             runner: macos-15
             target: aarch64-apple-darwin
@@ -293,7 +288,6 @@ jobs:
           set -euo pipefail
           cd release
           assets=(
-            codeg-desktop-darwin-x64.dmg
             codeg-desktop-darwin-arm64.dmg
             codeg-desktop-linux-x64.deb
             codeg-desktop-linux-arm64.deb
@@ -302,7 +296,7 @@ jobs:
             codeg-web.tar.gz
             codeg-academic-bridge-*.xpi
           )
-          test "${#assets[@]}" -eq 8
+          test "${#assets[@]}" -eq 7
           for asset in "${assets[@]}"; do
             test -s "$asset"
           done
@@ -322,7 +316,7 @@ jobs:
 
           Build: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
 
-          Packages: macOS Intel/Apple Silicon DMG, Linux x64/ARM64 DEB,
+          Packages: macOS Apple Silicon DMG, Linux x64/ARM64 DEB,
           Linux Server (with codeg-mcp and web/), standalone web/, and Zotero 10 plugin.
           Linux x64 builds use Ubuntu 22.04; ARM64 builds use Ubuntu 24.04.
 
