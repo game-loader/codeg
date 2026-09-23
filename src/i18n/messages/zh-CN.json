@@ -6578,6 +6578,9 @@
     "removeTitle": "移除 {name}？",
     "removeDescription": "仅从 Codeg 移除保存的连接和密码，不会删除远程机器或停止云服务。",
     "removing": "正在移除…",
-    "removeConfirm": "移除"
+    "removeConfirm": "移除",
+    "tailscaleLoginRequired": "需要登录 Tailscale 或完成 SSH 授权。",
+    "loginTailscale": "登录 Tailscale",
+    "afterAuthorizing": "授权完成后，再次点击“{action}”。"
   }
 }

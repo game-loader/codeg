@@ -76,6 +76,29 @@ export function machineError(error: unknown): string {
   return toErrorMessage(error)
 }
 
+/** Return only the official Tailscale login URL embedded in a backend error. */
+export function tailscaleLoginUrl(error: unknown): string | null {
+  const text = toErrorMessage(error)
+  const matches =
+    text.match(/https:\/\/login\.tailscale\.com\/[^\s"'<>]+/g) ?? []
+  for (const candidate of matches) {
+    try {
+      const url = new URL(candidate)
+      if (
+        url.protocol === "https:" &&
+        url.hostname === "login.tailscale.com" &&
+        !url.username &&
+        !url.password
+      ) {
+        return url.toString()
+      }
+    } catch {
+      // Ignore malformed URLs embedded in command diagnostics.
+    }
+  }
+  return null
+}
+
 function userKey(id: string): string {
   return `machines:ssh-user:${getActiveRemoteConnectionId() ?? "local"}:${id}`
 }

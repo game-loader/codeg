@@ -147,7 +147,14 @@ pub async fn probe_machine_core(
         .map(|user| format!("{user}@{target}"))
         .unwrap_or_else(|| target.clone());
     let command = probe_command(&target, machine.ssh_port, user, password.as_deref())?;
-    let output = run_process(command, Some(PROBE_SCRIPT.as_bytes()), MAX_PROBE_OUTPUT).await?;
+    let output = run_process(command, Some(PROBE_SCRIPT.as_bytes()), MAX_PROBE_OUTPUT)
+        .await
+        .map_err(|mut error| {
+            if let (Some(password), Some(detail)) = (&password, &mut error.detail) {
+                *detail = detail.replace(password, "[redacted]");
+            }
+            error
+        })?;
     if !output.status.success() {
         let mut detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if let Some(password) = &password {
@@ -301,6 +308,21 @@ fn parse_discovery_json(raw: &str) -> Result<Vec<Machine>, AppCommandError> {
     let object = root.as_object().ok_or_else(|| {
         AppCommandError::external_command("Tailscale returned malformed status", "expected object")
     })?;
+    let backend_state = object
+        .get("BackendState")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if matches!(backend_state, "NeedsLogin" | "NeedsMachineAuth") {
+        let auth_url = object
+            .get("AuthURL")
+            .and_then(serde_json::Value::as_str)
+            .filter(|url| !url.trim().is_empty())
+            .unwrap_or("Run `tailscale login` on the Codeg backend to obtain a login URL, then refresh the machine list.");
+        return Err(AppCommandError::external_command(
+            "Tailscale login required",
+            auth_url,
+        ));
+    }
     let mut machines = Vec::new();
     if let Some(node) = object.get("Self") {
         machines.push(parse_node(node, None, true)?);
@@ -515,6 +537,9 @@ async fn run_process(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     let mut child = command.spawn().map_err(AppCommandError::io)?;
+    // Keep the buffer outside the timed future so cancellation cannot discard
+    // a Tailscale SSH check URL already emitted while waiting for approval.
+    let mut stderr_data = Vec::new();
     if let Some(input) = stdin {
         if let Some(mut pipe) = child.stdin.take() {
             tokio::time::timeout(PROCESS_TIMEOUT, pipe.write_all(input))
@@ -523,13 +548,24 @@ async fn run_process(
                 .map_err(AppCommandError::io)?;
         }
     }
-    match tokio::time::timeout(PROCESS_TIMEOUT, run_process_inner(&mut child, output_cap)).await {
+    match tokio::time::timeout(
+        PROCESS_TIMEOUT,
+        run_process_inner(&mut child, output_cap, &mut stderr_data),
+    )
+    .await
+    {
         Ok(result) => result,
         Err(_) => {
             let _ = child.kill().await;
+            let diagnostic = String::from_utf8_lossy(&stderr_data);
+            let mut detail = format!("timeout after {} seconds", PROCESS_TIMEOUT.as_secs());
+            if !diagnostic.trim().is_empty() {
+                detail.push('\n');
+                detail.push_str(diagnostic.trim());
+            }
             Err(AppCommandError::external_command(
                 "Process timed out",
-                format!("timeout after {} seconds", PROCESS_TIMEOUT.as_secs()),
+                detail,
             ))
         }
     }
@@ -538,6 +574,7 @@ async fn run_process(
 async fn run_process_inner(
     child: &mut Child,
     output_cap: usize,
+    stderr_data: &mut Vec<u8>,
 ) -> Result<ProcessOutput, AppCommandError> {
     let mut stdout = child
         .stdout
@@ -548,7 +585,6 @@ async fn run_process_inner(
         .take()
         .ok_or_else(|| AppCommandError::external_command("Process output unavailable", "stderr"))?;
     let mut stdout_data = Vec::new();
-    let mut stderr_data = Vec::new();
     let mut stdout_done = false;
     let mut stderr_done = false;
     let mut status = None;
@@ -586,7 +622,7 @@ async fn run_process_inner(
     Ok(ProcessOutput {
         status: status.expect("process status set before loop exits"),
         stdout: stdout_data,
-        stderr: stderr_data,
+        stderr: std::mem::take(stderr_data),
     })
 }
 
@@ -655,6 +691,19 @@ mod tests {
         }
       }
     }"#;
+
+    #[test]
+    fn discovery_reports_login_url_instead_of_stale_machines() {
+        let mut status: serde_json::Value = serde_json::from_str(DISCOVERY).unwrap();
+        status["BackendState"] = "NeedsLogin".into();
+        status["AuthURL"] = "https://login.tailscale.com/a/test-login".into();
+        let error = parse_discovery_json(&status.to_string()).unwrap_err();
+        assert!(error.message.contains("login"));
+        assert!(error
+            .detail
+            .unwrap()
+            .contains("https://login.tailscale.com/a/test-login"));
+    }
 
     #[test]
     fn parses_and_sorts_self_and_peers() {
@@ -885,7 +934,7 @@ mod tests {
         let pid_dir = tempfile::tempdir().unwrap();
         let pid_file = pid_dir.path().join("pid");
         let mut command = Command::new("sh");
-        command.args(["-c", "echo $$ > \"$1\"; exec sleep 30", "probe-test"]);
+        command.args(["-c", "echo $$ > \"$1\"; printf 'Tailscale SSH requires an additional check.\\nhttps://login.tailscale.com/a/test-ssh\\n' >&2; exec sleep 30", "probe-test"]);
         command.arg(&pid_file);
         let error = tokio::time::timeout(
             PROCESS_TIMEOUT + std::time::Duration::from_secs(2),
@@ -904,6 +953,13 @@ mod tests {
         assert!(
             !status.success(),
             "timed-out process must not remain running"
+        );
+        assert!(
+            error
+                .detail
+                .unwrap()
+                .contains("https://login.tailscale.com/a/test-ssh"),
+            "timeout must retain the SSH authorization URL"
         );
     }
 

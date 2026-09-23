@@ -6,6 +6,7 @@ import { Loader2, Pencil, RefreshCw, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
+import { MachineLoginNotice } from "./machine-login-notice"
 import {
   formatMachineContext,
   loadMachineUser,
@@ -13,6 +14,7 @@ import {
   machineError,
   probeMachine,
   saveMachineUser,
+  tailscaleLoginUrl,
   type Machine,
   type MachineSnapshot,
 } from "@/lib/machines"
@@ -47,6 +49,7 @@ export function MachineDetails({
   const [probeVersion, setProbeVersion] = useState(0)
   const [snapshot, setSnapshot] = useState<MachineSnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const loginUrl = tailscaleLoginUrl(error)
   const [probing, setProbing] = useState(true)
   const requestProbe = useCallback(() => {
     if (!manual) saveMachineUser(machine.id, user)
@@ -153,7 +156,11 @@ export function MachineDetails({
           role="alert"
           className="space-y-1 rounded-lg bg-destructive/10 p-3 text-sm"
         >
-          <p>{t("probeFailed")}</p>
+          {loginUrl ? (
+            <MachineLoginNotice url={loginUrl} retry="probe" />
+          ) : (
+            <p>{t("probeFailed")}</p>
+          )}
           <p className="whitespace-pre-wrap break-words text-muted-foreground">
             {error}
           </p>

@@ -6578,6 +6578,9 @@
     "removeTitle": "Remove {name}?",
     "removeDescription": "This removes the saved connection and password from Codeg. The remote machine and cloud service are unaffected.",
     "removing": "Removing...",
-    "removeConfirm": "Remove"
+    "removeConfirm": "Remove",
+    "tailscaleLoginRequired": "Tailscale login or SSH authorization is required.",
+    "loginTailscale": "Log in to Tailscale",
+    "afterAuthorizing": "After authorizing, click {action} again."
   }
 }

@@ -58,6 +58,54 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe("machine browser", () => {
+  it("offers Tailscale authorization after a timeout and can probe again", async () => {
+    api.probe.mockRejectedValueOnce({
+      code: "external_command_failed",
+      message: "Process timed out",
+      detail:
+        "timeout after 12 seconds\nTailscale SSH requires an additional check.\nhttps://login.tailscale.com/a/test-ssh",
+    })
+    mount()
+    fireEvent.click(await screen.findByRole("button", { name: /lab-gpu/ }))
+    const link = await screen.findByRole("link", {
+      name: /Log in to Tailscale/,
+    })
+    expect(link).toHaveAttribute(
+      "href",
+      "https://login.tailscale.com/a/test-ssh"
+    )
+    expect(screen.getByText(/After authorizing/)).toBeInTheDocument()
+    expect(screen.queryByText("SSH probe failed.")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Probe" }))
+    await screen.findByText("AMD EPYC")
+    expect(screen.queryByRole("link")).not.toBeInTheDocument()
+  })
+  it("offers a backend login link when Tailscale discovery needs login", async () => {
+    api.list.mockResolvedValue({
+      machines: [],
+      discovery_error:
+        "Tailscale login required: https://login.tailscale.com/a/test-login",
+    })
+    mount()
+    expect(
+      await screen.findByRole("link", { name: /Log in to Tailscale/ })
+    ).toHaveAttribute("href", "https://login.tailscale.com/a/test-login")
+  })
+  it.each([
+    "https://login.tailscale.com.evil.example/a/test",
+    "https://login.tailscale.com@evil.example/a/test",
+    "http://login.tailscale.com/a/test",
+    "https://example.com/a/test",
+  ])(
+    "does not offer an untrusted diagnostic URL as Tailscale login: %s",
+    async (url) => {
+      api.probe.mockRejectedValue(new Error(`Permission denied: ${url}`))
+      mount()
+      fireEvent.click(await screen.findByRole("button", { name: /lab-gpu/ }))
+      await screen.findByText(`Permission denied: ${url}`)
+      expect(screen.queryByRole("link")).not.toBeInTheDocument()
+    }
+  )
   it("searches discovery and probes only the selected machine before inserting context", async () => {
     const insert = vi.fn()
     mount(insert)

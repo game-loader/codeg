@@ -6578,6 +6578,9 @@
     "removeTitle": "{name}을(를) 제거할까요?",
     "removeDescription": "Codeg에 저장된 연결과 비밀번호만 제거합니다. 원격 머신과 클라우드 서비스에는 영향을 주지 않습니다.",
     "removing": "제거 중…",
-    "removeConfirm": "제거"
+    "removeConfirm": "제거",
+    "tailscaleLoginRequired": "Tailscale 로그인 또는 SSH 인증이 필요합니다.",
+    "loginTailscale": "Tailscale 로그인",
+    "afterAuthorizing": "인증 후 {action}을(를) 다시 클릭하세요."
   }
 }

@@ -6,10 +6,16 @@ import { Plus, RefreshCw, Server } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
-import { listMachines, machineError, type Machine } from "@/lib/machines"
+import {
+  listMachines,
+  machineError,
+  tailscaleLoginUrl,
+  type Machine,
+} from "@/lib/machines"
 import { MachineDetails, type MachineProbeStatus } from "./machine-details"
 import { ManualMachineDialog } from "./manual-machine-dialog"
 import { MachineRemoveDialog } from "./machine-remove-dialog"
+import { MachineLoginNotice } from "./machine-login-notice"
 
 export function MachineBrowser({
   onInsert,
@@ -82,6 +88,7 @@ export function MachineBrowser({
       .toLowerCase()
       .includes(needle)
   )
+  const discoveryLoginUrl = tailscaleLoginUrl(error)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
@@ -154,7 +161,11 @@ export function MachineBrowser({
           role="alert"
           className="rounded-xl border border-destructive/30 p-3 text-sm"
         >
-          <p>{t("discoveryFailed")}</p>
+          {discoveryLoginUrl ? (
+            <MachineLoginNotice url={discoveryLoginUrl} retry="refresh" />
+          ) : (
+            <p>{t("discoveryFailed")}</p>
+          )}
           <p className="break-words text-muted-foreground">{error}</p>
           <p className="mt-2 text-muted-foreground">{t("setupHint")}</p>
         </div>

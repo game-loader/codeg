@@ -6578,6 +6578,9 @@
     "removeTitle": "إزالة {name}؟",
     "removeDescription": "تزيل هذه العملية الاتصال وكلمة المرور المحفوظين من Codeg فقط. لا تؤثر في الجهاز البعيد أو الخدمة السحابية.",
     "removing": "جارٍ الإزالة…",
-    "removeConfirm": "إزالة"
+    "removeConfirm": "إزالة",
+    "tailscaleLoginRequired": "يلزم تسجيل الدخول إلى Tailscale أو تفويض SSH.",
+    "loginTailscale": "تسجيل الدخول إلى Tailscale",
+    "afterAuthorizing": "بعد التفويض، انقر على {action} مرة أخرى."
   }
 }

@@ -6578,6 +6578,9 @@
     "removeTitle": "Remover {name}?",
     "removeDescription": "Isso remove apenas a conexão e a senha salvas do Codeg. A máquina remota e o serviço de nuvem não são afetados.",
     "removing": "Removendo…",
-    "removeConfirm": "Remover"
+    "removeConfirm": "Remover",
+    "tailscaleLoginRequired": "É necessário iniciar sessão no Tailscale ou autorizar o SSH.",
+    "loginTailscale": "Iniciar sessão no Tailscale",
+    "afterAuthorizing": "Depois de autorizar, clique novamente em {action}."
   }
 }

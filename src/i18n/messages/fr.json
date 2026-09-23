@@ -6578,6 +6578,9 @@
     "removeTitle": "Retirer {name} ?",
     "removeDescription": "Seuls la connexion et le mot de passe enregistrés sont retirés de Codeg. La machine distante et le service cloud ne sont pas affectés.",
     "removing": "Suppression…",
-    "removeConfirm": "Retirer"
+    "removeConfirm": "Retirer",
+    "tailscaleLoginRequired": "Une connexion Tailscale ou une autorisation SSH est requise.",
+    "loginTailscale": "Se connecter à Tailscale",
+    "afterAuthorizing": "Après autorisation, cliquez à nouveau sur {action}."
   }
 }

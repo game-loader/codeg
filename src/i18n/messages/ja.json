@@ -6578,6 +6578,9 @@
     "removeTitle": "{name} を削除しますか？",
     "removeDescription": "Codeg に保存された接続とパスワードのみを削除します。リモートマシンやクラウドサービスには影響しません。",
     "removing": "削除中…",
-    "removeConfirm": "削除"
+    "removeConfirm": "削除",
+    "tailscaleLoginRequired": "Tailscale へのログインまたは SSH 認証が必要です。",
+    "loginTailscale": "Tailscale にログイン",
+    "afterAuthorizing": "認証後、もう一度「{action}」をクリックしてください。"
   }
 }

@@ -6578,6 +6578,9 @@
     "removeTitle": "{name} entfernen?",
     "removeDescription": "Dies entfernt nur die gespeicherte Verbindung und das Passwort aus Codeg. Die entfernte Maschine und der Cloud-Dienst bleiben unberührt.",
     "removing": "Wird entfernt…",
-    "removeConfirm": "Entfernen"
+    "removeConfirm": "Entfernen",
+    "tailscaleLoginRequired": "Eine Tailscale-Anmeldung oder SSH-Autorisierung ist erforderlich.",
+    "loginTailscale": "Bei Tailscale anmelden",
+    "afterAuthorizing": "Klicke nach der Autorisierung erneut auf {action}."
   }
 }

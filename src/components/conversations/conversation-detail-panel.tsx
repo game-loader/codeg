@@ -2201,6 +2201,8 @@ const ConversationTabView = memo(function ConversationTabView({
             agentType={selectedAgent}
             workingDir={workingDirForConnection}
           />
+          {/* Reserve space outside the transcript, which fills its container. */}
+          {academicPaperId && <AcademicContextBar paperId={academicPaperId} />}
         </>
       }
       status={connStatus}
@@ -2304,7 +2306,6 @@ const ConversationTabView = memo(function ConversationTabView({
       }
       steerChannel={feedback.channel}
     >
-      {academicPaperId && <AcademicContextBar paperId={academicPaperId} />}
       {isWelcomeMode ? (
         // Same overlay scrollbar as the sidebar / file lists (os-theme-codeg)
         // instead of the platform's native bar. `min-h-full` on the inner column
