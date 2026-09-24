@@ -220,34 +220,50 @@ export function ComposerContextUsage({ tabId }: { tabId: string | null }) {
         </button>
       </PopoverTrigger>
       <PopoverContent side="top" align="end" className="w-56 gap-2 p-3 text-xs">
-        {hasContext ? (
+        {hasContext || cacheHit != null ? (
           <div
             className={`space-y-1 ${
               hasUsage ? "mb-0.5 border-b border-border pb-0.5" : ""
             }`}
           >
-            <div className="flex items-center justify-between gap-2 text-xs font-medium whitespace-nowrap">
-              <span>{t("contextWindow")}</span>
-              <span className="tabular-nums shrink-0">
-                {formatContextWindowPercent(contextPercent)}
-              </span>
-            </div>
-            <div className="relative h-1.5 overflow-hidden rounded-full bg-muted">
-              <div
-                className="absolute inset-y-0 left-0 bg-foreground/70"
-                style={{ width: `${contextPercent ?? 0}%` }}
-              />
-            </div>
-            {/* Dropped entirely rather than shown as "--": an agent can state
-                its occupancy as a percentage without ever naming the two token
-                counts behind it (qoder does exactly that once it has redacted
-                them), and a labelled row with nothing in it reads as a figure
-                that failed to load rather than one that was never reported. */}
-            {contextUsed != null && contextMax != null ? (
-              <div className="flex items-center justify-between text-xs leading-none text-muted-foreground">
-                <span>{t("usedMax")}</span>
-                <span className="tabular-nums">
-                  {`${formatTokenCount(contextUsed)} / ${formatTokenCount(contextMax)}`}
+            {hasContext ? (
+              <>
+                <div className="flex items-center justify-between gap-2 text-xs font-medium whitespace-nowrap">
+                  <span>{t("contextWindow")}</span>
+                  <span className="tabular-nums shrink-0">
+                    {formatContextWindowPercent(contextPercent)}
+                  </span>
+                </div>
+                <div className="relative h-1.5 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="absolute inset-y-0 left-0 bg-foreground/70"
+                    style={{ width: `${contextPercent ?? 0}%` }}
+                  />
+                </div>
+                {/* Dropped entirely rather than shown as "--": an agent can
+                    state its occupancy as a percentage without ever naming the
+                    two token counts behind it (qoder does exactly that once it
+                    has redacted them), and a labelled row with nothing in it
+                    reads as a figure that failed to load rather than one that
+                    was never reported. */}
+                {contextUsed != null && contextMax != null ? (
+                  <div className="flex items-center justify-between text-xs leading-none text-muted-foreground">
+                    <span>{t("usedMax")}</span>
+                    <span className="tabular-nums">
+                      {`${formatTokenCount(contextUsed)} / ${formatTokenCount(contextMax)}`}
+                    </span>
+                  </div>
+                ) : null}
+              </>
+            ) : null}
+            {/* Sits with the context figures rather than under the token
+                breakdown: it is a ratio, not a count, and a rule of its own
+                above it only fenced off a single line. */}
+            {cacheHit != null ? (
+              <div className="flex items-center justify-between gap-2 text-xs leading-none text-muted-foreground">
+                <span className="whitespace-nowrap">{t("cacheHit")}</span>
+                <span className="tabular-nums shrink-0">
+                  {formatPercent(cacheHit, CACHE_HIT_RATE_DIGITS)}
                 </span>
               </div>
             ) : null}
@@ -275,16 +291,6 @@ export function ComposerContextUsage({ tabId }: { tabId: string | null }) {
                 </div>
               ))}
             </div>
-            {cacheHit != null ? (
-              <div className="mt-1 flex items-center justify-between gap-2 border-t border-border pt-1 text-xs leading-none">
-                <span className="text-muted-foreground whitespace-nowrap">
-                  {t("cacheHit")}
-                </span>
-                <span className="tabular-nums font-medium">
-                  {formatPercent(cacheHit, CACHE_HIT_RATE_DIGITS)}
-                </span>
-              </div>
-            ) : null}
           </>
         ) : null}
       </PopoverContent>

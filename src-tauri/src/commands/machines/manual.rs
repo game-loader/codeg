@@ -103,9 +103,9 @@ impl ManualMachineInput {
 }
 
 fn validate_id(id: &str) -> Result<(), AppCommandError> {
-    if !id
+    if id
         .strip_prefix("manual:")
-        .is_some_and(|value| Uuid::parse_str(value).is_ok())
+        .is_none_or(|value| Uuid::parse_str(value).is_err())
     {
         return Err(AppCommandError::invalid_input("Invalid manual machine ID"));
     }

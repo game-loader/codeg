@@ -197,6 +197,31 @@ describe("ComposerContextUsage zeroed counters", () => {
     expect(screen.queryByRole("button")).not.toBeInTheDocument()
   })
 
+  it("keeps the cache hit rate with the context figures, under Used / Max", async () => {
+    // It is a ratio, not a token count, so it belongs beside the other context
+    // figures rather than at the foot of the breakdown — and as an immediate
+    // sibling of "Used / Max", with no rule of its own fencing off one line.
+    renderStats({
+      total_usage: usage({
+        input_tokens: 1_000,
+        output_tokens: 500,
+        cache_creation_input_tokens: 1_000,
+        cache_read_input_tokens: 8_000,
+      }),
+      total_tokens: 10_500,
+      total_duration_ms: 0,
+      context_window_used_tokens: 10_000,
+      context_window_max_tokens: 200_000,
+      context_window_usage_percent: 5,
+    } as SessionStats)
+    await openPopover()
+
+    const usedMaxRow = screen.getByText(copy.usedMax).parentElement
+    const cacheRow = screen.getByText(copy.cacheHit).parentElement
+    expect(usedMaxRow?.nextElementSibling).toBe(cacheRow)
+    expect(cacheRow?.className).not.toMatch(/border-t/)
+  })
+
   it("still shows the breakdown once any counter is non-zero", async () => {
     renderStats({
       total_usage: usage({ input_tokens: 2_803, output_tokens: 19 }),
