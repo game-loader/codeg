@@ -4,7 +4,7 @@
 
 ## 安装与配对
 
-1. 在项目根目录执行 `node zotero-plugin/scripts/build.cjs`，生成 `zotero-plugin/dist/codeg-academic-bridge-0.1.0.xpi`。
+1. 在项目根目录执行 `node zotero-plugin/scripts/build.cjs`，生成 `zotero-plugin/dist/codeg-academic-bridge-0.1.1.xpi`。也可以从 fork 预览版 Release 下载同名 XPI。
 2. 在 Zotero 10 的插件管理器中选择「从文件安装插件」，安装上述 XPI。插件仅支持 Zotero 10.x。
 3. 保持 Zotero 运行，从工具菜单中的 **Codeg Academic → Copy pairing token** 复制配对令牌。
 4. 打开 Codeg「学术」设置，粘贴令牌，保存并连接。默认工作区后端本机端口为 `23119`，研究智能体默认为 Codex；可以选择已有且启用的其他智能体。分析任务会沿用该智能体已保存的模型、权限模式和配置。

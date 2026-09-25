@@ -1,6 +1,6 @@
 {
   "name": "codeg-zotero-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Zotero 10 plugin for Codeg Academic",
   "scripts": {

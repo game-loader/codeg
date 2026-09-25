@@ -1,12 +1,13 @@
 {
   "manifest_version": 2,
   "name": "Codeg Academic Bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Authenticated local access to your Zotero library for Codeg Academic.",
   "author": "Codeg contributors",
   "applications": {
     "zotero": {
       "id": "academic-bridge@codeg.dev",
+      "update_url": "https://raw.githubusercontent.com/game-loader/codeg/feat/academic-zotero/zotero-plugin/updates.json",
       "strict_min_version": "10.0",
       "strict_max_version": "10.*"
     }

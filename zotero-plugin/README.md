@@ -18,8 +18,13 @@ npm run build
 ```
 
 In Zotero, open **Tools → Plugins**, select the gear menu, then **Install Plugin
-From File…** and select `dist/codeg-academic-bridge-0.1.0.xpi`. Restart Zotero if
+From File…** and select `dist/codeg-academic-bridge-0.1.1.xpi`. Restart Zotero if
 prompted.
+
+Zotero rejects a plugin whose manifest lacks `applications.zotero.update_url`.
+It points to [`updates.json`](updates.json) on this fork's `feat/academic-zotero`
+branch, which lists no updates: install new versions manually from the fork's
+preview releases.
 
 The plugin uses Zotero's existing loopback HTTP server (default port **23119**).
 Keep Zotero running. Its `httpServer.enabled` preference must be enabled;
