@@ -1,5 +1,6 @@
 //! Shared academic preparation: Zotero owns PDFs; Codeg owns derived research workspaces.
 mod bridge;
+pub mod mcp;
 mod sources;
 pub mod store;
 #[cfg(test)]
@@ -40,6 +41,7 @@ pub struct AcademicRuntime {
     emitter: EventEmitter,
     data_dir: PathBuf,
     operations: Mutex<()>,
+    imports: Mutex<()>,
     jobs: Mutex<HashMap<String, Job>>,
     _ownership: std::fs::File,
 }
@@ -72,6 +74,7 @@ pub async fn initialize(
             emitter,
             data_dir,
             operations: Mutex::new(()),
+            imports: Mutex::new(()),
             jobs: Mutex::new(HashMap::new()),
             _ownership: ownership,
         }))
@@ -125,12 +128,14 @@ impl AcademicRuntime {
         agent_type: String,
         bridge_port: u16,
         token: Option<String>,
+        mcp_enabled: Option<bool>,
     ) -> Result<AcademicSettings, String> {
         parse_agent(&agent_type)?;
         if bridge_port == 0 {
             return Err("Zotero bridge port must be between 1 and 65535".into());
         }
         let _guard = self.operations.lock().await;
+        let mcp_enabled = mcp_enabled.unwrap_or(self.settings().await?.mcp_enabled);
         if let Some(token) = token {
             bridge::set_token(&token)?;
         }
@@ -138,6 +143,7 @@ impl AcademicRuntime {
             agent_type,
             bridge_port,
             paired: false,
+            mcp_enabled,
         };
         app_metadata_service::upsert_value(
             &self.db.conn,
@@ -159,6 +165,7 @@ impl AcademicRuntime {
         identifier: String,
         collection_key: String,
     ) -> Result<AcademicItem, String> {
+        let _import = self.imports.lock().await;
         let identifier = identifier.trim();
         let doi = identifier
             .strip_prefix("https://doi.org/")
@@ -175,7 +182,13 @@ impl AcademicRuntime {
         if !library.collections.iter().any(|c| c.key == collection_key) {
             return Err("Select an existing Zotero collection".into());
         }
-        bridge.import(identifier, &collection_key).await
+        let item = bridge.import(identifier, &collection_key).await?;
+        emit_event(
+            &self.emitter,
+            "academic://changed",
+            serde_json::json!({"library_changed": true}),
+        );
+        Ok(item)
     }
     pub async fn select(
         self: &Arc<Self>,

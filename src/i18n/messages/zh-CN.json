@@ -6531,6 +6531,8 @@
     }
   },
   "Academic": {
+    "mcpTools": "允许 Agent 使用 Zotero 工具",
+    "mcpToolsHint": "允许 Agent 通过已配对的桥接读取文献库元数据并导入论文，默认关闭。开启后请新建或重新连接 Agent 会话。关闭后会阻止后续调用；已开始的导入仍可能完成。",
     "title": "学术",
     "library": "Zotero 论文库",
     "search": "搜索论文",

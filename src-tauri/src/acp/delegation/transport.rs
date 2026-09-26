@@ -187,6 +187,20 @@ pub struct BrokerAskRequest {
     pub questions: Vec<QuestionSpec>,
 }
 
+/// Zotero operations use the authenticated per-launch broker channel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerAcademicRequest {
+    pub token: String,
+    pub request: crate::academic::mcp::AcademicToolRequest,
+}
+
+pub async fn client_academic_round_trip(
+    socket_path: &str,
+    req: &BrokerAcademicRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::Academic(req.clone())).await
+}
+
 /// Resolve a session the user referenced (`codeg://session/<id>`) into its
 /// metadata + stats, optionally with its recent messages. Backs the
 /// `get_session_info` MCP tool. Authenticated by the same per-launch `token`; the
@@ -346,6 +360,7 @@ pub enum BrokerMessage {
     CommitFeedback(BrokerCommitFeedbackRequest),
     Ask(BrokerAskRequest),
     SessionInfo(BrokerSessionRequest),
+    Academic(BrokerAcademicRequest),
     TaskProgress(BrokerTaskProgressRequest),
     TaskComplete(BrokerTaskCompleteRequest),
     CreateAutomation(BrokerCreateAutomationRequest),

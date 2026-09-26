@@ -6,6 +6,7 @@ export interface AcademicSettings {
   agent_type: AgentType
   bridge_port: number
   paired: boolean
+  mcp_enabled?: boolean
 }
 
 export interface AcademicCollection {
@@ -130,6 +131,7 @@ export const academicSettingsSet = (settings: {
   agentType: AgentType
   bridgePort: number
   token?: string
+  mcpEnabled?: boolean
 }) => invokeAcademic<AcademicSettings>("academic_settings_set", settings)
 export const academicLibrary = () =>
   invokeAcademic<AcademicLibrary>("academic_library")

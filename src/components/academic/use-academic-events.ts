@@ -45,10 +45,16 @@ export function useAcademicEvents() {
         void useAcademicStore.getState().refreshLibrary()
       })
       void transport
-        .subscribe<{ paper_id: string }>("academic://changed", (event) => {
-          if (isCurrent())
-            void useAcademicStore.getState().refreshPaper(event.paper_id)
-        })
+        .subscribe<{ paper_id?: string; library_changed?: boolean }>(
+          "academic://changed",
+          (event) => {
+            if (!isCurrent()) return
+            if (event.library_changed)
+              void useAcademicStore.getState().refreshLibrary()
+            else if (event.paper_id)
+              void useAcademicStore.getState().refreshPaper(event.paper_id)
+          }
+        )
         .then((stop) => {
           if (!isCurrent()) stop()
           else {

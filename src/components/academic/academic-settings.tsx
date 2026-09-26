@@ -18,6 +18,7 @@ export function AcademicSettings({ settings }: { settings: Settings }) {
   const { agents } = useAcpAgents()
   const [agentType, setAgentType] = useState(settings.agent_type)
   const [port, setPort] = useState(String(settings.bridge_port))
+  const [mcpEnabled, setMcpEnabled] = useState(settings.mcp_enabled ?? false)
   const [token, setToken] = useState("")
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -52,6 +53,7 @@ export function AcademicSettings({ settings }: { settings: Settings }) {
           const updated = await academicSettingsSet({
             agentType,
             bridgePort,
+            mcpEnabled,
             ...(token.trim() ? { token: token.trim() } : {}),
           })
           if (!isCurrent()) return
@@ -109,6 +111,23 @@ export function AcademicSettings({ settings }: { settings: Settings }) {
           placeholder={settings.paired ? t("alreadyPaired") : t("pasteToken")}
           required={!settings.paired}
         />
+      </label>
+      <label className="flex items-start gap-2 text-xs">
+        <input
+          type="checkbox"
+          checked={mcpEnabled}
+          onChange={(event) => setMcpEnabled(event.target.checked)}
+          aria-describedby="academic-mcp-hint"
+        />
+        <span>
+          <span>{t("mcpTools")}</span>
+          <span
+            id="academic-mcp-hint"
+            className="mt-1 block text-muted-foreground"
+          >
+            {t("mcpToolsHint")}
+          </span>
+        </span>
       </label>
       {error && (
         <p role="alert" className="text-xs text-destructive">

@@ -125,7 +125,7 @@ async fn academic_server_runtime_supports_settings_association_recovery_and_even
     assert_eq!(response.status_code(), 200);
     assert_eq!(
         response.json::<Value>(),
-        json!({"agent_type":"codex", "bridge_port":23119, "paired":false})
+        json!({"agent_type":"codex", "bridge_port":23119, "paired":false, "mcp_enabled":false})
     );
 
     // Invalid input reaches the shared validator and never persists the token.
@@ -305,4 +305,85 @@ async fn academic_server_runtime_supports_settings_association_recovery_and_even
     assert_eq!(response.status_code(), 200);
     assert_eq!(response.json::<Value>()["paired"], true);
     assert!(!response.text().contains(pairing_token));
+    // Fake plugin on a random loopback port; never accesses real Zotero.
+    use academic::mcp::{execute, parse_tool};
+    use axum::{routing::post, Json, Router};
+    let item = json!({"key":"PAPER001","title":"Imported paper","doi":"10.1234/test","collections":["COLLECT1"],"version":1});
+    let library = json!({"library_id":1,"instance_id":"mock-zotero","collections":[{"key":"COLLECT1","name":"Research","parent_key":null}],"items":[item.clone()]});
+    let plugin = Router::new()
+        .route(
+            "/codeg/v1/health",
+            post(|| async { Json(json!({"version":1,"instance_id":"mock-zotero"})) }),
+        )
+        .route(
+            "/codeg/v1/library",
+            post(move || {
+                let library = library.clone();
+                async move { Json(library) }
+            }),
+        )
+        .route(
+            "/codeg/v1/import",
+            post(
+                move |headers: axum::http::HeaderMap, Json(body): Json<Value>| {
+                    let item = item.clone();
+                    async move {
+                        assert_eq!(
+                            headers["authorization"],
+                            "Bearer academic-test-only-pairing-token"
+                        );
+                        assert_eq!(
+                            body,
+                            json!({"identifier":"10.1234/test","collection_key":"COLLECT1"})
+                        );
+                        Json(item)
+                    }
+                },
+            ),
+        );
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = tcp.local_addr().unwrap().port();
+    let plugin_task = tokio::spawn(async move {
+        axum::serve(tcp, plugin).await.unwrap();
+    });
+    let runtime = academic::runtime().unwrap();
+    let import = || {
+        parse_tool(
+            "zotero_import_paper",
+            json!({"identifier":"10.1234/test","collection_key":"COLLECT1"}),
+        )
+        .unwrap()
+    };
+    assert!(!academic::mcp::enabled().await);
+    assert_eq!(execute(import()).await["ok"], false);
+    let response = server
+        .post("/api/academic_settings_set")
+        .add_header("authorization", AUTH)
+        .json(&json!({"agentType":"codex","bridgePort":port,"mcpEnabled":true}))
+        .await;
+    assert_eq!(response.status_code(), 200);
+    assert_eq!(response.json::<Value>()["mcp_enabled"], true);
+    assert!(academic::mcp::enabled().await);
+    runtime
+        .set_settings("codex".into(), port, None, None)
+        .await
+        .unwrap();
+    assert!(runtime.settings().await.unwrap().mcp_enabled);
+    let listed = execute(parse_tool("zotero_list_collections", json!({})).unwrap()).await;
+    assert_eq!(listed["collections"][0]["key"], "COLLECT1");
+    let imported = execute(import()).await;
+    assert_eq!(imported["ok"], true, "{imported}");
+    assert_eq!(imported["item"]["key"], "PAPER001");
+    assert!(!imported.to_string().contains(pairing_token));
+    assert_eq!(events.try_recv().unwrap().channel, "academic://changed");
+    let found =
+        execute(parse_tool("zotero_search_items", json!({"query":"10.1234/test"})).unwrap()).await;
+    assert_eq!(found["total"], 1);
+    runtime
+        .set_settings("codex".into(), port, None, Some(false))
+        .await
+        .unwrap();
+    assert!(!academic::mcp::enabled().await);
+    assert_eq!(execute(import()).await["ok"], false);
+    plugin_task.abort();
 }

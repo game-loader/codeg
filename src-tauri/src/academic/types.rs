@@ -6,6 +6,8 @@ pub struct AcademicSettings {
     pub bridge_port: u16,
     #[serde(default)]
     pub paired: bool,
+    #[serde(default)]
+    pub mcp_enabled: bool,
 }
 impl Default for AcademicSettings {
     fn default() -> Self {
@@ -13,6 +15,7 @@ impl Default for AcademicSettings {
             agent_type: "codex".into(),
             bridge_port: 23119,
             paired: false,
+            mcp_enabled: false,
         }
     }
 }

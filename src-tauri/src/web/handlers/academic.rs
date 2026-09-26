@@ -13,6 +13,7 @@ pub struct SettingsParams {
     pub agent_type: String,
     pub bridge_port: u16,
     pub token: Option<String>,
+    pub mcp_enabled: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -74,10 +75,15 @@ pub async fn academic_settings_get() -> Result<Json<AcademicSettings>, AppComman
 pub async fn academic_settings_set(
     Json(params): Json<SettingsParams>,
 ) -> Result<Json<AcademicSettings>, AppCommandError> {
-    academic::academic_settings_set(params.agent_type, params.bridge_port, params.token)
-        .await
-        .map(Json)
-        .map_err(AppCommandError::invalid_input)
+    academic::academic_settings_set(
+        params.agent_type,
+        params.bridge_port,
+        params.token,
+        params.mcp_enabled,
+    )
+    .await
+    .map(Json)
+    .map_err(AppCommandError::invalid_input)
 }
 
 pub async fn academic_library() -> Result<Json<AcademicLibrary>, AppCommandError> {

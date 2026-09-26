@@ -11,9 +11,10 @@ pub async fn academic_settings_set(
     agent_type: String,
     bridge_port: u16,
     token: Option<String>,
+    mcp_enabled: Option<bool>,
 ) -> Result<AcademicSettings, String> {
     runtime()?
-        .set_settings(agent_type, bridge_port, token)
+        .set_settings(agent_type, bridge_port, token, mcp_enabled)
         .await
 }
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]

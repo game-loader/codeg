@@ -181,6 +181,16 @@ pub struct CompanionFeatures {
     /// tab can picture, and this is not one of them. Never on with `browser`
     /// off; the parent will not emit it, and `allows_tool` requires both.
     pub browser_eval: bool,
+    /// Paired Zotero library queries and imports, explicitly enabled in Academic settings.
+    pub academic: bool,
+}
+
+fn render_academic_result(outcome: &Value) -> Value {
+    json!({
+        "content": [{"type": "text", "text": outcome.to_string()}],
+        "isError": outcome.get("ok").and_then(Value::as_bool) != Some(true),
+        "structuredContent": outcome,
+    })
 }
 
 impl CompanionFeatures {
@@ -202,6 +212,7 @@ impl CompanionFeatures {
                 taskboard: false,
                 browser: false,
                 browser_eval: false,
+                academic: false,
             };
         };
         let mut f = Self {
@@ -214,6 +225,7 @@ impl CompanionFeatures {
             taskboard: false,
             browser: false,
             browser_eval: false,
+            academic: false,
         };
         for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             match tok {
@@ -221,6 +233,7 @@ impl CompanionFeatures {
                 "feedback" => f.feedback = true,
                 "ask" => f.ask = true,
                 "sessions" => f.sessions = true,
+                "academic" => f.academic = true,
                 "tasks" => f.tasks = true,
                 "automations" => f.automations = true,
                 "taskboard" => f.taskboard = true,
@@ -238,6 +251,9 @@ impl CompanionFeatures {
             "check_user_feedback" => self.feedback,
             "ask_user_question" => self.ask,
             "get_session_info" => self.sessions,
+            "zotero_list_collections" | "zotero_search_items" | "zotero_import_paper" => {
+                self.academic
+            }
             "task_progress" | "task_complete" => self.tasks,
             "create_automation" => self.automations,
             "create_work_task" => self.taskboard,
@@ -696,6 +712,20 @@ async fn build_tools_call_spawn(
             // pending question down — no broker-side cancel to dispatch.
             let round_trip = Box::pin(async move { client_ask_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_ask_result).await
+        }
+        "zotero_list_collections" | "zotero_search_items" | "zotero_import_paper" => {
+            let request = match crate::academic::mcp::parse_tool(&name, arguments) {
+                Ok(request) => request,
+                Err(message) => return LineAction::Respond(err(id, -32602, &message)),
+            };
+            let req = super::transport::BrokerAcademicRequest {
+                token: ctx.token.clone(),
+                request,
+            };
+            let round_trip = Box::pin(async move {
+                super::transport::client_academic_round_trip(&socket, &req).await
+            });
+            register_and_spawn(inflight, id, None, round_trip, render_academic_result).await
         }
         "get_session_info" => {
             // `session_id` is the codeg conversation id the agent read out of a
@@ -2587,6 +2617,7 @@ mod tests {
             taskboard: false,
             browser: false,
             browser_eval: false,
+            academic: false,
         })
     }
 
@@ -3179,7 +3210,8 @@ mod tests {
         automations: false,
         taskboard: false,
         browser: false,
-    browser_eval: false,
+        browser_eval: false,
+        academic: false,
     };
     const BOTH: CompanionFeatures = CompanionFeatures {
         delegation: true,
@@ -3190,7 +3222,8 @@ mod tests {
         automations: false,
         taskboard: false,
         browser: false,
-    browser_eval: false,
+        browser_eval: false,
+        academic: false,
     };
     const ASK_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -3201,7 +3234,8 @@ mod tests {
         automations: false,
         taskboard: false,
         browser: false,
-    browser_eval: false,
+        browser_eval: false,
+        academic: false,
     };
     const SESSIONS_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -3212,7 +3246,8 @@ mod tests {
         automations: false,
         taskboard: false,
         browser: false,
-    browser_eval: false,
+        browser_eval: false,
+        academic: false,
     };
 
     fn list_tool_names(action: LineAction) -> Vec<String> {
@@ -3460,6 +3495,57 @@ mod tests {
         assert!(text.contains("dismissed"));
     }
 
+    #[tokio::test]
+    async fn zotero_tools_are_opt_in_and_validate_before_spawning() {
+        let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let enabled = CompanionFeatures::parse(Some("academic"));
+        assert_eq!(
+            list_tool_names(dispatch_with_features(enabled, list).await),
+            vec![
+                "zotero_list_collections",
+                "zotero_search_items",
+                "zotero_import_paper"
+            ]
+        );
+        assert!(!CompanionFeatures::parse(None).academic);
+        for (name, args) in [
+            ("zotero_list_collections", json!({})),
+            ("zotero_search_items", json!({"query":"attention"})),
+            (
+                "zotero_import_paper",
+                json!({"identifier":"1706.03762","collection_key":"ABCDEFGH"}),
+            ),
+        ] {
+            let line = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":args}}).to_string();
+            assert!(unwrap_respond(dispatch_for_test(&line).await)
+                .error
+                .is_some());
+            assert!(matches!(
+                dispatch_with_features(enabled, &line).await,
+                LineAction::Spawn(_)
+            ));
+        }
+        let line = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"zotero_import_paper","arguments":{}}}).to_string();
+        assert_eq!(
+            unwrap_respond(dispatch_with_features(enabled, &line).await)
+                .error
+                .unwrap()
+                .code,
+            -32602
+        );
+    }
+
+    #[test]
+    fn zotero_rendering_marks_runtime_failures_as_tool_errors() {
+        for ok in [true, false] {
+            let outcome = json!({"ok":ok});
+            let result = render_academic_result(&outcome);
+            assert_eq!(result["isError"], !ok);
+            assert_eq!(result["structuredContent"], outcome);
+            assert_eq!(result["content"][0]["text"], outcome.to_string());
+        }
+    }
+
     // -- get_session_info feature gating + parsing + rendering -------------
 
     #[tokio::test]
@@ -3552,7 +3638,8 @@ mod tests {
         automations: true,
         taskboard: false,
         browser: false,
-    browser_eval: false,
+        browser_eval: false,
+        academic: false,
     };
     const TASKBOARD_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -3563,7 +3650,8 @@ mod tests {
         automations: false,
         taskboard: true,
         browser: false,
-    browser_eval: false,
+        browser_eval: false,
+        academic: false,
     };
 
     /// The two authoring groups gate independently: enabling one must not
@@ -4087,12 +4175,14 @@ mod tests {
         taskboard: false,
         browser: true,
         browser_eval: false,
+        academic: false,
     };
 
     /// The browser group with `browser_eval` on top, which is the only way
     /// that tool is ever advertised.
     const BROWSER_WITH_EVAL: CompanionFeatures = CompanionFeatures {
         browser_eval: true,
+        academic: false,
         ..BROWSER_ONLY
     };
 
@@ -4148,6 +4238,7 @@ mod tests {
         const EVAL_WITHOUT_GROUP: CompanionFeatures = CompanionFeatures {
             browser: false,
             browser_eval: true,
+            academic: false,
             ..BROWSER_ONLY
         };
         let list = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;

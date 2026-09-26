@@ -541,6 +541,9 @@ impl DelegationListener {
                 write_frame(conn, &resp).await?;
                 return Ok(());
             }
+            BrokerMessage::Academic(req) => BrokerResponse {
+                outcome: self.process_academic(req).await,
+            },
             BrokerMessage::SessionInfo(req) => {
                 // Read-only resolution (DB + a bounded transcript parse). No
                 // peer-close race needed: unlike Status/Ask this never blocks on
@@ -811,6 +814,16 @@ impl DelegationListener {
         self.broker
             .cancel_by_external_handle(&cancel.external_handle, reason)
             .await;
+    }
+
+    async fn process_academic(
+        &self,
+        req: super::transport::BrokerAcademicRequest,
+    ) -> serde_json::Value {
+        if self.tokens.lookup(&req.token).await.is_none() {
+            return crate::academic::mcp::failure("Unauthorized Zotero tool request");
+        }
+        crate::academic::mcp::execute(req.request).await
     }
 
     /// Validate the token and resolve the `get_session_info` target. An invalid
@@ -1738,6 +1751,31 @@ mod tests {
             })
             .await;
         broker
+    }
+
+    #[tokio::test]
+    async fn zotero_rejects_invalid_launch_token_before_runtime_access() {
+        let listener = make_listener(
+            make_broker(Arc::new(MockSpawner::new())).await,
+            Arc::new(TokenRegistry::default()),
+            Some(1),
+        );
+        let (mut client, mut server) = duplex(16 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let request =
+            BrokerMessage::Academic(crate::acp::delegation::transport::BrokerAcademicRequest {
+                token: "invalid".into(),
+                request: crate::academic::mcp::parse_tool("zotero_list_collections", json!({}))
+                    .unwrap(),
+            });
+        write_frame(&mut client, &request).await.unwrap();
+        let response: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+        let outcome = response.outcome;
+        assert_eq!(outcome["ok"], false);
+        assert_eq!(outcome["error"], "Unauthorized Zotero tool request");
     }
 
     fn make_listener(

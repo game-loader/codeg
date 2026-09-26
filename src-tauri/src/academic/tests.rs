@@ -289,6 +289,7 @@ async fn cancelling_waiting_selection_persists_without_a_live_worker() {
         emitter: crate::web::event_bridge::EventEmitter::Noop,
         data_dir: dir.path().to_path_buf(),
         operations: tokio::sync::Mutex::new(()),
+        imports: tokio::sync::Mutex::new(()),
         jobs: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         _ownership: std::fs::File::create(dir.path().join("lock")).unwrap(),
     };
@@ -315,6 +316,7 @@ async fn immediate_choice_waits_for_terminal_worker_cleanup_then_validates_input
         emitter: crate::web::event_bridge::EventEmitter::Noop,
         data_dir: dir.path().to_path_buf(),
         operations: tokio::sync::Mutex::new(()),
+        imports: tokio::sync::Mutex::new(()),
         jobs: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         _ownership: std::fs::File::create(dir.path().join("lock")).unwrap(),
     });
@@ -352,6 +354,7 @@ async fn stale_finalizer_does_not_remove_a_newer_worker() {
         emitter: crate::web::event_bridge::EventEmitter::Noop,
         data_dir: dir.path().to_path_buf(),
         operations: tokio::sync::Mutex::new(()),
+        imports: tokio::sync::Mutex::new(()),
         jobs: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         _ownership: std::fs::File::create(dir.path().join("lock")).unwrap(),
     };

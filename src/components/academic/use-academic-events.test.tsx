@@ -5,14 +5,19 @@ import { useAcademicStore } from "@/stores/academic-store"
 import type { AcademicPaper } from "@/lib/academic"
 
 const backend = vi.hoisted(() => {
-  const handlers = new Set<(event: { paper_id: string }) => void>()
+  const handlers = new Set<
+    (event: { paper_id?: string; library_changed?: boolean }) => void
+  >()
   const reconnects = new Set<() => void>()
   const transport = {
     call: vi.fn(),
     subscribe: vi.fn(
       async (
         _channel: string,
-        handler: (event: { paper_id: string }) => void
+        handler: (event: {
+          paper_id?: string
+          library_changed?: boolean
+        }) => void
       ) => {
         handlers.add(handler)
         return () => {
@@ -118,4 +123,14 @@ it("cleans up a delayed subscription after its last consumer unmounts", async ()
   })
   expect(stop).toHaveBeenCalledOnce()
   expect(useAcademicStore.getState().selectedPaper?.status).toBe("cloning")
+})
+
+it("refreshes the library after an agent imports a paper", async () => {
+  const hook = renderHook(useAcademicEvents)
+  await waitFor(() => expect(backend.handlers.size).toBe(1))
+  await act(async () => {
+    for (const handler of backend.handlers) handler({ library_changed: true })
+  })
+  expect(useAcademicStore.getState().library?.instance_id).toBe("remote")
+  hook.unmount()
 })

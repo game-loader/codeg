@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, expect, it, vi } from "vitest"
 import enMessages from "@/i18n/messages/en.json"
+import { AcademicSettings } from "./academic-settings"
 import { AcademicPage } from "./academic-page"
 import { AcademicSidebar } from "./academic-sidebar"
 import { AcademicContextBar } from "./academic-context-bar"
@@ -130,4 +131,27 @@ it("does not restore settings from an unmounted pairing form", async () => {
   })
   expect(useAcademicStore.getState().settings).toBeNull()
   expect(useAcademicStore.getState().library).toBeNull()
+})
+
+it("keeps Zotero MCP off by default and saves explicit opt-in", async () => {
+  transport.call.mockClear()
+  render(
+    <NextIntlClientProvider locale="en" messages={enMessages}>
+      <AcademicSettings
+        settings={{ agent_type: "codex", bridge_port: 23119, paired: true }}
+      />
+    </NextIntlClientProvider>
+  )
+  const toggle = screen.getByRole("checkbox")
+  expect(toggle).not.toBeChecked()
+  fireEvent.click(toggle)
+  fireEvent.click(
+    screen.getByRole("button", { name: enMessages.Academic.saveConnect })
+  )
+  expect(transport.call).toHaveBeenCalledWith("academic_settings_set", {
+    agentType: "codex",
+    bridgePort: 23119,
+    mcpEnabled: true,
+  })
+  await act(async () => {})
 })

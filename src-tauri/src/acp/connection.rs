@@ -5137,6 +5137,8 @@ struct CompanionFeatureFlags {
     /// flag so that turning it on or off does not disturb the rest of the
     /// group, and so that the group being on never implies it.
     browser_eval: bool,
+    /// Opt-in paired Zotero MCP tools; enforced again at execution time.
+    academic: bool,
 }
 
 /// The `--features` value for a companion launch, or `None` when no group is
@@ -5175,6 +5177,9 @@ fn companion_features_arg(flags: CompanionFeatureFlags) -> Option<String> {
     // config that reads as if it granted something.
     if flags.browser && flags.browser_eval {
         features.push("browser_eval");
+    }
+    if flags.academic {
+        features.push("academic");
     }
     if features.is_empty() {
         return None;
@@ -5269,6 +5274,7 @@ where
         feedback: feedback_enabled,
         ask: injection.ask.is_enabled().await,
         sessions: injection.sessions.is_enabled().await,
+        academic: crate::academic::mcp::enabled().await,
         tasks: tasks_enabled,
         automations: authoring.automations_enabled,
         taskboard: authoring.work_tasks_enabled,
@@ -26667,6 +26673,7 @@ mod tests {
         // The browser group too — a user who only shares browser tabs still
         // gets a companion.
         assert_eq!(only(|f| f.browser = true), Some("browser".to_string()));
+        assert_eq!(only(|f| f.academic = true), Some("academic".to_string()));
         // All on → comma-joined, in the order the companion parses.
         assert_eq!(
             companion_features_arg(CompanionFeatureFlags {
@@ -26679,6 +26686,7 @@ mod tests {
                 taskboard: true,
                 browser: true,
                 browser_eval: true,
+                academic: false,
             }),
             Some(
                 "delegation,feedback,ask,sessions,tasks,automations,taskboard,browser,browser_eval"

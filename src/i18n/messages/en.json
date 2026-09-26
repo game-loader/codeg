@@ -6531,6 +6531,8 @@
     }
   },
   "Academic": {
+    "mcpTools": "Allow agents to use Zotero tools",
+    "mcpToolsHint": "Grants agents access to library metadata and paper imports through the paired bridge. Off by default. After enabling, start a new agent session or reconnect. Disabling blocks future calls; an import already in progress may still finish.",
     "title": "Academic",
     "library": "Zotero library",
     "search": "Search papers",
