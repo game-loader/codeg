@@ -1838,6 +1838,22 @@
     }
   },
   "Folder": {
+    "pdfPreview": {
+      "title": "PDF preview",
+      "previousPage": "Previous page",
+      "nextPage": "Next page",
+      "pageNumber": "Page number",
+      "page": "Page {page}",
+      "zoomOut": "Zoom out",
+      "zoomIn": "Zoom in",
+      "fitWidth": "Fit width",
+      "download": "Download PDF",
+      "downloadFailed": "Failed to download PDF",
+      "loading": "Loading PDF…",
+      "loadFailed": "Unable to preview this PDF",
+      "passwordRequired": "This PDF is password-protected. Download it to open it with a PDF reader.",
+      "retry": "Retry"
+    },
     "workspaceStatus": {
       "degradedTitle": "Live updates unavailable",
       "degradedHint": "Watcher failed to start (e.g. permission denied). Refresh manually to see changes.",

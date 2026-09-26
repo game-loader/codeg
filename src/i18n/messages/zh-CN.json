@@ -1838,6 +1838,22 @@
     }
   },
   "Folder": {
+    "pdfPreview": {
+      "title": "PDF 预览",
+      "previousPage": "上一页",
+      "nextPage": "下一页",
+      "pageNumber": "页码",
+      "page": "第 {page} 页",
+      "zoomOut": "缩小",
+      "zoomIn": "放大",
+      "fitWidth": "适合宽度",
+      "download": "下载 PDF",
+      "downloadFailed": "下载 PDF 失败",
+      "loading": "正在加载 PDF…",
+      "loadFailed": "无法预览此 PDF",
+      "passwordRequired": "此 PDF 受密码保护，请下载后使用 PDF 阅读器打开。",
+      "retry": "重试"
+    },
     "workspaceStatus": {
       "degradedTitle": "实时更新不可用",
       "degradedHint": "监听器启动失败（如目录无读取权限）。请手动刷新以获取最新变更。",

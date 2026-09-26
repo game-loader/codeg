@@ -23,6 +23,7 @@ import {
   expandHomePath,
   isHomeRelativePath,
   normalizeAbsPath,
+  splitAbsPath,
 } from "@/lib/file-open-target"
 import {
   toAbsoluteFilePath,
@@ -36,7 +37,7 @@ export interface FileReferencePaths {
   /**
    * Absolute filesystem path (slash-normalized), or a `~/`-rooted path — the
    * home directory only resolves through the backend, so the tilde form is
-   * kept here and expanded at reveal time.
+   * kept here and expanded when revealing or downloading.
    */
   absolute: string
   /** Path relative to the active folder; null when the file lives outside it. */
@@ -142,16 +143,31 @@ function FileReferenceActionsMenu({ target }: { target: string }) {
     })
   }
 
-  // Same shape as the file tree's download row: the ticket is issued against
-  // the workspace root, so a file outside the active folder — the case where
-  // there is no relative form — has nothing to download from.
   const handleDownload = () => {
-    const relative = paths?.relative
-    if (!relative || !folderPath) return
-    const name = relative.split("/").pop() || relative
+    if (!paths) return
     void (async () => {
+      let name = paths.absolute.split("/").pop() || paths.absolute
       try {
-        const result = await downloadWorkspaceFile(folderPath, relative, name)
+        let rootPath: string
+        let ioPath: string
+        if (paths.relative && folderPath) {
+          rootPath = folderPath
+          ioPath = paths.relative
+        } else {
+          // Outside the active folder, the backend accepts the containing
+          // directory as the root, just like the file opener's IO contract.
+          const absolute = isHomeRelativePath(paths.absolute)
+            ? await expandHomePath(paths.absolute)
+            : paths.absolute
+          const split = splitAbsPath(absolute)
+          if (!split) {
+            throw new Error("Unable to resolve file path for download")
+          }
+          rootPath = split.rootPath
+          ioPath = split.ioPath
+        }
+        name = ioPath.split("/").pop() || ioPath
+        const result = await downloadWorkspaceFile(rootPath, ioPath, name)
         // Web hands off to the browser's download manager ("started"), which
         // shows its own progress — a toast there would just be noise. Only the
         // remote-desktop save-dialog path has an outcome worth reporting.
@@ -196,7 +212,7 @@ function FileReferenceActionsMenu({ target }: { target: string }) {
           user — mirroring the file tree's own row. A local desktop window can
           just open it, so the row is hidden rather than dead. */}
       {isWorkspaceFileApiAvailable() && (
-        <ContextMenuItem disabled={!paths?.relative} onSelect={handleDownload}>
+        <ContextMenuItem disabled={!paths} onSelect={handleDownload}>
           {t("download")}
         </ContextMenuItem>
       )}

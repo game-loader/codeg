@@ -188,6 +188,11 @@ export function isImageFile(path: string): boolean {
   return IMAGE_EXTENSIONS.has(ext)
 }
 
+/** PDFs are read as bytes and always use the built-in document preview. */
+export function isPdfFile(path: string | null | undefined): boolean {
+  return !!path && /\.pdf$/i.test(path)
+}
+
 // Images git can only diff as binary — the ones a text diff has nothing to say
 // about, so the diff surfaces render them as pictures instead. `.svg` is
 // deliberately excluded: it is text, `git diff` produces a real line diff for

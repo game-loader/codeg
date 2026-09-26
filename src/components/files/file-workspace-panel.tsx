@@ -27,6 +27,7 @@ import {
   type FileWorkspaceTab,
 } from "@/contexts/workspace-context"
 import { BrowserTabView } from "@/components/browser/browser-tab-view"
+import { PdfPreview } from "@/components/files/pdf-preview"
 import { ImagePreview } from "@/components/files/image-preview"
 import { HtmlPreview } from "@/components/files/html-preview"
 import { MarkdownDocumentPreview } from "@/components/files/markdown-document-preview"
@@ -1896,6 +1897,10 @@ export function FileWorkspacePanel() {
         )}
       </div>
     )
+  }
+
+  if (isFileTab && activeFileTab && activeFileTab.language === "pdf") {
+    return <PdfPreview key={activeFileTab.id} tab={activeFileTab} />
   }
 
   // Image preview

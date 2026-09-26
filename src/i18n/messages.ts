@@ -42,7 +42,25 @@ export async function getMessagesForLocale(
   const cached = MESSAGE_CACHE.get(locale)
   if (cached) return cached
 
-  const messages = await loadMessages(locale)
+  const localized = await loadMessages(locale)
+  const folder = localized.Folder
+  const academic = localized.Academic
+  // New features ship in English and Simplified Chinese first (AGENTS.md).
+  // Keep the other locales usable without copying English into their catalogs.
+  const messages = {
+    ...localized,
+    Academic: {
+      mcpTools: enMessages.Academic.mcpTools,
+      mcpToolsHint: enMessages.Academic.mcpToolsHint,
+      ...(typeof academic === "object" ? academic : {}),
+    },
+    Folder: {
+      ...(typeof folder === "object" ? folder : {}),
+      pdfPreview:
+        (typeof folder === "object" && folder.pdfPreview) ||
+        enMessages.Folder.pdfPreview,
+    },
+  }
   MESSAGE_CACHE.set(locale, messages)
   return messages
 }

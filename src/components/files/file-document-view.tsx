@@ -6,6 +6,7 @@ import type { BundledLanguage } from "shiki"
 
 import { CodeBlockContent } from "@/components/ai-elements/code-block"
 import { HtmlPreview } from "@/components/files/html-preview"
+import { PdfPreview } from "@/components/files/pdf-preview"
 import { ImagePreview } from "@/components/files/image-preview"
 import { MarkdownDocumentPreview } from "@/components/files/markdown-document-preview"
 import { OfficePreview } from "@/components/files/office-preview"
@@ -21,6 +22,7 @@ import { isHtmlPreviewable } from "@/lib/language-detect"
  * the surfaces can never disagree about what a tab holds:
  *
  *   language "image"  → ImagePreview      (content is a data: URL)
+ *   language "pdf"    → PdfPreview        (content is a data: URL)
  *   language "office" → OfficePreview     (an officecli watch, no bytes here)
  *   HTML + preview on → HtmlPreview
  *   markdown + preview on → MarkdownDocumentPreview
@@ -120,8 +122,11 @@ export function FileDocumentView({
   // whatever the tab holds. A load failure surfaces as its own message in the
   // document body, which is exactly where the column shows it.
   //
-  // The synthetic "image" / "office" languages are stamped onto the tab by
+  // The synthetic "image" / "pdf" / "office" languages are stamped onto the tab by
   // whoever seeded it — branch on those, exactly as the file column does.
+  if (tab.language === "pdf") {
+    return <PdfPreview key={tab.id} tab={tab} />
+  }
   if (tab.language === "image") {
     return <ImagePreview key={tab.id} tab={tab} />
   }

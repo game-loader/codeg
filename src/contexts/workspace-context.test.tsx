@@ -4662,3 +4662,110 @@ describe("reopening a closed file tab", () => {
     ])
   })
 })
+
+describe("WorkspaceProvider PDF files", () => {
+  function PdfProbe({ path = "/outside/paper.PDF" }: { path?: string }) {
+    const {
+      openFilePreview,
+      reloadOpenFileBackground,
+      activeFileTab,
+      updateFileTabContent,
+    } = useWorkspaceContext()
+    return (
+      <>
+        <button onClick={() => void openFilePreview(path)}>open-pdf</button>
+        <button onClick={() => void reloadOpenFileBackground(path)}>
+          reload-pdf
+        </button>
+        <button
+          onClick={() =>
+            activeFileTab && updateFileTabContent(activeFileTab.id, "edited")
+          }
+        >
+          edit-pdf
+        </button>
+        <output data-testid="pdf-tab">{JSON.stringify(activeFileTab)}</output>
+      </>
+    )
+  }
+
+  it("loads external PDFs as read-only binary tabs and refreshes them without text IO", async () => {
+    vi.mocked(api.readFileBase64)
+      .mockReset()
+      .mockResolvedValueOnce("JVBERi0=")
+      .mockResolvedValueOnce("bmV3")
+    vi.mocked(api.readFileForEdit).mockClear()
+    render(
+      <WorkspaceProvider>
+        <PdfProbe />
+      </WorkspaceProvider>
+    )
+    await act(async () => screen.getByText("open-pdf").click())
+    expect(api.readFileBase64).toHaveBeenCalledWith(
+      "/outside/paper.PDF",
+      50_000_000
+    )
+    const current = () => JSON.parse(screen.getByTestId("pdf-tab").textContent!)
+    expect(current()).toMatchObject({
+      language: "pdf",
+      readonly: true,
+      loading: false,
+      content: "data:application/pdf;base64,JVBERi0=",
+    })
+    await act(async () => screen.getByText("edit-pdf").click())
+    expect(current().content).toBe("data:application/pdf;base64,JVBERi0=")
+    await act(async () => screen.getByText("reload-pdf").click())
+    expect(current()).toMatchObject({
+      language: "pdf",
+      readonly: true,
+      content: "data:application/pdf;base64,bmV3",
+    })
+    expect(api.readFileForEdit).not.toHaveBeenCalled()
+  })
+
+  it("settles PDF read failures as errors rather than leaving a loading tab", async () => {
+    vi.mocked(api.readFileBase64)
+      .mockReset()
+      .mockRejectedValue(new Error("File is too large"))
+    render(
+      <WorkspaceProvider>
+        <PdfProbe />
+      </WorkspaceProvider>
+    )
+    await act(async () => screen.getByText("open-pdf").click())
+    expect(
+      JSON.parse(screen.getByTestId("pdf-tab").textContent!)
+    ).toMatchObject({ language: "pdf", loading: false, saveState: "error" })
+    expect(screen.getByTestId("pdf-tab")).toHaveTextContent("File is too large")
+  })
+  it("refreshes a watched PDF as bytes when the file changes", async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(api.readFileBase64)
+        .mockReset()
+        .mockResolvedValueOnce("b2xk")
+        .mockResolvedValueOnce("bmV3")
+      vi.mocked(api.readFileForEdit).mockClear()
+      render(
+        <WorkspaceProvider>
+          <PdfProbe path="/repo/paper.pdf" />
+        </WorkspaceProvider>
+      )
+      await act(async () => screen.getByText("open-pdf").click())
+      await act(async () => {
+        workspaceStoreMock.emitRoot("/repo", ["paper.pdf"])
+        await vi.advanceTimersByTimeAsync(300)
+      })
+      expect(api.readFileBase64).toHaveBeenCalledTimes(2)
+      expect(api.readFileForEdit).not.toHaveBeenCalled()
+      expect(
+        JSON.parse(screen.getByTestId("pdf-tab").textContent!)
+      ).toMatchObject({
+        content: "data:application/pdf;base64,bmV3",
+        saveState: "idle",
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

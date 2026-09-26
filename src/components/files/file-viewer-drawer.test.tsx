@@ -117,6 +117,9 @@ vi.mock("@/components/ai-elements/code-block", () => ({
     </div>
   ),
 }))
+vi.mock("@/components/files/pdf-preview", () => ({
+  PdfPreview: () => <div data-testid="pdf" />,
+}))
 vi.mock("@/components/files/image-preview", () => ({
   ImagePreview: () => <div data-testid="image" />,
 }))
@@ -224,6 +227,15 @@ describe("FileViewerDrawer", () => {
       "data-language",
       "bash"
     )
+  })
+
+  it("renders PDFs with the built-in preview even when the preview toggle is off", async () => {
+    state.fileTabs = [
+      tab({ language: "pdf", content: "data:application/pdf;base64,JVBERi0=" }),
+    ]
+    await open({ path: ABS_PATH, line: null })
+    expect(screen.getByTestId("pdf")).toBeInTheDocument()
+    expect(screen.queryByTestId("source")).not.toBeInTheDocument()
   })
 
   it("routes image and office tabs to their own renderers", async () => {

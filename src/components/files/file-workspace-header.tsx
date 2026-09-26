@@ -8,6 +8,7 @@ import {
   ExternalLink,
   Eye,
   Frame,
+  ListX,
   RotateCw,
   ShieldCheck,
   ShieldOff,
@@ -65,7 +66,7 @@ export function FileWorkspaceHeader() {
   const tFileTree = useTranslations("Folder.fileTreeTab")
   const { activeFileTab, activeFileTabId, previewFileTabIds } =
     useWorkspaceFileTabs()
-  const { toggleFileTabPreview } = useWorkspaceActions()
+  const { toggleFileTabPreview, closeAllFileTabs } = useWorkspaceActions()
   // Present only while an HTML preview is on screen in this column — its
   // renderer publishes them and takes them away when it unmounts.
   const preview = useHtmlPreviewControls(activeFileTabId)
@@ -261,6 +262,15 @@ export function FileWorkspaceHeader() {
             </DropdownMenuContent>
           </DropdownMenu>
         )}
+        <button
+          type="button"
+          onClick={closeAllFileTabs}
+          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs text-muted-foreground transition-colors hover:bg-primary/8 hover:text-foreground"
+          title={t("closeAll")}
+        >
+          <ListX className="h-3.5 w-3.5" />
+          {t("closeAll")}
+        </button>
       </div>
     </div>
   )

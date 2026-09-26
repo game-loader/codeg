@@ -11,6 +11,7 @@ import ko from "./messages/ko.json"
 import pt from "./messages/pt.json"
 import zhCN from "./messages/zh-CN.json"
 import zhTW from "./messages/zh-TW.json"
+import { getMessagesForLocale } from "./messages"
 
 type MessageNode = string | { [key: string]: MessageNode }
 
@@ -41,12 +42,32 @@ describe("i18n locale key parity vs en.json", () => {
     ["pt", pt],
     ["zh-CN", zhCN],
     ["zh-TW", zhTW],
-  ] as const)("%s has the same key set as en", (_locale, messages) => {
+  ] as const)("%s has the same key set as en", (locale, messages) => {
     const localeKeys = new Set(collectKeys(messages as MessageNode))
-    const missing = [...reference].filter((k) => !localeKeys.has(k))
+    // New PDF and Zotero tools copy ships in en/zh-CN only, per repository policy;
+    // messages.ts provides its English fallback for the remaining locales.
+    const missing = [...reference].filter(
+      (k) =>
+        !localeKeys.has(k) &&
+        !(
+          locale !== "zh-CN" &&
+          (k.startsWith("Folder.pdfPreview.") ||
+            k === "Academic.mcpTools" ||
+            k === "Academic.mcpToolsHint")
+        )
+    )
     const extra = [...localeKeys].filter((k) => !reference.has(k))
     expect({ missing, extra }).toEqual({ missing: [], extra: [] })
   })
+})
+
+it("provides English PDF controls in locales without a PDF translation", async () => {
+  const messages = await getMessagesForLocale("fr")
+  const t = createTranslator({ locale: "fr", messages: messages as typeof en })
+  expect(t("Folder.pdfPreview.nextPage")).toBe("Next page")
+  expect(t("Folder.pdfPreview.page", { page: 2 })).toBe("Page 2")
+  expect(t("Academic.mcpTools")).toBe(en.Academic.mcpTools)
+  expect(t("Academic.mcpToolsHint")).toBe(en.Academic.mcpToolsHint)
 })
 
 const ALL_LOCALES = [

@@ -20,6 +20,7 @@ next-env.d.ts
 
 # Monaco editor local files (copied from node_modules)
 public/vs
+public/pdfjs
 
 # Editor directories and files
 .vscode/*

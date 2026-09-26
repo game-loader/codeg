@@ -3,6 +3,8 @@ import { NextIntlClientProvider } from "next-intl"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import enMessages from "@/i18n/messages/en.json"
+import { WORKSPACE_DOWNLOAD_CANCELLED } from "@/lib/api"
+import { resetHomeDirCacheForTests } from "@/lib/file-open-target"
 
 const mocks = vi.hoisted(() => ({
   isLocalDesktop: vi.fn(() => true),
@@ -13,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   ancestorContextMenu: vi.fn(),
   ancestorPointerDown: vi.fn(),
   folderPath: "/repo" as string | undefined,
+  getHomeDirectory: vi.fn<() => Promise<string>>(),
   isWorkspaceFileApiAvailable: vi.fn(() => true),
   downloadWorkspaceFile:
     vi.fn<
@@ -33,6 +36,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>()
   return {
     ...actual,
+    getHomeDirectory: mocks.getHomeDirectory,
     isWorkspaceFileApiAvailable: mocks.isWorkspaceFileApiAvailable,
     downloadWorkspaceFile: mocks.downloadWorkspaceFile,
   }
@@ -124,7 +128,7 @@ describe("resolveFileReferenceTarget", () => {
 
   it("resolves dot segments the way the opener does before placing the file", () => {
     // `../site/a.md` opens `/site/a.md`: outside the folder, so no relative
-    // form (and no download) even though `/repo/../site/a.md` starts with it.
+    // form even though `/repo/../site/a.md` starts with it.
     expect(resolveFileReferenceTarget("../site/a.md", "/repo")).toEqual({
       absolute: "/site/a.md",
       relative: null,
@@ -184,6 +188,9 @@ describe("FileReferenceActions", () => {
     mocks.ancestorContextMenu.mockClear()
     mocks.ancestorPointerDown.mockClear()
     mocks.folderPath = "/repo"
+    mocks.getHomeDirectory.mockReset()
+    mocks.getHomeDirectory.mockResolvedValue("/Users/me")
+    resetHomeDirCacheForTests()
     mocks.isWorkspaceFileApiAvailable.mockReturnValue(true)
     mocks.downloadWorkspaceFile.mockReset()
     mocks.downloadWorkspaceFile.mockResolvedValue({ status: "started" })
@@ -326,58 +333,181 @@ describe("FileReferenceActions", () => {
     expect(mocks.downloadWorkspaceFile).toHaveBeenCalledTimes(1)
   })
 
-  it("offers no relative path or download for a `../` file outside the folder", () => {
+  it("downloads a `../` file outside the folder without offering a relative copy", async () => {
     renderActions("../site/a.md")
     openMenu()
 
     expect(item("Copy relative path")).toHaveAttribute("data-disabled")
-    expect(item("Download file")).toHaveAttribute("data-disabled")
+    expect(item("Download file")).not.toHaveAttribute("data-disabled")
     expect(item("Copy absolute path")).not.toHaveAttribute("data-disabled")
-  })
-
-  /** The remote-desktop path writes through a save dialog, so where the file
-   * landed is the one outcome the user cannot see for themselves. */
-  it("names the saved path when the download went through a save dialog", async () => {
-    mocks.downloadWorkspaceFile.mockResolvedValue({
-      status: "done",
-      savedPath: "/Users/me/Downloads/app.ts",
-    })
-    renderActions("file:///repo/src/app.ts")
-    openMenu()
 
     fireEvent.click(item("Download file"))
     await waitFor(() => {
-      expect(mocks.toastSuccess).toHaveBeenCalledWith(
-        "Downloaded app.ts",
-        expect.objectContaining({ description: "/Users/me/Downloads/app.ts" })
+      expect(mocks.downloadWorkspaceFile).toHaveBeenCalledWith(
+        "/site",
+        "a.md",
+        "a.md"
       )
     })
   })
 
-  it("toasts when the download is refused", async () => {
-    mocks.downloadWorkspaceFile.mockRejectedValue(new Error("File not found"))
-    renderActions("file:///repo/src/app.ts")
+  it.each([
+    ["file:///elsewhere/a.ts", "/repo", "/elsewhere"],
+    ["/elsewhere/a.ts", "/repo", "/elsewhere"],
+    ["/elsewhere/a.ts", undefined, "/elsewhere"],
+    ["/a.ts", undefined, "/"],
+    ["/C:/elsewhere/a.ts", "C:/repo", "C:/elsewhere"],
+    ["D:\\exports\\a.ts", "C:/repo", "D:/exports"],
+    ["C:/a.ts", undefined, "C:/"],
+  ] as const)(
+    "downloads %s using its containing directory with active folder %s",
+    async (target, folderPath, rootPath) => {
+      mocks.folderPath = folderPath
+      renderActions(target)
+      openMenu()
+
+      expect(item("Copy relative path")).toHaveAttribute("data-disabled")
+      expect(item("Download file")).not.toHaveAttribute("data-disabled")
+      fireEvent.click(item("Download file"))
+      await waitFor(() => {
+        expect(mocks.downloadWorkspaceFile).toHaveBeenCalledWith(
+          rootPath,
+          "a.ts",
+          "a.ts"
+        )
+      })
+      expect(mocks.downloadWorkspaceFile).toHaveBeenCalledTimes(1)
+      expect(mocks.getHomeDirectory).not.toHaveBeenCalled()
+      expect(mocks.toastSuccess).not.toHaveBeenCalled()
+      expect(mocks.toastError).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each(["/repo", undefined])(
+    "expands a home path when downloading with active folder %s",
+    async (folderPath) => {
+      mocks.folderPath = folderPath
+      renderActions("~/notes/../todo.md")
+      openMenu()
+
+      expect(item("Copy relative path")).toHaveAttribute("data-disabled")
+      expect(item("Download file")).not.toHaveAttribute("data-disabled")
+      expect(mocks.getHomeDirectory).not.toHaveBeenCalled()
+      fireEvent.click(item("Download file"))
+      await waitFor(() => {
+        expect(mocks.downloadWorkspaceFile).toHaveBeenCalledWith(
+          "/Users/me",
+          "todo.md",
+          "todo.md"
+        )
+      })
+      expect(mocks.getHomeDirectory).toHaveBeenCalledTimes(1)
+      expect(mocks.toastError).not.toHaveBeenCalled()
+    }
+  )
+
+  it("toasts when the home directory cannot be expanded", async () => {
+    mocks.getHomeDirectory.mockRejectedValue(new Error("Home unavailable"))
+    renderActions("~/notes/todo.md")
     openMenu()
 
     fireEvent.click(item("Download file"))
     await waitFor(() => {
       expect(mocks.toastError).toHaveBeenCalledWith(
-        "Failed to download app.ts",
-        expect.objectContaining({
-          description: expect.stringMatching(/not found/),
-        })
+        "Failed to download todo.md",
+        { description: "Unable to resolve file path for download" }
       )
     })
+    expect(mocks.downloadWorkspaceFile).not.toHaveBeenCalled()
+    expect(mocks.toastSuccess).not.toHaveBeenCalled()
   })
 
-  /** The ticket is issued against the workspace root, so a file outside it has
-   * nothing to download from — same boundary as the relative-path copy. */
-  it("disables the download for a file outside the active folder", () => {
-    renderActions("file:///elsewhere/a.ts")
+  it.each(["/", "C:/"])(
+    "toasts when %s cannot be split into a directory and filename",
+    async (target) => {
+      renderActions(target)
+      openMenu()
+
+      fireEvent.click(item("Download file"))
+      await waitFor(() => {
+        expect(mocks.toastError).toHaveBeenCalledWith(
+          `Failed to download ${target}`,
+          { description: "Unable to resolve file path for download" }
+        )
+      })
+      expect(mocks.downloadWorkspaceFile).not.toHaveBeenCalled()
+      expect(mocks.toastSuccess).not.toHaveBeenCalled()
+    }
+  )
+
+  it("disables download for a relative path without an active folder", () => {
+    mocks.folderPath = undefined
+    renderActions("./src/app.ts")
     openMenu()
 
     expect(item("Download file")).toHaveAttribute("data-disabled")
+    fireEvent.click(item("Download file"))
+    expect(mocks.downloadWorkspaceFile).not.toHaveBeenCalled()
   })
+
+  /** The remote-desktop path writes through a save dialog, so where the file
+   * landed is the one outcome the user cannot see for themselves. */
+  it.each(["file:///repo/src/app.ts", "file:///elsewhere/app.ts"])(
+    "names the saved path when %s went through a save dialog",
+    async (target) => {
+      mocks.downloadWorkspaceFile.mockResolvedValue({
+        status: "done",
+        savedPath: "/Users/me/Downloads/app.ts",
+      })
+      renderActions(target)
+      openMenu()
+
+      fireEvent.click(item("Download file"))
+      await waitFor(() => {
+        expect(mocks.toastSuccess).toHaveBeenCalledWith(
+          "Downloaded app.ts",
+          expect.objectContaining({ description: "/Users/me/Downloads/app.ts" })
+        )
+      })
+    }
+  )
+
+  it.each(["file:///repo/src/app.ts", "file:///elsewhere/app.ts"])(
+    "toasts when downloading %s is refused",
+    async (target) => {
+      mocks.downloadWorkspaceFile.mockRejectedValue(new Error("File not found"))
+      renderActions(target)
+      openMenu()
+
+      fireEvent.click(item("Download file"))
+      await waitFor(() => {
+        expect(mocks.toastError).toHaveBeenCalledWith(
+          "Failed to download app.ts",
+          expect.objectContaining({
+            description: expect.stringMatching(/not found/),
+          })
+        )
+      })
+    }
+  )
+
+  it.each(["file:///repo/src/app.ts", "file:///elsewhere/app.ts"])(
+    "does not toast when the save dialog for %s is cancelled",
+    async (target) => {
+      mocks.downloadWorkspaceFile.mockResolvedValue({
+        status: WORKSPACE_DOWNLOAD_CANCELLED,
+      })
+      renderActions(target)
+      openMenu()
+
+      fireEvent.click(item("Download file"))
+      await waitFor(() => {
+        expect(mocks.downloadWorkspaceFile).toHaveBeenCalledTimes(1)
+      })
+      expect(mocks.toastSuccess).not.toHaveBeenCalled()
+      expect(mocks.toastError).not.toHaveBeenCalled()
+    }
+  )
 
   /** A local desktop window opens the file straight off its own disk; routing
    * that through a download server would be the wrong tool. */

@@ -3,6 +3,7 @@ FROM node:24-alpine AS frontend
 RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY scripts/copy-pdf-assets.mjs ./scripts/copy-pdf-assets.mjs
 RUN pnpm install --frozen-lockfile
 COPY src/ ./src/
 COPY public/ ./public/

@@ -48,6 +48,7 @@ import {
   isHiddenPath,
   isHtmlPreviewable,
   isImageFile,
+  isPdfFile,
   isOfficeOwnerFile,
   isOfficePreviewable,
   languageFromPath,
@@ -57,6 +58,7 @@ import {
   type ImageDiffSides,
   type ImageDiffSource,
 } from "@/lib/image-diff"
+import { PDF_PREVIEW_MAX_BYTES } from "@/lib/pdf-preview"
 import { toErrorMessage } from "@/lib/app-error"
 import {
   HIDDEN_TAB_CONTENT_BUDGET_CHARS,
@@ -1451,16 +1453,21 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       if (inFlightLoadsRef.current.has(tabId)) return
 
       const image = isImageFile(absPath)
+      const pdf = isPdfFile(absPath)
 
       markTabRefreshing(tabId)
       const gen = beginFetchGeneration(tabId)
 
       try {
-        if (image) {
+        if (image || pdf) {
           const ext = absPath.split(".").pop()?.toLowerCase() ?? ""
-          const mime = IMAGE_MIME[ext] ?? "image/png"
+          const mime = pdf
+            ? "application/pdf"
+            : (IMAGE_MIME[ext] ?? "image/png")
           const b64 = await withTimeout(
-            readFileBase64(absPath),
+            pdf
+              ? readFileBase64(absPath, PDF_PREVIEW_MAX_BYTES)
+              : readFileBase64(absPath),
             15_000,
             t("previewRequestTimedOut")
           )
@@ -1756,6 +1763,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         }
         const tabId = buildFileTabId({ kind: "file", path: absPath })
         const image = isImageFile(absPath)
+        const pdf = isPdfFile(absPath)
         const office = !image && isOfficePreviewable(absPath)
         const seed = loadingTab(
           tabId,
@@ -1764,7 +1772,13 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           fileName(absPath),
           absPath,
           absPath,
-          image ? "image" : office ? "office" : languageFromPath(absPath)
+          image
+            ? "image"
+            : pdf
+              ? "pdf"
+              : office
+                ? "office"
+                : languageFromPath(absPath)
         )
 
         const decision = decideLoad(
@@ -1800,11 +1814,15 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
             return
           }
 
-          if (image) {
+          if (image || pdf) {
             const ext = absPath.split(".").pop()?.toLowerCase() ?? ""
-            const mime = IMAGE_MIME[ext] ?? "image/png"
+            const mime = pdf
+              ? "application/pdf"
+              : (IMAGE_MIME[ext] ?? "image/png")
             const b64 = await withTimeout(
-              readFileBase64(absPath),
+              pdf
+                ? readFileBase64(absPath, PDF_PREVIEW_MAX_BYTES)
+                : readFileBase64(absPath),
               15_000,
               t("previewRequestTimedOut")
             )
