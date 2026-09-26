@@ -51,6 +51,7 @@ import {
 import { disposeTauriListener } from "@/lib/tauri-listener"
 import { getActiveRemoteConnectionId } from "@/lib/transport"
 import { randomUUID } from "@/lib/utils"
+import { withUploadedImageReferences } from "@/lib/uploaded-image-reference"
 import type { PromptCapabilitiesInfo, PromptInputBlock } from "@/lib/types"
 import type { Editor } from "@tiptap/core"
 
@@ -1367,13 +1368,14 @@ export function useComposerAttachments({
   // wire encoding is capability-driven (native `image` block vs embedded
   // `resource` blob) so an agent that advertises `image: false` but
   // `embedded_context: true` still receives the bytes it accepts.
-  const imagePromptBlocks = useCallback(
-    (): PromptInputBlock[] =>
-      imageAttachments.map((attachment) =>
-        imageAttachmentToPromptBlock(attachment, promptCapabilities)
-      ),
-    [imageAttachments, promptCapabilities]
-  )
+  const imagePromptBlocks = useCallback((): PromptInputBlock[] => {
+    const blocks = imageAttachments.map((attachment) =>
+      imageAttachmentToPromptBlock(attachment, promptCapabilities)
+    )
+    // Include remote originals in the draft itself so the optimistic turn,
+    // queue, server broadcast and reloaded transcript carry the same links.
+    return showNativePaperclip ? blocks : withUploadedImageReferences(blocks)
+  }, [imageAttachments, promptCapabilities, showNativePaperclip])
 
   return {
     attachments,

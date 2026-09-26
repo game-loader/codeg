@@ -15,6 +15,7 @@ import {
   DEFAULT_FORGE_PAGE_SIZE,
 } from "./forge-list-prefs"
 import { TurnBusyError, isTurnInProgressRejection } from "./turn-busy"
+import { withUploadedImageReferences } from "./uploaded-image-reference"
 import type { FolderThemeColor } from "./theme-presets"
 import type { FollowUpIntent } from "./task-follow-up"
 import type {
@@ -263,7 +264,7 @@ export function stripUploadedImagePayloads(
   shouldStrip: boolean
 ): PromptInputBlock[] {
   if (!shouldStrip) return blocks
-  return blocks.map((block) => {
+  return withUploadedImageReferences(blocks).map((block) => {
     if (
       block.type === "image" &&
       block.data.length > 0 &&
@@ -278,8 +279,6 @@ export function stripUploadedImagePayloads(
       (block.mime_type?.startsWith("image/") ?? false) &&
       block.uri.startsWith("file://")
     ) {
-      // The embedded-blob shape used for agents that reject native image
-      // blocks (e.g. Grok). Same marker contract: empty blob + uploads uri.
       return { ...block, blob: "" }
     }
     return block

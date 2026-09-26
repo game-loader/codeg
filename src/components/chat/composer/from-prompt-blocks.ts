@@ -1,5 +1,6 @@
 import type { PromptInputBlock } from "@/lib/types"
 import { randomUUID } from "@/lib/utils"
+import { UPLOADED_IMAGE_REFERENCE_DESCRIPTION } from "@/lib/uploaded-image-reference"
 
 import type { InputAttachment } from "../message-input-attachments"
 import { parseCodegReferenceUri as parseReferenceUri } from "./reference-uri"
@@ -47,6 +48,18 @@ export function blocksToRestoredDraft(
 ): RestoredDraft {
   const segments: RestoreSegment[] = []
   const attachments: InputAttachment[] = []
+  const imageUris = new Set(
+    blocks.flatMap((block) => {
+      if (block.type === "image" && block.uri) return [block.uri]
+      if (
+        block.type === "resource" &&
+        block.mime_type?.startsWith("image/") &&
+        typeof block.blob === "string"
+      )
+        return [block.uri]
+      return []
+    })
+  )
 
   for (const block of blocks) {
     switch (block.type) {
@@ -57,6 +70,14 @@ export function blocksToRestoredDraft(
         break
       }
       case "resource_link": {
+        // The send boundary paired this path with its image for the agent.
+        // Restore only the thumbnail; its uri recreates the link on send.
+        // A separate badge would survive the user removing the image.
+        if (
+          block.description === UPLOADED_IMAGE_REFERENCE_DESCRIPTION &&
+          imageUris.has(block.uri)
+        )
+          break
         const attrs = parseReferenceUri(block.uri, block.name)
         if (attrs) {
           segments.push({ kind: "reference", attrs })
@@ -79,7 +100,11 @@ export function blocksToRestoredDraft(
         // attachment, matching how it was displayed when composed — not as an
         // inline resource badge. Non-image / text embedded resources keep the
         // badge form.
-        if (block.mime_type?.startsWith("image/") && block.blob) {
+        if (
+          block.mime_type?.startsWith("image/") &&
+          typeof block.blob === "string" &&
+          (block.blob.length > 0 || block.uri.startsWith("file://"))
+        ) {
           // A synthetic `clipboard://` uri (path-less pasted image) is not a
           // readable path, so keep only a real `file://` origin.
           const imageUri = block.uri.startsWith("file://") ? block.uri : null

@@ -2,6 +2,8 @@ import { Editor } from "@tiptap/core"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import type { PromptInputBlock } from "@/lib/types"
+import { stripUploadedImagePayloads } from "@/lib/api"
+import { imageAttachmentToPromptBlock } from "../message-input-attachments"
 
 import { buildComposerExtensions } from "./editor-config"
 import {
@@ -27,6 +29,69 @@ function refSegments(segments: RestoreSegment[]): ReferenceAttrs[] {
 }
 
 describe("blocksToRestoredDraft", () => {
+  it.each([true, false])(
+    "folds remote original references into the thumbnail (native image: %s)",
+    (native) => {
+      const caps = { image: native, embedded_context: true }
+      const prose: PromptInputBlock = {
+        type: "text",
+        text: "Process the image",
+      }
+      const image = imageAttachmentToPromptBlock(
+        {
+          id: "image-1",
+          type: "image",
+          data: "QUJD",
+          mimeType: "image/png",
+          uri: "file:///srv/uploads/product.png",
+          name: "product.png",
+        },
+        caps
+      )
+      const saved = stripUploadedImagePayloads([prose, image], true)
+      const restored = blocksToRestoredDraft(saved, counter())
+      expect(restored.segments).toEqual([
+        { kind: "text", text: "Process the image" },
+      ])
+      expect(restored.attachments).toHaveLength(1)
+      const attachment = restored.attachments[0]
+      expect(attachment).toMatchObject({
+        type: "image",
+        uri: "file:///srv/uploads/product.png",
+        data: "",
+      })
+      if (attachment.type !== "image")
+        throw new Error("Expected a restored image")
+      expect(
+        stripUploadedImagePayloads(
+          [prose, imageAttachmentToPromptBlock(attachment, caps)],
+          true
+        )
+      ).toEqual(saved)
+      // Deleting the thumbnail must leave no independently restored file badge.
+      expect(stripUploadedImagePayloads([prose], true)).toEqual([prose])
+    }
+  )
+
+  it("preserves an explicitly added file reference alongside an image", () => {
+    const uri = "file:///srv/uploads/product.png"
+    const restored = blocksToRestoredDraft(
+      [
+        { type: "image", data: "QUJD", mime_type: "image/png", uri },
+        {
+          type: "resource_link",
+          uri,
+          name: "product.png",
+          mime_type: "image/png",
+          description: null,
+        },
+      ],
+      counter()
+    )
+    expect(restored.attachments).toHaveLength(1)
+    expect(refSegments(restored.segments)).toHaveLength(1)
+  })
+
   it("restores a text block as a text segment", () => {
     const { segments, attachments } = blocksToRestoredDraft(
       [{ type: "text", text: "hello **world**" }],
