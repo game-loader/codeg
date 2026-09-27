@@ -208,9 +208,13 @@ pub async fn open_remote_workspace(
     let label = format!("remote-workspace-{id}");
     if let Some(existing) = app.get_webview_window(&label) {
         let _ = existing.unminimize();
+        existing.show().map_err(|e| {
+            AppCommandError::window("Failed to show remote workspace", e.to_string())
+        })?;
         existing.set_focus().map_err(|e| {
             AppCommandError::window("Failed to focus remote workspace", e.to_string())
         })?;
+        crate::commands::windows::hide_main_window_for_remote(&app);
         return Ok(());
     }
 
@@ -243,5 +247,9 @@ pub async fn open_remote_workspace(
             .register_window_instance_cleanup(&window, window_instance_id);
     }
     crate::commands::windows::post_window_setup(&window);
+    window
+        .set_focus()
+        .map_err(|e| AppCommandError::window("Failed to focus remote workspace", e.to_string()))?;
+    crate::commands::windows::hide_main_window_for_remote(&app);
     Ok(())
 }

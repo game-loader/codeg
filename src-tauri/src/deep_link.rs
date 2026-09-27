@@ -258,7 +258,7 @@ pub fn handle_raw_urls(app: &tauri::AppHandle, urls: &[String]) {
     use tauri::{Emitter, Manager};
 
     if urls.is_empty() {
-        windows::show_main_window(app);
+        windows::show_workspace_window(app);
         return;
     }
 

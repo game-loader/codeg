@@ -17,6 +17,11 @@ use crate::db::service::app_metadata_service;
 use crate::db::AppDatabase;
 use crate::models::FolderDetail;
 
+mod activation;
+
+static LOCAL_WORKSPACE_ACTIVATION: activation::LocalWorkspaceActivation =
+    activation::LocalWorkspaceActivation::new();
+
 /// Base traffic-light position (logical px) at 100 % zoom, tuned for the
 /// standard h-8 (32px) overlay title bar shared by the auxiliary windows
 /// (commit / merge / push / stash / settings / …).
@@ -892,6 +897,9 @@ pub async fn open_import_sessions_window(
 /// diff it applies is empty), and `show` preserves the maximized flag — a
 /// tray-hidden maximized workspace comes back maximized.
 fn show_and_focus_window(app: &AppHandle, label: &str) {
+    if label == "main" {
+        LOCAL_WORKSPACE_ACTIVATION.record_restore();
+    }
     let Some(window) = app.get_webview_window(label) else {
         return;
     };
@@ -2332,14 +2340,76 @@ fn wait_for_macos_fullscreen_space_release(window: &tauri::WebviewWindow) {
     std::thread::sleep(MACOS_FULLSCREEN_EXIT_SETTLE);
 }
 
-/// Bring the hidden / minimized main workspace window back to the
-/// foreground. Used by:
-///   * single-instance plugin (second launch)
-///   * tray icon left-click and "Show Workspace" menu item
-///   * macOS dock-icon reopen
+/// Explicitly return to the local workspace (tray menu and local deep links).
 #[cfg(feature = "tauri-runtime")]
 pub fn show_main_window(app: &AppHandle) {
     show_and_focus_window(app, "main");
+}
+
+/// Activate an existing workspace without reopening a dismissed local window
+/// over a remote workspace. Auxiliary windows are not workspace candidates.
+#[cfg(feature = "tauri-runtime")]
+pub fn show_workspace_window(app: &AppHandle) {
+    let windows = app.webview_windows();
+    let candidates = windows
+        .values()
+        .filter(|window| activation::is_workspace(window.label()))
+        .map(|window| {
+            (
+                window.label(),
+                window.is_visible().unwrap_or(false),
+                window.is_focused().unwrap_or(false),
+                window.is_minimized().unwrap_or(false),
+            )
+        });
+    if let Some(label) = activation::activation_target(candidates) {
+        show_and_focus_window(app, label);
+    }
+}
+
+pub(crate) fn has_remote_workspace(app: &AppHandle) -> bool {
+    app.webview_windows()
+        .keys()
+        .any(|label| activation::is_remote_workspace(label))
+}
+
+/// Systems without a usable tray must not be left with only a hidden `main`
+/// after the last remote closes. Exclude the closing label because the window
+/// may still be registered while its Destroyed callback is running.
+pub(crate) fn restore_main_after_remote_close(app: &AppHandle, closed_label: &str) {
+    if activation::is_remote_workspace(closed_label)
+        && !can_hide_to_tray()
+        && !app
+            .webview_windows()
+            .keys()
+            .any(|label| label != closed_label && activation::is_remote_workspace(label))
+    {
+        show_main_window(app);
+    }
+}
+
+/// Keep the desktop process serving its remote windows, without running the
+/// local window's close preference (which can exit the whole application).
+#[cfg(feature = "tauri-runtime")]
+pub(crate) fn hide_main_window_for_remote(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let local_activation = LOCAL_WORKSPACE_ACTIVATION.snapshot();
+    let app_after_drain = app.clone();
+    with_macos_fullscreen_drained(app, move || {
+        // An explicit local restore during the animation supersedes this hide.
+        if !LOCAL_WORKSPACE_ACTIVATION.unchanged_since(local_activation) {
+            return;
+        }
+        // The remote may have been closed during the fullscreen animation.
+        if has_remote_workspace(&app_after_drain) {
+            if let Err(err) = window.hide() {
+                tracing::warn!("[window] failed to hide local workspace: {err}");
+            }
+        }
+        show_workspace_window(&app_after_drain);
+    });
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -2397,7 +2467,7 @@ fn tray_labels_for(locale: crate::models::system::AppLocale) -> TrayLabels {
 
 /// Install the system tray icon and its right-click menu. Left-click
 /// (Linux/Windows) and dock-style activation behaviors map to
-/// `show_main_window`. Menu wiring lives in the app-wide
+/// `show_workspace_window`. Menu wiring lives in the app-wide
 /// `on_menu_event` callback in `lib.rs` so the tray and pet menus share
 /// one dispatcher.
 #[cfg(feature = "tauri-runtime")]
@@ -2464,7 +2534,7 @@ pub fn install_tray_icon(
                 ..
             } = event
             {
-                show_main_window(tray.app_handle());
+                show_workspace_window(tray.app_handle());
             }
         })
         .build(app)?;

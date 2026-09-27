@@ -141,6 +141,12 @@ mod tauri_app {
         use tauri::Emitter;
 
         let app = window.app_handle().clone();
+        // Closing the local workspace must not quit the remote workspaces
+        // sharing this process, even when the saved close preference is Exit.
+        if windows::has_remote_workspace(&app) {
+            windows::hide_main_window_for_remote(&app);
+            return;
+        }
         let behavior = if windows::can_hide_to_tray() {
             system_settings::cached_close_behavior()
         } else {
@@ -1337,6 +1343,9 @@ mod tauri_app {
                 // destroyed by the platform, owned windows are closed here.
                 if matches!(event, tauri::WindowEvent::Destroyed) {
                     browser_commands::close_all_for_owner(window.app_handle(), &label);
+                    if !APP_QUITTING.load(Ordering::Relaxed) {
+                        windows::restore_main_after_remote_close(window.app_handle(), &label);
+                    }
                 }
 
                 if (label == "settings" || label.starts_with("remote-settings-"))
@@ -2082,15 +2091,10 @@ mod tauri_app {
                 }
                 #[cfg(target_os = "macos")]
                 tauri::RunEvent::Reopen { .. } => {
-                    // Dock-icon click: bring the workspace forward
-                    // unconditionally. `has_visible_windows` is true
-                    // whenever any aux window (pet, settings, commit…)
-                    // is alive, so gating on it would suppress recovery
-                    // even though `main` itself is hidden.
-                    // `show_main_window` is idempotent — already-visible
-                    // windows just get re-focused, which is what dock
-                    // activation should do anyway.
-                    windows::show_main_window(app);
+                    // A hidden local workspace must stay dismissed while
+                    // the user works remotely. Pets/settings do not count as
+                    // workspaces; with no remote left this restores `main`.
+                    windows::show_workspace_window(app);
                 }
                 _ => {}
             });
