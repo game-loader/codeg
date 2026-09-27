@@ -204,33 +204,83 @@ pub async fn create_file_tree_entry(
 // Attachment upload
 // ---------------------------------------------------------------------------
 
-/// Hard cap on a single uploaded attachment.
+/// Default hard cap on a single uploaded attachment.
 ///
-/// This is the user-facing attachment ceiling for web / remote-workspace mode
-/// (oversize is rejected with a visible toast), sized to match the desktop
-/// drag-drop image limit (`DRAG_DROP_IMAGE_MAX_BYTES`, 20 MB) so the same
-/// screenshot attaches in every mode. Uploaded images are re-inlined into the
-/// prompt server-side (`acp::prompt_hydration`), so this also bounds that
-/// read-back. The handler streams to disk chunk-by-chunk, so raising the cap
-/// does not change peak memory. The chunk-summing check inside the streaming
-/// loop is the authoritative boundary; the route's `DefaultBodyLimit` (this
+/// The effective server-side cap is controlled by `CODEG_UPLOAD_MAX_BYTES`.
+/// The handler streams uploads to disk chunk-by-chunk. The chunk-summing check is
+/// the authoritative boundary; the route's `DefaultBodyLimit` (the effective
 /// value + 64 KiB of multipart overhead, see `router.rs`) rejects grossly
 /// oversized bodies before they stream.
+pub const DEFAULT_UPLOAD_MAX_BYTES: u64 = 20 * 1024 * 1024;
+pub const UPLOAD_MAX_BYTES_ENV: &str = "CODEG_UPLOAD_MAX_BYTES";
+
+/// Parse a positive byte size from `CODEG_UPLOAD_MAX_BYTES`.
 ///
-/// Mirrored by `UPLOAD_MAX_BYTES` in `commands/remote_proxy.rs` and
-/// `src/lib/api.ts` — keep the three in lockstep.
-pub const UPLOAD_MAX_BYTES: u64 = 20 * 1024 * 1024;
+/// Plain byte counts and binary-style suffixes are accepted, for example
+/// `209715200`, `200M`, `200MB`, `200MiB`, `1G`, and `1GB`. Whitespace around
+/// or between the number and suffix is ignored. A zero, negative value,
+/// overflow, or unknown suffix is rejected so callers can fall back safely.
+fn parse_upload_max_bytes(raw: Option<&str>) -> Result<u64, String> {
+    let Some(raw) = raw else {
+        return Ok(DEFAULT_UPLOAD_MAX_BYTES);
+    };
+    let normalized = raw.trim().to_ascii_uppercase();
+    if normalized.is_empty() {
+        return Ok(DEFAULT_UPLOAD_MAX_BYTES);
+    }
+
+    let suffixes = [
+        ("KIB", 1024_u64),
+        ("MIB", 1024_u64 * 1024),
+        ("GIB", 1024_u64 * 1024 * 1024),
+        ("KB", 1024_u64),
+        ("MB", 1024_u64 * 1024),
+        ("GB", 1024_u64 * 1024 * 1024),
+        ("K", 1024_u64),
+        ("M", 1024_u64 * 1024),
+        ("G", 1024_u64 * 1024 * 1024),
+        ("B", 1_u64),
+        ("", 1_u64),
+    ];
+    let (number, multiplier) = suffixes
+        .iter()
+        .find_map(|(suffix, multiplier)| {
+            normalized
+                .strip_suffix(*suffix)
+                .map(str::trim_end)
+                .filter(|number| !number.is_empty())
+                .map(|number| (number, *multiplier))
+        })
+        .ok_or_else(|| raw.trim().to_string())?;
+    if !number.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(raw.trim().to_string());
+    }
+    let number = number.parse::<u64>().map_err(|_| raw.trim().to_string())?;
+    if number == 0 {
+        return Err(raw.trim().to_string());
+    }
+    number
+        .checked_mul(multiplier)
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| raw.trim().to_string())
+}
+
+/// Effective per-file upload limit for the current server process.
+pub fn upload_max_bytes() -> u64 {
+    parse_upload_max_bytes(std::env::var(UPLOAD_MAX_BYTES_ENV).ok().as_deref())
+        .unwrap_or(DEFAULT_UPLOAD_MAX_BYTES)
+}
 
 /// Env-controlled cap on the *total* bytes resident under
-/// `uploads_root/`. Per-file `UPLOAD_MAX_BYTES` bounds one payload; this
+/// `uploads_root/`. The configured per-file limit bounds one payload; this
 /// bounds long-term accumulation so a compromised or shared token can't
 /// repeatedly upload small files until the host runs out of disk. Unset
 /// or `0` disables the cap — preserves the original "no GC" behavior
 /// for operators who want it.
 ///
 /// The check is intentionally conservative: it fires before any bytes
-/// are streamed to disk, assuming the worst-case `UPLOAD_MAX_BYTES`.
-/// That over-rejects in the last `UPLOAD_MAX_BYTES` of headroom (e.g. a
+/// are streamed to disk, assuming the worst-case configured per-file limit.
+/// That over-rejects in the last configured-limit bytes of headroom (e.g. a
 /// 100 KB upload may get rejected when only 1 MB remains under the
 /// cap), but it keeps the code free of mid-stream cleanup races. With
 /// the in-flight reservation (see `UPLOAD_IN_FLIGHT_BYTES` below) this
@@ -352,9 +402,23 @@ impl std::error::Error for UploadQuotaStrictError {}
 /// while the desktop must keep running and surface a UI error instead.
 ///
 /// Called once from each binary entry point right after the data
-/// directory and listener are resolved. Cheap: two env reads + one
-/// `eprintln!`.
+/// directory and listener are resolved.
 pub fn log_upload_quota_config_at_startup() {
+    match std::env::var(UPLOAD_MAX_BYTES_ENV).ok() {
+        None => tracing::info!(
+            "[uploads] {UPLOAD_MAX_BYTES_ENV} unset → per-file cap: {} bytes",
+            DEFAULT_UPLOAD_MAX_BYTES
+        ),
+        Some(raw) => match parse_upload_max_bytes(Some(&raw)) {
+            Ok(limit) => tracing::info!(
+                "[uploads] per-file cap: {limit} bytes ({UPLOAD_MAX_BYTES_ENV}={raw:?})"
+            ),
+            Err(_) => tracing::warn!(
+                "[uploads][WARN] {UPLOAD_MAX_BYTES_ENV}={raw:?} is invalid; using default limit of {} bytes",
+                DEFAULT_UPLOAD_MAX_BYTES
+            ),
+        },
+    }
     let config = upload_quota_config_from_env();
     let strict = upload_quota_strict_from_env();
     match &config {
@@ -416,7 +480,7 @@ pub fn validate_upload_quota_config() -> Result<(), UploadQuotaStrictError> {
 /// same disk-level free space and admitted past the cap.
 ///
 /// Reservation strategy: each upload reserves the worst case
-/// (`UPLOAD_MAX_BYTES`) up front and releases it on guard drop.
+/// (the configured per-file limit) up front and releases it on guard drop.
 /// Over-reservation is acceptable — the operator-facing budget is the
 /// disk, not the counter — and a uniform reservation size keeps the
 /// CAS loop and the cleanup path symmetric.
@@ -753,26 +817,27 @@ pub async fn purge_upload_staging() {
 /// The file's exact size isn't known until the multipart body is drained, but
 /// the request's `Content-Length` is a hard upper bound on it (the multipart
 /// framing only ever ADDS overhead, and hyper enforces the header as a body
-/// framing limit). Reserving `min(Content-Length, UPLOAD_MAX_BYTES)` is
+/// framing limit). Reserving `min(Content-Length, max_bytes)` is
 /// therefore always ≥ the bytes actually written — the streaming loop
-/// independently caps the file at `UPLOAD_MAX_BYTES` — so the quota stays a
-/// hard ceiling while a small upload only reserves its own size. This matters
-/// for operators with `CODEG_UPLOAD_MAX_TOTAL_BYTES` below `UPLOAD_MAX_BYTES`:
+/// independently caps the file at `max_bytes` — so the quota stays a hard
+/// ceiling while a small upload only reserves its own size. This matters for
+/// operators with `CODEG_UPLOAD_MAX_TOTAL_BYTES` below the per-file limit:
 /// a blanket worst-case reservation would reject every upload outright.
 ///
 /// A missing/unparseable header (chunked transfer) falls back to the
 /// worst-case reservation, which over-rejects near the cap but never
 /// under-reserves.
-fn upload_reservation_bytes(content_length: Option<u64>) -> u64 {
+fn upload_reservation_bytes(content_length: Option<u64>, max_bytes: u64) -> u64 {
     content_length
-        .map(|cl| cl.min(UPLOAD_MAX_BYTES))
-        .unwrap_or(UPLOAD_MAX_BYTES)
+        .map(|cl| cl.min(max_bytes))
+        .unwrap_or(max_bytes)
 }
 
 pub async fn upload_attachment(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Json<UploadAttachmentResult>, AppCommandError> {
+    let upload_limit = upload_max_bytes();
     let uploads_root = codeg_uploads_root();
     // Ensure root exists before canonicalize/ensure_path_inside can compare.
     tokio::fs::create_dir_all(&uploads_root)
@@ -796,7 +861,7 @@ pub async fn upload_attachment(
             .get(axum::http::header::CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u64>().ok());
-        let reserve = upload_reservation_bytes(content_length);
+        let reserve = upload_reservation_bytes(content_length, upload_limit);
         let used = current_uploads_total_bytes(&uploads_root).await;
         match try_reserve_in_flight(&UPLOAD_IN_FLIGHT_BYTES, reserve, used, cap) {
             Ok(guard) => Some(guard),
@@ -852,7 +917,14 @@ pub async fn upload_attachment(
     // Cleanup goes through `upload_jail::remove_staging_best_effort` so the
     // unlink itself can't be redirected by a swap of `.tmp` between
     // streaming and cleanup.
-    let result = stream_and_finalize(&mut multipart, &uploads_root, &tmp_dir, &staging_name).await;
+    let result = stream_and_finalize(
+        &mut multipart,
+        &uploads_root,
+        &tmp_dir,
+        &staging_name,
+        upload_limit,
+    )
+    .await;
     if result.is_err() {
         upload_jail::remove_staging_best_effort(&tmp_dir, &staging_name).await;
     }
@@ -876,6 +948,7 @@ async fn stream_and_finalize(
     uploads_root: &std::path::Path,
     tmp_dir: &std::path::Path,
     staging_name: &str,
+    upload_limit: u64,
 ) -> Result<UploadAttachmentResult, AppCommandError> {
     let mut session_id: Option<String> = None;
     let mut raw_name: Option<String> = None;
@@ -919,7 +992,7 @@ async fn stream_and_finalize(
                         .with_detail(e.to_string())
                 })? {
                     let new_total = written.saturating_add(chunk.len() as u64);
-                    if new_total > UPLOAD_MAX_BYTES {
+                    if new_total > upload_limit {
                         // Symmetric with the proxy's pre/post-decode caps
                         // in `commands/remote_proxy.rs`: any of the three
                         // layers can fire first depending on how the
@@ -929,11 +1002,11 @@ async fn stream_and_finalize(
                         // is uniform.
                         let mut params = BTreeMap::new();
                         params.insert("size".to_string(), new_total.to_string());
-                        params.insert("limit".to_string(), UPLOAD_MAX_BYTES.to_string());
+                        params.insert("limit".to_string(), upload_limit.to_string());
                         return Err(AppCommandError::io_error(
                             "Upload exceeds the maximum allowed size",
                         )
-                        .with_detail(format!("size={new_total} limit={UPLOAD_MAX_BYTES}"))
+                        .with_detail(format!("size={new_total} limit={upload_limit}"))
                         .with_i18n(UPLOAD_I18N_KEY_TOO_LARGE, params));
                     }
                     out.write_all(&chunk).await.map_err(|e| {
@@ -1173,6 +1246,84 @@ mod tests {
     // `CODEG_UPLOAD_MAX_TOTAL_BYTES` from a test would race the harness's
     // parallel runner.
 
+    // ─── parse_upload_max_bytes ──────────────────────────────────────
+
+    #[test]
+    fn parse_upload_max_bytes_accepts_defaults_units_and_whitespace() {
+        assert_eq!(parse_upload_max_bytes(None), Ok(DEFAULT_UPLOAD_MAX_BYTES));
+        assert_eq!(
+            parse_upload_max_bytes(Some(" 200 M ")),
+            Ok(200 * 1024 * 1024)
+        );
+        assert_eq!(parse_upload_max_bytes(Some("200MB")), Ok(200 * 1024 * 1024));
+        assert_eq!(parse_upload_max_bytes(Some("1GiB")), Ok(1024 * 1024 * 1024));
+        assert_eq!(parse_upload_max_bytes(Some("1048576")), Ok(1_048_576));
+        assert_eq!(parse_upload_max_bytes(Some("512B")), Ok(512));
+        assert_eq!(parse_upload_max_bytes(Some("200m")), Ok(200 * 1024 * 1024));
+        assert_eq!(parse_upload_max_bytes(Some("2kb")), Ok(2048));
+        assert_eq!(
+            parse_upload_max_bytes(Some("")),
+            Ok(DEFAULT_UPLOAD_MAX_BYTES)
+        );
+    }
+
+    #[test]
+    fn parse_upload_max_bytes_rejects_invalid_values() {
+        for raw in [
+            "0",
+            "-1",
+            "+1",
+            "200T",
+            "1.5G",
+            "oops",
+            "M",
+            "2 00M",
+            "18446744073709551616",
+            "18446744073709551615G",
+        ] {
+            assert!(
+                parse_upload_max_bytes(Some(raw)).is_err(),
+                "expected {raw:?} to be rejected"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn upload_stream_enforces_configured_file_limit() {
+        use axum::{body::Body, extract::FromRequest, http::Request};
+
+        // Exercise the real multipart streaming path at and around a custom
+        // limit, without changing process-global environment variables.
+        let limit = 4;
+        for size in [3, 4, 5] {
+            let root = tempfile::tempdir().unwrap();
+            let tmp = root.path().join(".tmp");
+            tokio::fs::create_dir(&tmp).await.unwrap();
+            let contents = "x".repeat(size);
+            let body = format!(
+                "--boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test.txt\"\r\n\r\n{contents}\r\n--boundary--\r\n"
+            );
+            let request = Request::builder()
+                .header("content-type", "multipart/form-data; boundary=boundary")
+                .body(Body::from(body))
+                .unwrap();
+            let mut multipart = Multipart::from_request(request, &()).await.unwrap();
+            let result =
+                stream_and_finalize(&mut multipart, root.path(), &tmp, "test.part", limit).await;
+            if size as u64 <= limit {
+                let uploaded = result.unwrap();
+                assert_eq!(
+                    tokio::fs::read(&uploaded.path).await.unwrap(),
+                    contents.as_bytes()
+                );
+            } else {
+                let error = result.err().expect("oversized file must fail");
+                assert_eq!(error.i18n_key.as_deref(), Some(UPLOAD_I18N_KEY_TOO_LARGE));
+                assert_eq!(error.i18n_params.unwrap().get("limit").unwrap(), "4");
+            }
+        }
+    }
+
     #[test]
     fn parse_upload_quota_config_classifies_branches() {
         assert_eq!(parse_upload_quota_config(None), UploadQuotaConfig::Unset);
@@ -1268,7 +1419,10 @@ mod tests {
         // not the 20 MiB worst case (which would reject every upload on
         // servers whose quota is below the per-file maximum).
         let cl = 1024 * 1024 + 300; // file + multipart framing overhead
-        assert_eq!(upload_reservation_bytes(Some(cl)), cl);
+        assert_eq!(
+            upload_reservation_bytes(Some(cl), DEFAULT_UPLOAD_MAX_BYTES),
+            cl
+        );
     }
 
     #[test]
@@ -1278,14 +1432,31 @@ mod tests {
         // framing) is slightly larger. min(CL, MAX) ≥ bytes written holds:
         // written ≤ MAX (loop check) and written ≤ CL (hyper framing).
         assert_eq!(
-            upload_reservation_bytes(Some(UPLOAD_MAX_BYTES + 500)),
-            UPLOAD_MAX_BYTES
+            upload_reservation_bytes(
+                Some(DEFAULT_UPLOAD_MAX_BYTES + 500),
+                DEFAULT_UPLOAD_MAX_BYTES
+            ),
+            DEFAULT_UPLOAD_MAX_BYTES
         );
     }
 
     #[test]
     fn reservation_falls_back_to_worst_case_without_content_length() {
-        assert_eq!(upload_reservation_bytes(None), UPLOAD_MAX_BYTES);
+        assert_eq!(
+            upload_reservation_bytes(None, DEFAULT_UPLOAD_MAX_BYTES),
+            DEFAULT_UPLOAD_MAX_BYTES
+        );
+    }
+
+    #[test]
+    fn reservation_honors_configured_limit() {
+        let max = parse_upload_max_bytes(Some("200M")).unwrap();
+        assert_eq!(upload_reservation_bytes(None, max), max);
+        assert_eq!(upload_reservation_bytes(Some(max + 500), max), max);
+        assert_eq!(
+            upload_reservation_bytes(Some(30 * 1024 * 1024), max),
+            30 * 1024 * 1024
+        );
     }
 
     #[test]
@@ -1295,7 +1466,7 @@ mod tests {
         // reservation.
         let counter = AtomicU64::new(0);
         let cap = 10 * 1024 * 1024;
-        let reserve = upload_reservation_bytes(Some(1024 * 1024 + 300));
+        let reserve = upload_reservation_bytes(Some(1024 * 1024 + 300), DEFAULT_UPLOAD_MAX_BYTES);
         assert!(try_reserve_in_flight(&counter, reserve, 0, cap).is_ok());
     }
 

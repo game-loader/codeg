@@ -442,13 +442,12 @@ pub async fn remote_http_call(
 
 // ─── Multipart upload proxy ───────────────────────────────────────────
 
-/// Hard ceiling for `read_local_file_for_upload`. Mirrors the server-side
-/// `UPLOAD_MAX_BYTES` in `web/handlers/files.rs`; kept here as a local
-/// constant so this command can reject oversize reads *before* incurring
-/// the file I/O cost — the remote `/api/upload_attachment` enforces the
-/// same cap regardless, but a 100 MB read followed by a base64 encode and
-/// an IPC trip would be a noticeable waste compared to early rejection.
-const UPLOAD_MAX_BYTES: u64 = 20 * 1024 * 1024;
+/// Client-side safety ceiling for `read_local_file_for_upload`.
+///
+/// The remote server's effective limit is configured independently through
+/// `CODEG_UPLOAD_MAX_BYTES`; this ceiling is high enough for the documented
+/// 200M setting and prevents an unbounded local read/base64 allocation.
+const UPLOAD_MAX_BYTES: u64 = 200 * 1024 * 1024;
 
 /// Maximum tolerated base64 payload length, pre-decode. Exactly
 /// `ceil(UPLOAD_MAX_BYTES / 3) * 4` — that formula already accounts for

@@ -437,6 +437,17 @@ export function useComposerAttachments({
                 continue
               }
               const appError = extractAppCommandError(error)
+              if (appError?.i18n_key === UPLOAD_I18N_KEY_TOO_LARGE) {
+                toast.error(
+                  tAttach("attachUploadTooLarge", {
+                    limit:
+                      Number(appError.i18n_params?.limit ?? UPLOAD_MAX_BYTES) /
+                      (1024 * 1024),
+                    names: file.name,
+                  })
+                )
+                continue
+              }
               if (appError?.i18n_key === UPLOAD_I18N_KEY_QUOTA_EXCEEDED) {
                 quotaRejected.push(file.name)
                 continue
@@ -695,6 +706,17 @@ export function useComposerAttachments({
                 continue
               }
               const appError = extractAppCommandError(error)
+              if (appError?.i18n_key === UPLOAD_I18N_KEY_TOO_LARGE) {
+                toast.error(
+                  tAttach("attachUploadTooLarge", {
+                    limit:
+                      Number(appError.i18n_params?.limit ?? UPLOAD_MAX_BYTES) /
+                      (1024 * 1024),
+                    names: attachment.name,
+                  })
+                )
+                continue
+              }
               if (appError?.i18n_key === UPLOAD_I18N_KEY_QUOTA_EXCEEDED) {
                 quotaRejected.push(attachment.name)
                 continue
@@ -810,10 +832,8 @@ export function useComposerAttachments({
       )
       if (normalized.length === 0) return
 
-      const limitMb = Math.round(UPLOAD_MAX_BYTES / (1024 * 1024))
       const succeeded: string[] = []
       const failed: Array<{ name: string; reason: unknown }> = []
-      const oversize: string[] = []
       const directories: string[] = []
       const quotaRejected: string[] = []
       const imageAttachmentsToAdd: ImageInputAttachment[] = []
@@ -871,7 +891,14 @@ export function useComposerAttachments({
               const appError = extractAppCommandError(error)
               const i18nKey = appError?.i18n_key ?? null
               if (i18nKey === UPLOAD_I18N_KEY_TOO_LARGE) {
-                oversize.push(name)
+                toast.error(
+                  tAttach("attachUploadTooLarge", {
+                    limit:
+                      Number(appError?.i18n_params?.limit ?? UPLOAD_MAX_BYTES) /
+                      (1024 * 1024),
+                    names: name,
+                  })
+                )
               } else if (i18nKey === UPLOAD_I18N_KEY_NOT_A_FILE) {
                 // Dragging a directory or a special file (FIFO, device
                 // node) lands here. The Rust guard short-circuits before
@@ -889,14 +916,6 @@ export function useComposerAttachments({
       )
       await Promise.all(workers)
 
-      if (oversize.length > 0) {
-        toast.error(
-          tAttach("attachUploadTooLarge", {
-            limit: limitMb,
-            names: oversize.join(", "),
-          })
-        )
-      }
       if (directories.length > 0) {
         toast.error(
           tAttach("attachUploadNotAFile", {

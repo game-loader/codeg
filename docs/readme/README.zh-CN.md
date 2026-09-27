@@ -198,6 +198,16 @@ docker run -d -p 3080:3080 -v codeg-data:/data ghcr.io/xintaofei/codeg:latest
 
 Compose、预编译二进制、源码构建与就地升级见 [部署](https://docs.codeg.app/zh/getting-started/deployment)；环境变量见 [配置](https://docs.codeg.app/zh/getting-started/configuration)。想构建 Codeg 本身：[开发](https://docs.codeg.app/zh/reference/development) 与 [架构](https://docs.codeg.app/zh/reference/architecture)。
 
+**附件上传大小** — 在服务器环境中设置 `CODEG_UPLOAD_MAX_BYTES=200M` 并重启，
+即可将单文件限制从默认 20 MiB 放宽到 200 MiB。Docker 添加
+`-e CODEG_UPLOAD_MAX_BYTES=200M`；Compose 在 `environment` 中添加该变量后重建容器。
+支持纯字节数和 `B`、`K`/`KB`/`KiB`、`M`/`MB`/`MiB`、`G`/`GB`/`GiB` 后缀
+（以 1024 为单位，不区分大小写）。空值使用默认值；非法值或 0 会记录警告并回退到
+20 MiB。服务器、网页资源和桌面客户端都需要更新；客户端最高支持 200 MiB 附件。
+若使用 Nginx，设置 `client_max_body_size 201m;`，为 200 MiB 文件预留 multipart 开销。
+此配置与 uploads 目录总容量配额（`CODEG_UPLOAD_MAX_TOTAL_BYTES`，纯字节数）、
+工作区文件传输、每条提示词图片合计 64 MiB 的限制相互独立。
+
 ## 🔒 隐私与安全
 
 - 默认本地优先：解析、存储与项目操作都在本地完成 —— 仅在用户主动触发时才访问网络

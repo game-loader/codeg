@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
 import type { DragEvent as ReactDragEvent } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { toast } from "sonner"
 
 import {
   acpPrompt,
@@ -56,8 +57,10 @@ vi.mock("@tauri-apps/api/webview", () => ({
   }),
 }))
 vi.mock("next-intl", () => ({
-  useTranslations: () => (key: string) => key,
+  useTranslations: () => (key: string, params?: { limit?: number }) =>
+    params?.limit === undefined ? key : `${key}:${params.limit}`,
 }))
+vi.mock("sonner", () => ({ toast: { error: vi.fn() } }))
 
 // Real PNG bytes through FileReader and the composer; only the upload's network
 // boundary is mocked. The server renames the file to prove that sends use its
@@ -179,6 +182,41 @@ describe.each(["web", "remote desktop"])("%s image attachments", (mode) => {
       })
     )
   }
+
+  it("allows 200 MiB files and rejects files above the client ceiling", async () => {
+    const { result } = setup()
+    const accepted = new File(["data"], "large.pdf", {
+      type: "application/pdf",
+    })
+    const rejected = new File(["data"], "too-large.pdf", {
+      type: "application/pdf",
+    })
+    // File size metadata drives the preflight; avoid allocating 400 MiB in CI.
+    Object.defineProperty(accepted, "size", { value: 200 * 1024 * 1024 })
+    Object.defineProperty(rejected, "size", { value: 200 * 1024 * 1024 + 1 })
+    await act(async () => {
+      await result.current.appendFilesFromInput([accepted, rejected])
+    })
+    expect(uploadAttachment).toHaveBeenCalledTimes(1)
+    expect(uploadAttachment).toHaveBeenCalledWith(accepted, "session")
+    expect(toast.error).toHaveBeenCalledWith("attachUploadTooLarge:200")
+  })
+
+  it("shows the server's configured limit when an upload is rejected", async () => {
+    const { result } = setup()
+    vi.mocked(uploadAttachment).mockRejectedValue({
+      code: "io_error",
+      message: "Upload exceeds the maximum allowed size",
+      i18n_key: "errors.upload.tooLarge",
+      i18n_params: { limit: String(20 * 1024 * 1024) },
+    })
+    await act(async () => {
+      await result.current.appendFilesFromInput([
+        new File(["data"], "report.pdf", { type: "application/pdf" }),
+      ])
+    })
+    expect(toast.error).toHaveBeenCalledWith("attachUploadTooLarge:20")
+  })
 
   it("sends all four dropped images with their server-side original paths", async () => {
     const { result } = setup()

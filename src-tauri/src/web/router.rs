@@ -9,7 +9,7 @@ use axum::{
     Json, Router,
 };
 
-use crate::web::handlers::files::UPLOAD_MAX_BYTES;
+use crate::web::handlers::files::upload_max_bytes;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -24,6 +24,8 @@ pub fn build_router(
     static_dir: std::path::PathBuf,
     shutdown_signal: Arc<ShutdownSignal>,
 ) -> Router {
+    let upload_body_limit =
+        usize::try_from(upload_max_bytes().saturating_add(64 * 1024)).unwrap_or(usize::MAX);
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -568,7 +570,7 @@ pub fn build_router(
         )
         .route(
             "/upload_attachment",
-            // `UPLOAD_MAX_BYTES` is the *file payload* limit; the raw
+            // `CODEG_UPLOAD_MAX_BYTES` is the *file payload* limit; the raw
             // multipart body also carries boundary markers, the
             // `Content-Disposition` headers, and the `session_id` field —
             // ~256-512 bytes of overhead. Without this layer, axum's default
@@ -577,7 +579,7 @@ pub fn build_router(
             // chunk-summing check (in `files.rs`) stays the authoritative
             // size boundary.
             post(handlers::files::upload_attachment)
-                .layer(DefaultBodyLimit::max(UPLOAD_MAX_BYTES as usize + 64 * 1024)),
+                .layer(DefaultBodyLimit::max(upload_body_limit)),
         )
         // ─── Workspace files (web upload/download) ───
         //

@@ -40,7 +40,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
 use crate::acp::error::AcpError;
 use crate::acp::types::PromptInputBlock;
-use crate::web::handlers::files::UPLOAD_MAX_BYTES;
+use crate::web::handlers::files::upload_max_bytes;
 
 /// Aggregate ceiling on the raw bytes one prompt may hydrate, summed across
 /// every marker occurrence — the SAME file referenced N times counts N times,
@@ -156,11 +156,12 @@ pub async fn hydrate_prompt_blocks(
         // Mirrors the upload-side per-file cap: nothing bigger can have been
         // uploaded through the endpoint, so anything bigger here is a
         // hand-placed file we refuse to base64 into memory.
-        if meta.len() > UPLOAD_MAX_BYTES {
+        let upload_limit = upload_max_bytes();
+        if meta.len() > upload_limit {
             return Err(AcpError::protocol(format!(
                 "image attachment unavailable: {} exceeds the {} byte upload limit",
                 canonical.display(),
-                UPLOAD_MAX_BYTES
+                upload_limit
             )));
         }
         total_bytes = total_bytes.saturating_add(meta.len());
@@ -487,7 +488,7 @@ mod tests {
         // Sparse-ish: metadata length is what matters; write real bytes only
         // up to a small amount then set_len past the cap.
         let f = std::fs::File::create(&file).unwrap();
-        f.set_len(UPLOAD_MAX_BYTES + 1).unwrap();
+        f.set_len(upload_max_bytes() + 1).unwrap();
         drop(f);
 
         let mut blocks = vec![image_block("", Some(&to_file_uri(&file)))];

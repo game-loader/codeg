@@ -197,6 +197,18 @@ docker run -d -p 3080:3080 -v codeg-data:/data ghcr.io/xintaofei/codeg:latest
 
 **Mobile** — install the [iOS app](https://apps.apple.com/app/codeg-client/id6785199071) or the [Android APK](https://github.com/xintaofei/codeg-android/releases/latest), then point it at the **Web Service** of your desktop app or at your own `codeg-server`: URL, token, done. Pairing steps in [Mobile apps](https://docs.codeg.app/getting-started/installation#mobile-apps).
 
+**Attachment upload size** — set `CODEG_UPLOAD_MAX_BYTES=200M` in the server's
+environment and restart it to raise the per-file limit from the default 20 MiB.
+Docker: add `-e CODEG_UPLOAD_MAX_BYTES=200M`; Compose: add it under `environment`
+and recreate the container. Byte counts and `B`, `K`/`KB`/`KiB`, `M`/`MB`/`MiB`,
+`G`/`GB`/`GiB` suffixes are accepted (powers of 1024, case insensitive).
+Empty values use the default; invalid or zero values log a warning and fall back
+to 20 MiB. Update both the server/web assets and desktop client: clients support
+attachments up to 200 MiB. With Nginx, use `client_max_body_size 201m;` to allow
+multipart overhead for a 200 MiB file. This setting is separate from the total
+uploads-directory quota (`CODEG_UPLOAD_MAX_TOTAL_BYTES`, plain bytes), workspace
+file transfers, and the 64 MiB combined image limit per prompt.
+
 Compose, prebuilt binaries, source builds, and in-place updates are covered in [Deployment](https://docs.codeg.app/getting-started/deployment); environment variables in [Configuration](https://docs.codeg.app/getting-started/configuration). Building Codeg itself: [Development](https://docs.codeg.app/reference/development) and [Architecture](https://docs.codeg.app/reference/architecture).
 
 ## 🔒 Privacy & Security
