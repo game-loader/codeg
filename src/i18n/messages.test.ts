@@ -44,7 +44,7 @@ describe("i18n locale key parity vs en.json", () => {
     ["zh-TW", zhTW],
   ] as const)("%s has the same key set as en", (locale, messages) => {
     const localeKeys = new Set(collectKeys(messages as MessageNode))
-    // New PDF and Zotero tools copy ships in en/zh-CN only, per repository policy;
+    // New PDF, Zotero tools and Pi max copy ships in en/zh-CN only;
     // messages.ts provides its English fallback for the remaining locales.
     const missing = [...reference].filter(
       (k) =>
@@ -53,7 +53,8 @@ describe("i18n locale key parity vs en.json", () => {
           locale !== "zh-CN" &&
           (k.startsWith("Folder.pdfPreview.") ||
             k === "Academic.mcpTools" ||
-            k === "Academic.mcpToolsHint")
+            k === "Academic.mcpToolsHint" ||
+            k === "AcpAgentSettings.pi.thinking.max")
         )
     )
     const extra = [...localeKeys].filter((k) => !reference.has(k))
@@ -68,6 +69,22 @@ it("provides English PDF controls in locales without a PDF translation", async (
   expect(t("Folder.pdfPreview.page", { page: 2 })).toBe("Page 2")
   expect(t("Academic.mcpTools")).toBe(en.Academic.mcpTools)
   expect(t("Academic.mcpToolsHint")).toBe(en.Academic.mcpToolsHint)
+})
+
+it("falls back to English for Pi max without replacing translated levels", async () => {
+  const messages = await getMessagesForLocale("fr")
+  const t = createTranslator({ locale: "fr", messages: messages as typeof en })
+  expect(t("AcpAgentSettings.pi.thinking.max")).toBe("Max")
+  expect(t("AcpAgentSettings.pi.thinking.high")).toBe(
+    fr.AcpAgentSettings.pi.thinking.high
+  )
+
+  const chinese = await getMessagesForLocale("zh_cn")
+  const zh = createTranslator({
+    locale: "zh-CN",
+    messages: chinese as typeof en,
+  })
+  expect(zh("AcpAgentSettings.pi.thinking.max")).toBe("最高")
 })
 
 const ALL_LOCALES = [

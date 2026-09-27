@@ -6440,7 +6440,7 @@ pub struct PiModelReasoningSpec {
 /// pi's fixed thinking-level vocabulary (`EXTENDED_THINKING_LEVELS` in pi-ai). A name
 /// outside this list is rejected by pi-acp with `invalidParams`, so it must never reach
 /// `models.json`.
-const PI_THINKING_LEVELS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+const PI_THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /// Read a JSON file into an owned object map, returning an empty map when the
 /// file is absent, unreadable, or does not parse to a JSON object. Pi's native
@@ -15366,7 +15366,7 @@ base_url = \"https://example.test/v1\"
         assert!(models[0].get("thinkingLevelMap").is_none());
     }
 
-    /// pi-acp rejects a level name outside pi's fixed six with `invalidParams`, so
+    /// pi-acp rejects a level name outside pi's fixed seven with `invalidParams`, so
     /// one must never reach disk.
     #[test]
     fn pi_custom_model_filters_levels_pi_does_not_know() {
@@ -15377,7 +15377,11 @@ base_url = \"https://example.test/v1\"
             "m",
             Some(&pi_reasoning_spec(
                 true,
-                &[("ultra", Some("ultra")), ("high", Some("high"))],
+                &[
+                    ("ultra", Some("ultra")),
+                    ("high", Some("high")),
+                    ("max", Some("max")),
+                ],
             )),
         );
 
@@ -15385,6 +15389,7 @@ base_url = \"https://example.test/v1\"
         let map = models[0]["thinkingLevelMap"].as_object().unwrap();
         assert!(!map.contains_key("ultra"));
         assert_eq!(map["high"], "high");
+        assert_eq!(map["max"], "max");
     }
 
     /// Built-in providers (and any client that predates the control) send no spec.
@@ -15417,7 +15422,12 @@ base_url = \"https://example.test/v1\"
             "gpt-5.6-sol",
             Some(&pi_reasoning_spec(
                 true,
-                &[("off", Some("none")), ("minimal", None), ("low", Some("LOW"))],
+                &[
+                    ("off", Some("none")),
+                    ("minimal", None),
+                    ("low", Some("LOW")),
+                    ("max", Some("extreme")),
+                ],
             )),
         );
 
@@ -15429,6 +15439,7 @@ base_url = \"https://example.test/v1\"
         assert_eq!(models[0].thinking_level_map["off"], Some("none".to_string()));
         assert_eq!(models[0].thinking_level_map["minimal"], None);
         assert_eq!(models[0].thinking_level_map["low"], Some("LOW".to_string()));
+        assert_eq!(models[0].thinking_level_map["max"], Some("extreme".to_string()));
     }
 
     /// A model with no `reasoning` key must project as `None`, not `Some(false)` —

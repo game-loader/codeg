@@ -45,10 +45,25 @@ export async function getMessagesForLocale(
   const localized = await loadMessages(locale)
   const folder = localized.Folder
   const academic = localized.Academic
+  const agentSettings = localized.AcpAgentSettings
+  const piSettings =
+    typeof agentSettings === "object" ? agentSettings.pi : undefined
+  const thinking =
+    typeof piSettings === "object" ? piSettings.thinking : undefined
   // New features ship in English and Simplified Chinese first (AGENTS.md).
   // Keep the other locales usable without copying English into their catalogs.
   const messages = {
     ...localized,
+    AcpAgentSettings: {
+      ...(typeof agentSettings === "object" ? agentSettings : {}),
+      pi: {
+        ...(typeof piSettings === "object" ? piSettings : {}),
+        thinking: {
+          max: enMessages.AcpAgentSettings.pi.thinking.max,
+          ...(typeof thinking === "object" ? thinking : {}),
+        },
+      },
+    },
     Academic: {
       mcpTools: enMessages.Academic.mcpTools,
       mcpToolsHint: enMessages.Academic.mcpToolsHint,

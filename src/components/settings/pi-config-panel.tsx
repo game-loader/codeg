@@ -1042,11 +1042,11 @@ export function PiConfigPanel({
                       ...prev,
                       enabled: checked,
                       // First enable with nothing remembered → offer pi's whole
-                      // vocabulary bar xhigh, which most backends reject.
+                      // vocabulary bar xhigh/max, which most backends reject.
                       levels:
                         checked && prev.levels.length === 0
                           ? PI_THINKING_LEVELS.filter(
-                              (level) => level !== "xhigh"
+                              (level) => level !== "xhigh" && level !== "max"
                             )
                           : prev.levels,
                     }))
