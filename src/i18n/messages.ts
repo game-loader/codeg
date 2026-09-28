@@ -44,6 +44,10 @@ export async function getMessagesForLocale(
 
   const localized = await loadMessages(locale)
   const folder = localized.Folder
+  const chat = typeof folder === "object" ? folder.chat : undefined
+  const connections = typeof chat === "object" ? chat.acpConnections : undefined
+  const backendErrors =
+    typeof connections === "object" ? connections.backendErrors : undefined
   const academic = localized.Academic
   const agentSettings = localized.AcpAgentSettings
   const piSettings =
@@ -71,9 +75,24 @@ export async function getMessagesForLocale(
     },
     Folder: {
       ...(typeof folder === "object" ? folder : {}),
+      chat: {
+        ...(typeof chat === "object" ? chat : {}),
+        acpConnections: {
+          ...(typeof connections === "object" ? connections : {}),
+          backendErrors: {
+            sessionLoadError:
+              enMessages.Folder.chat.acpConnections.backendErrors
+                .sessionLoadError,
+            ...(typeof backendErrors === "object" ? backendErrors : {}),
+          },
+        },
+      },
       pdfPreview:
         (typeof folder === "object" && folder.pdfPreview) ||
         enMessages.Folder.pdfPreview,
+      videoPreview:
+        (typeof folder === "object" && folder.videoPreview) ||
+        enMessages.Folder.videoPreview,
     },
   }
   MESSAGE_CACHE.set(locale, messages)

@@ -1399,6 +1399,9 @@ pub struct AgentConnection {
     /// the tree without waiting, so the agent may still be alive and still
     /// needs the backstop.
     pub child_pid: Arc<std::sync::atomic::AtomicU32>,
+    /// Closed when the connection driver exits, including pre-spawn failures.
+    /// None only for in-process test fixtures that have no driver or child.
+    pub driver_done: Option<tokio::sync::watch::Receiver<()>>,
 }
 
 impl AgentConnection {
@@ -2238,6 +2241,7 @@ pub async fn spawn_agent_connection(
         owner_window_label.clone(),
         None, // folder_id 由后续 prompt handler 在首次 send 时绑定 (Phase 2)
     );
+    initial_state.requested_session_id = session_id.clone();
 
     // Install the SessionStarted dedup signal BEFORE wrapping into Arc so the
     // first event (StatusChanged{Connecting} below) doesn't race with the
@@ -2395,6 +2399,7 @@ pub async fn spawn_agent_connection(
     // Insert the entry BEFORE spawning the background task so that a
     // fast-failing `run_connection` can never remove it before it was
     // inserted (would otherwise leak the entry).
+    let (driver_done_tx, driver_done_rx) = tokio::sync::watch::channel(());
     connections.lock().await.insert(
         connection_id.clone(),
         AgentConnection {
@@ -2408,7 +2413,8 @@ pub async fn spawn_agent_connection(
             prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
             last_observed_fingerprint: config_fingerprint.clone(),
             config_fingerprint,
-            child_pid,
+            child_pid: child_pid.clone(),
+            driver_done: Some(driver_done_rx),
         },
     );
 
@@ -2434,6 +2440,7 @@ pub async fn spawn_agent_connection(
         .name(format!("acp-conn-{conn_id}"))
         .stack_size(ACP_CONNECTION_STACK_SIZE)
         .spawn(move || {
+            let _driver_done = driver_done_tx;
             let _cleanup = cleanup_guard;
             connection_rt.block_on(async move {
         let delegation_for_cleanup = delegation_injection.clone();
@@ -2456,6 +2463,14 @@ pub async fn spawn_agent_connection(
             stderr_tail,
         )
         .await;
+
+        // Do not expose a reusable session while the process is releasing its
+        // writer lock. Drop-triggered cleanup has a bounded escalation and
+        // reports the actual reap through this cell.
+        state_clone.write().await.disconnecting = true;
+        while child_pid.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
 
         // Revoke the per-launch token + cascade cancel any still-pending
         // delegations AND questions owned by this parent connection. All are
@@ -6215,6 +6230,7 @@ async fn run_connection(
             .await;
 
             if let Some(sid) = session_id {
+                let mut resume_failure = None;
                 // Prefer session/resume when the agent advertises the
                 // capability: it restores session context WITHOUT replaying
                 // history (which session/load does only for us to drain and
@@ -6335,6 +6351,9 @@ async fn run_connection(
                             tracing::warn!(
                                 "[ACP] session/resume failed ({e}); falling back to session/load"
                             );
+                            let message = e.to_string();
+                            resume_failure = session_resume_failure_to_surface(agent_type, e.code, &message)
+                                .map(|code| (code, message));
                             // fall through to the session/load block below
                         }
                     }
@@ -6599,7 +6618,12 @@ async fn run_connection(
                         let forgotten_session = classify_session_load_failure(e.code, &err_str);
                         let recovers_locally =
                             recovers_load_failure_locally(agent_type, forgotten_session);
-                        if let Some(code) = forgotten_session.filter(|_| !recovers_locally) {
+                        let failure = attempted_load
+                            .then(|| session_load_failure_to_surface(agent_type, e.code, &err_str))
+                            .flatten()
+                            .map(|code| (code, err_str.clone()))
+                            .or(resume_failure);
+                        if let Some((code, message)) = failure {
                             tracing::warn!(
                                 "[ACP] session/load failed ({err_str}); surfacing as session_load_failed={code}"
                             );
@@ -6608,7 +6632,7 @@ async fn run_connection(
                                 &emitter_clone,
                                 AcpEvent::SessionLoadFailed {
                                     session_id: sid.clone(),
-                                    message: err_str,
+                                    message,
                                     code: code.to_string(),
                                 },
                             )
@@ -9498,10 +9522,11 @@ fn stop_reason_to_str(reason: StopReason) -> &'static str {
 /// the same banner rather than the silent `session/new` fallback, which would
 /// orphan a history the user is one command away from restoring.
 ///
-/// Returns `None` for failures that must keep the existing behavior:
+/// Returns `None` when no specific classification matches:
 /// "Method not found" (agent lacks resume → silent `session/new` fallback),
-/// "Authentication required" (silent stop), and any other error (emit
-/// "starting new" then fall through to `session/new`).
+/// "Authentication required" (silent stop), and any other error. Further policy
+/// in `session_load_failure_to_surface` prevents replacement of native-history
+/// sessions on otherwise unclassified errors.
 fn classify_session_load_failure(
     code: agent_client_protocol::schema::v1::ErrorCode,
     message: &str,
@@ -9668,6 +9693,49 @@ fn recovers_load_failure_locally(agent_type: AgentType, classified: Option<&'sta
         return false;
     }
     classified.is_some() && transcript_dir_for(agent_type).is_some()
+}
+
+/// Native-history agents must never replace a session just because loading its
+/// history failed. An internal error can happen AFTER the agent acquired the
+/// old thread's writer lock; starting a new session in that process would keep
+/// the old lock while making its owner invisible to connection reuse.
+fn session_load_failure_to_surface(
+    agent_type: AgentType,
+    code: agent_client_protocol::schema::v1::ErrorCode,
+    message: &str,
+) -> Option<&'static str> {
+    let classified = classify_session_load_failure(code, message);
+    if let Some(classified) = classified {
+        return (!recovers_load_failure_locally(agent_type, Some(classified)))
+            .then_some(classified);
+    }
+    if transcript_dir_for(agent_type).is_some()
+        || matches!(
+            code,
+            agent_client_protocol::schema::v1::ErrorCode::MethodNotFound
+                | agent_client_protocol::schema::v1::ErrorCode::AuthRequired
+        )
+        || message.contains("Method not found")
+        || message.contains("Authentication required")
+    {
+        return None;
+    }
+    Some("session_load_error")
+}
+
+/// Preserve an actual resume failure if load is unsupported. A successful load
+/// can still recover it, but an unavailable fallback cannot justify session/new.
+fn session_resume_failure_to_surface(
+    agent_type: AgentType,
+    code: agent_client_protocol::schema::v1::ErrorCode,
+    message: &str,
+) -> Option<&'static str> {
+    session_load_failure_to_surface(agent_type, code, message).or_else(|| {
+        (transcript_dir_for(agent_type).is_none()
+            && code != agent_client_protocol::schema::v1::ErrorCode::MethodNotFound
+            && !message.contains("Method not found"))
+            .then_some("session_load_error")
+    })
 }
 
 /// True when a `SessionUpdate` represents actual agent-produced output for
@@ -18318,6 +18386,55 @@ mod tests {
                 "{builtin:?} has no codeg-side transcript to fall back on"
             );
         }
+    }
+
+    #[test]
+    fn native_history_load_errors_never_create_a_replacement_session() {
+        use agent_client_protocol::schema::v1::ErrorCode;
+        let resume_failure = session_resume_failure_to_surface(
+            AgentType::Codex, ErrorCode::InternalError, "database disk image is malformed"
+        );
+        let unsupported_load = session_load_failure_to_surface(
+            AgentType::Codex, ErrorCode::MethodNotFound, "Method not found"
+        );
+        assert_eq!(unsupported_load.or(resume_failure), Some("session_load_error"));
+        assert_eq!(session_resume_failure_to_surface(
+            AgentType::Codex, ErrorCode::MethodNotFound, "Method not found"
+        ), None);
+        for agent in [AgentType::Codex, AgentType::ClaudeCode, AgentType::Gemini] {
+            for message in [
+                "failed to open thread history DB: database disk image is malformed",
+                "some unrelated transient failure",
+                "permission denied while reading history",
+            ] {
+                assert_eq!(
+                    session_load_failure_to_surface(agent, ErrorCode::InternalError, message),
+                    Some("session_load_error")
+                );
+            }
+        }
+        assert_eq!(
+            session_load_failure_to_surface(
+                AgentType::Codex,
+                ErrorCode::InternalError,
+                "thread abc already has an active writer"
+            ),
+            Some("session_busy")
+        );
+        for (code, message) in [
+            (ErrorCode::MethodNotFound, "Method not found"),
+            (ErrorCode::AuthRequired, "Authentication required"),
+        ] {
+            assert_eq!(
+                session_load_failure_to_surface(AgentType::Codex, code, message),
+                None
+            );
+        }
+        let custom = AgentType::custom("glm-acp-agent").unwrap();
+        assert_eq!(
+            session_load_failure_to_surface(custom, ErrorCode::InternalError, "transient failure"),
+            None
+        );
     }
 
     #[test]

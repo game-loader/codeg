@@ -596,6 +596,17 @@ pub struct SessionState {
     /// not part of the client-visible snapshot.
     pub turn_in_flight: bool,
 
+    /// Internal admission gate set before a connection leaves the manager.
+    /// Senders that already cloned the command channel must not enqueue work.
+    pub disconnecting: bool,
+
+    /// Requested identity remains available while resume is still handshaking.
+    pub requested_session_id: Option<String>,
+
+    /// Intentional retirement without work in flight is not a cancelled task.
+    /// The lifecycle worker reads this after the terminal event arrives.
+    pub preserve_status_on_disconnect: bool,
+
     /// How many `TurnComplete`s this connection has applied — the turn's
     /// IDENTITY, paired with `turn_in_flight`. `turn_in_flight` alone only says
     /// "some turn is running"; a caller that admitted itself against turn N and
@@ -710,6 +721,9 @@ impl SessionState {
             pending_user_message: None,
             pending_user_message_started_at: None,
             turn_in_flight: false,
+            disconnecting: false,
+            requested_session_id: None,
+            preserve_status_on_disconnect: false,
             turns_completed: 0,
             last_turn_ended_abnormally: false,
             config_stale: false,
@@ -1242,8 +1256,12 @@ impl SessionState {
                 message,
                 code,
                 details,
+                terminal,
                 ..
             } => {
+                if *terminal {
+                    self.preserve_status_on_disconnect = false;
+                }
                 // Capture so post-mortem readers (probe path, debug
                 // snapshots) can surface the agent's own error message
                 // after the connection task has cleaned up its map

@@ -193,6 +193,15 @@ export function isPdfFile(path: string | null | undefined): boolean {
   return !!path && /\.pdf$/i.test(path)
 }
 
+/** Route video containers to the native player; codec support is determined
+ * by the browser/OS and reported by the player if decoding fails. */
+export function isVideoFile(path: string | null | undefined): boolean {
+  return (
+    !!path &&
+    /\.(mp4|m4v|mov|webm|ogv|ogg|mkv|avi|mpeg|mpg|3gp|3g2)$/i.test(path)
+  )
+}
+
 // Images git can only diff as binary — the ones a text diff has nothing to say
 // about, so the diff surfaces render them as pictures instead. `.svg` is
 // deliberately excluded: it is text, `git diff` produces a real line diff for

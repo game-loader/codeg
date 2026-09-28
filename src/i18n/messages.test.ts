@@ -44,7 +44,7 @@ describe("i18n locale key parity vs en.json", () => {
     ["zh-TW", zhTW],
   ] as const)("%s has the same key set as en", (locale, messages) => {
     const localeKeys = new Set(collectKeys(messages as MessageNode))
-    // New PDF, Zotero tools and Pi max copy ships in en/zh-CN only;
+    // New feature copy ships in en/zh-CN only;
     // messages.ts provides its English fallback for the remaining locales.
     const missing = [...reference].filter(
       (k) =>
@@ -52,9 +52,11 @@ describe("i18n locale key parity vs en.json", () => {
         !(
           locale !== "zh-CN" &&
           (k.startsWith("Folder.pdfPreview.") ||
+            k.startsWith("Folder.videoPreview.") ||
             k === "Academic.mcpTools" ||
             k === "Academic.mcpToolsHint" ||
-            k === "AcpAgentSettings.pi.thinking.max")
+            k === "AcpAgentSettings.pi.thinking.max" ||
+            k === "Folder.chat.acpConnections.backendErrors.sessionLoadError")
         )
     )
     const extra = [...localeKeys].filter((k) => !reference.has(k))
@@ -67,6 +69,9 @@ it("provides English PDF controls in locales without a PDF translation", async (
   const t = createTranslator({ locale: "fr", messages: messages as typeof en })
   expect(t("Folder.pdfPreview.nextPage")).toBe("Next page")
   expect(t("Folder.pdfPreview.page", { page: 2 })).toBe("Page 2")
+  expect(t("Folder.videoPreview.player", { name: "demo.mp4" })).toBe(
+    "Video player: demo.mp4"
+  )
   expect(t("Academic.mcpTools")).toBe(en.Academic.mcpTools)
   expect(t("Academic.mcpToolsHint")).toBe(en.Academic.mcpToolsHint)
 })
@@ -85,6 +90,30 @@ it("falls back to English for Pi max without replacing translated levels", async
     messages: chinese as typeof en,
   })
   expect(zh("AcpAgentSettings.pi.thinking.max")).toBe("最高")
+})
+
+it("falls back for session load errors while preserving localized errors", async () => {
+  const messages = await getMessagesForLocale("fr")
+  const t = createTranslator({ locale: "fr", messages: messages as typeof en })
+  const key = "Folder.chat.acpConnections.backendErrors.sessionLoadError"
+  const values = { agent: "Codex", reason: "database disk image is malformed" }
+  const english = createTranslator({ locale: "en", messages: en })
+  expect(t(key, values)).toBe(english(key, values))
+  expect(
+    t("Folder.chat.acpConnections.backendErrors.processExited", values)
+  ).toBe(
+    fr.Folder.chat.acpConnections.backendErrors.processExited.replace(
+      "{agent}",
+      "Codex"
+    )
+  )
+  const chinese = await getMessagesForLocale("zh_cn")
+  const zh = createTranslator({
+    locale: "zh-CN",
+    messages: chinese as typeof en,
+  })
+  const expected = createTranslator({ locale: "zh-CN", messages: zhCN })
+  expect(zh(key, values)).toBe(expected(key, values))
 })
 
 const ALL_LOCALES = [

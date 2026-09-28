@@ -540,6 +540,14 @@ pub fn build_router(
         )
         .route("/read_file_base64", post(handlers::files::read_file_base64))
         .route(
+            "/start_video_preview",
+            post(handlers::files::start_video_preview),
+        )
+        .route(
+            "/stop_video_preview",
+            post(handlers::files::stop_video_preview),
+        )
+        .route(
             "/read_workspace_file_base64",
             post(handlers::files::read_workspace_file_base64),
         )
@@ -1827,6 +1835,12 @@ pub fn build_router(
     // The login page needs to read the user's preferred language before
     // authenticating so it can render in their chosen locale.
     let public_api = Router::new()
+        // The player authenticates each Range/HEAD request with a reusable,
+        // file-scoped capability issued by the protected POST above.
+        .route(
+            "/video-preview/{token}",
+            get(crate::video_preview::stream_video),
+        )
         .route(
             "/get_system_language_settings",
             post(handlers::system_settings::get_system_language_settings),

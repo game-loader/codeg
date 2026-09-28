@@ -528,6 +528,9 @@ async fn handle_terminal_event(
     let Some(entry) = cache.remove(connection_id) else {
         return Ok(());
     };
+    if entry.state.read().await.preserve_status_on_disconnect {
+        return Ok(());
+    }
     let cid = entry.conversation_id;
     let changed = conversation_service::update_status_if(
         db_conn,
@@ -1800,6 +1803,7 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            driver_done: None,
         }
     }
 
@@ -2399,6 +2403,34 @@ mod tests {
             "CAS must not overwrite PendingReview when subscriber sees terminal event \
              after TurnComplete"
         );
+    }
+
+    #[tokio::test]
+    async fn idle_retirement_preserves_pinned_in_progress_conversation() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/idle-retire").await;
+        let conv = conversation_service::create(&db.conn, folder_id, AgentType::Codex, None, None)
+            .await
+            .unwrap();
+        conversation_service::update_pin(&db.conn, conv.id, true)
+            .await
+            .unwrap();
+        let mgr = ConnectionManager::new();
+        let conn = fake_connection_with_state("idle", Some(conv.id));
+        conn.state.write().await.status = ConnectionStatus::Connected;
+        conn.state.write().await.last_activity_at = chrono::Utc::now() - chrono::Duration::minutes(10);
+        mgr.connections.lock().await.insert("idle".into(), conn);
+        let mut cache = HashMap::new();
+        seed_cache(&mut cache, &mgr, "idle", conv.id).await;
+        assert_eq!(mgr.sweep_idle(Duration::from_secs(180)).await, 1);
+        handle_terminal_event(&db.conn, &mut cache, "idle")
+            .await
+            .unwrap();
+        assert_eq!(
+            read_row_status(&db, conv.id).await,
+            ConversationStatus::InProgress
+        );
+        assert!(cache.is_empty());
     }
 
     #[tokio::test]

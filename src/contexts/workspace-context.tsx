@@ -49,6 +49,7 @@ import {
   isHtmlPreviewable,
   isImageFile,
   isPdfFile,
+  isVideoFile,
   isOfficeOwnerFile,
   isOfficePreviewable,
   languageFromPath,
@@ -170,6 +171,8 @@ interface FileWorkspaceTabBase {
   // workspace watcher while the tab was inactive or otherwise not yet
   // resolved against disk. Cleared by any successful content reload.
   stale?: boolean
+  /** Remount streamed previews after an explicit reload or a file change. */
+  previewRevision?: number
 }
 
 /** A file, a unified diff, or a rich (side-by-side) diff. */
@@ -1459,6 +1462,26 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       const gen = beginFetchGeneration(tabId)
 
       try {
+        if (isVideoFile(absPath)) {
+          if (!settleFetch(tabId, gen)) return
+          setFileTabs((prev) =>
+            prev.map((tab) =>
+              tab.id === tabId
+                ? {
+                    ...tab,
+                    content: "",
+                    readonly: true,
+                    loading: false,
+                    saveState: "idle",
+                    saveError: null,
+                    stale: false,
+                    previewRevision: (tab.previewRevision ?? 0) + 1,
+                  }
+                : tab
+            )
+          )
+          return
+        }
         if (image || pdf) {
           const ext = absPath.split(".").pop()?.toLowerCase() ?? ""
           const mime = pdf
@@ -1764,6 +1787,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const tabId = buildFileTabId({ kind: "file", path: absPath })
         const image = isImageFile(absPath)
         const pdf = isPdfFile(absPath)
+        const video = isVideoFile(absPath)
         const office = !image && isOfficePreviewable(absPath)
         const seed = loadingTab(
           tabId,
@@ -1776,9 +1800,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
             ? "image"
             : pdf
               ? "pdf"
-              : office
-                ? "office"
-                : languageFromPath(absPath)
+              : video
+                ? "video"
+                : office
+                  ? "office"
+                  : languageFromPath(absPath)
         )
 
         const decision = decideLoad(
@@ -1791,10 +1817,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const { gen } = decision
 
         try {
-          // Office files (.docx/.xlsx/.pptx) are binary OpenXML — never read as
-          // text. The OfficePreview component renders them via the OfficeCLI
-          // backend on its own, so just settle the tab as a ready preview shell.
-          if (office) {
+          // Office and video previews own their resource loading. Never send
+          // their binary content through the text editor or base64 transport.
+          if (office || video) {
             if (!settleFetch(tabId, gen)) return
             setFileTabs((prev) =>
               prev.map((tab) =>
@@ -1802,6 +1827,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
                   ? {
                       ...tab,
                       content: "",
+                      previewRevision: (tab.previewRevision ?? 0) + 1,
                       readonly: true,
                       loading: false,
                       saveState: "idle",

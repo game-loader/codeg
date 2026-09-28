@@ -105,6 +105,24 @@ pub struct CreateFileTreeEntryParams {
 // Handlers
 // ---------------------------------------------------------------------------
 
+pub async fn start_video_preview(
+    Json(params): Json<ReadFilePreviewParams>,
+) -> Result<Json<crate::video_preview::VideoPreviewSession>, AppCommandError> {
+    Ok(Json(
+        crate::video_preview::start_video_preview_core(params.root_path, params.path).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct StopVideoPreviewParams {
+    pub token: String,
+}
+
+pub async fn stop_video_preview(Json(params): Json<StopVideoPreviewParams>) -> Json<()> {
+    crate::video_preview::stop_video_preview(params.token).await;
+    Json(())
+}
+
 pub async fn read_file_preview(
     Json(params): Json<ReadFilePreviewParams>,
 ) -> Result<Json<folder_commands::FilePreviewContent>, AppCommandError> {

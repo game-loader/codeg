@@ -29,6 +29,7 @@ import {
 import { BrowserTabView } from "@/components/browser/browser-tab-view"
 import { PdfPreview } from "@/components/files/pdf-preview"
 import { ImagePreview } from "@/components/files/image-preview"
+import { VideoPreview } from "@/components/files/video-preview"
 import { HtmlPreview } from "@/components/files/html-preview"
 import { MarkdownDocumentPreview } from "@/components/files/markdown-document-preview"
 import { OfficePreview } from "@/components/files/office-preview"
@@ -1901,6 +1902,10 @@ export function FileWorkspacePanel() {
 
   if (isFileTab && activeFileTab && activeFileTab.language === "pdf") {
     return <PdfPreview key={activeFileTab.id} tab={activeFileTab} />
+  }
+
+  if (isFileTab && activeFileTab && activeFileTab.language === "video") {
+    return <VideoPreview key={activeFileTab.id} tab={activeFileTab} />
   }
 
   // Image preview

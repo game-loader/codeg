@@ -2,9 +2,40 @@ import { describe, expect, it } from "vitest"
 
 import {
   isHiddenPath,
+  isVideoFile,
   isOfficeOwnerFile,
   languageFromPath,
 } from "./language-detect"
+
+describe("isVideoFile", () => {
+  it.each([
+    "/repo/demo.MP4",
+    "C:\\repo\\电影.mov",
+    "x.m4v",
+    "x.webm",
+    "x.ogv",
+    "x.mkv",
+    "x.avi",
+    "x.mpg",
+    "x.mpeg",
+    "x.3gp",
+    "x.3g2",
+  ])("recognizes %s", (path) => {
+    expect(isVideoFile(path)).toBe(true)
+  })
+  it.each([
+    null,
+    undefined,
+    "",
+    "mp4",
+    "/repo.mp4/file.txt",
+    "demo.mp4.ts",
+    "demo.ts",
+    "demo.pdf",
+  ])("rejects %s", (path) => {
+    expect(isVideoFile(path)).toBe(false)
+  })
+})
 
 describe("languageFromPath", () => {
   // The original implementation was a 13-case switch. These cases lock that

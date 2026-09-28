@@ -49,6 +49,7 @@ pub mod supervise;
 mod terminal;
 pub mod turn_timings;
 pub mod update;
+pub mod video_preview;
 pub mod web;
 pub mod work_task;
 pub mod workspace_state;
@@ -1650,6 +1651,9 @@ mod tauri_app {
                 folders::get_file_tree,
                 folders::list_workspace_files,
                 folders::read_file_base64,
+                crate::video_preview::start_video_preview,
+                crate::video_preview::stop_video_preview,
+                crate::video_preview::relay_video_preview,
                 folders::read_workspace_file_base64,
                 folders::read_file_preview,
                 folders::read_file_for_edit,

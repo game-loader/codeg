@@ -39,6 +39,7 @@ import {
   isImageFile,
   isOfficePreviewable,
   isPdfFile,
+  isVideoFile,
 } from "@/lib/language-detect"
 import { getWorkspaceStateStore } from "@/hooks/use-workspace-state-store"
 import type { FileEditContent } from "@/lib/types"
@@ -295,10 +296,11 @@ export function useOpenFileTabsWatch({
           const path = tab.path
           if (!path) continue
 
-          // Image and PDF tabs do not carry an etag and load via readFileBase64.
+          // Binary previews do not carry a text etag. Video refreshes restart
+          // the stream; images and PDFs reload via readFileBase64.
           // Bypass the text-file resolver: a single path-match is enough
           // to trigger a refresh.
-          if (isImageFile(path) || isPdfFile(path)) {
+          if (isImageFile(path) || isPdfFile(path) || isVideoFile(path)) {
             void reloadOpenFileBackground(path)
             continue
           }
@@ -466,12 +468,13 @@ export function useOpenFileTabsWatch({
     // Branch ③ — activation freshness for unwatched tabs.
     if (!isTransition) return
     if (tab.loading || tab.saveState === "saving") return
-    // Text files only: image/PDF tabs carry no etag (the resolver would
+    // Text files only: image/PDF/video tabs carry no etag (the resolver would
     // misread a binary file as "missing"), and office tabs are refreshed
     // by their own officecli watch.
     if (
       isImageFile(tab.path) ||
       isPdfFile(tab.path) ||
+      isVideoFile(tab.path) ||
       isOfficePreviewable(tab.path)
     )
       return

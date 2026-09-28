@@ -377,9 +377,41 @@ struct DrainingChild {
     /// `on_exit` zeroes it on a real reap.
     pid: Arc<std::sync::atomic::AtomicU32>,
     parked_at: std::time::Instant,
+    session: Option<SpawnDedupKey>,
+    driver_done: Option<tokio::sync::watch::Receiver<()>>,
 }
 
 type DrainingChildren = Vec<DrainingChild>;
+
+async fn wait_for_connection_shutdown(
+    done: Option<tokio::sync::watch::Receiver<()>>,
+    pid: Arc<std::sync::atomic::AtomicU32>,
+) -> Result<(), AcpError> {
+    let Some(mut done) = done else {
+        return Ok(());
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while done.changed().await.is_ok() {}
+        while pid.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        AcpError::protocol("Previous agent connection is still shutting down; retry shortly")
+    })
+}
+
+async fn finish_disconnect(conn: AgentConnection) -> Result<(), AcpError> {
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        conn.cmd_tx.send(ConnectionCommand::Disconnect),
+    )
+    .await
+    .map_err(|_| AcpError::protocol("Agent disconnect command timed out"))?
+    .ok();
+    wait_for_connection_shutdown(conn.driver_done, conn.child_pid).await
+}
 
 /// How long a child whose pid reads zero is still treated as possibly running.
 ///
@@ -395,6 +427,9 @@ const DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 fn prune_reaped(draining: &mut DrainingChildren) {
     draining.retain(|c| {
         c.pid.load(std::sync::atomic::Ordering::SeqCst) != 0
+            || c.driver_done
+                .as_ref()
+                .is_some_and(|done| done.has_changed().is_ok())
             || c.parked_at.elapsed() < DRAIN_GRACE
     });
 }
@@ -628,6 +663,7 @@ impl ConnectionManager {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            driver_done: None,
         };
         let mut map = self.connections.lock().await;
         map.insert(id.to_string(), conn);
@@ -671,6 +707,7 @@ impl ConnectionManager {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            driver_done: None,
         };
         self.connections.lock().await.insert(id.to_string(), conn);
         rx
@@ -742,6 +779,18 @@ impl ConnectionManager {
             return Ok(existing);
         }
 
+        // A disconnected entry is already out of the reuse map, but its
+        // process may still hold the thread writer lock. Wait for that exact
+        // session's driver and process before permitting another launch.
+        if let Some(sid) = session_id.as_deref() {
+            let key = SpawnDedupKey {
+                agent_type,
+                working_dir: working_dir_path.clone(),
+                session_id: sid.to_string(),
+            };
+            self.wait_for_retiring_session(&key).await?;
+        }
+
         let connection_id = uuid::Uuid::new_v4().to_string();
         tracing::info!(
             "[ACP] spawning connection id={} owner_window={} agent={:?}",
@@ -793,6 +842,47 @@ impl ConnectionManager {
         drop(dedup_lock);
 
         Ok(connection_id)
+    }
+
+    async fn wait_for_retiring_session(&self, key: &SpawnDedupKey) -> Result<(), AcpError> {
+        let retiring = {
+            // Include self-terminating drivers still in the map. They
+            // reject reuse but have not passed through disconnect().
+            let connections = self.connections.lock().await;
+            let mut retiring = Vec::new();
+            for conn in connections.values() {
+                let state = conn.state.read().await;
+                let session = state
+                    .external_id
+                    .as_deref()
+                    .or(state.requested_session_id.as_deref());
+                if conn.agent_type == key.agent_type
+                    && state.working_dir == key.working_dir
+                    && session == Some(key.session_id.as_str())
+                    && (state.disconnecting
+                        || matches!(
+                            state.status,
+                            ConnectionStatus::Error | ConnectionStatus::Disconnected
+                        ))
+                {
+                    retiring.push((conn.driver_done.clone(), conn.child_pid.clone()));
+                }
+            }
+            // Same lock order as disconnect: no gap between the map and
+            // draining snapshots can hide a connection being handed off.
+            let draining = self.draining.lock().await;
+            retiring.extend(
+                draining
+                    .iter()
+                    .filter(|c| c.session.as_ref() == Some(key))
+                    .map(|c| (c.driver_done.clone(), c.pid.clone())),
+            );
+            retiring
+        };
+        for (done, pid) in retiring {
+            wait_for_connection_shutdown(done, pid).await?;
+        }
+        Ok(())
     }
 
     /// Bump `last_activity_at` for a live connection so the idle sweep
@@ -863,11 +953,53 @@ impl ConnectionManager {
         let mut disconnected = 0;
         for id in to_disconnect {
             tracing::info!("[ACP] idle sweep disconnecting connection={}", id);
-            if self.disconnect(&id).await.is_ok() {
+            if self
+                .disconnect_if_idle(&id, idle_timeout)
+                .await
+                .unwrap_or(false)
+            {
                 disconnected += 1;
             }
         }
         disconnected
+    }
+
+    /// Recheck after the scan: a keepalive or queued prompt may have arrived
+    /// while another connection was shutting down. Admission and retirement
+    /// share the state lock so such work cannot be silently dropped.
+    async fn disconnect_if_idle(&self, id: &str, timeout: Duration) -> Result<bool, AcpError> {
+        let removed = {
+            let mut connections = self.connections.lock().await;
+            let Some(conn) = connections.get(id) else {
+                return Ok(false);
+            };
+            let state_arc = conn.state.clone();
+            let mut state = state_arc.write().await;
+            let now = chrono::Utc::now();
+            if state.status != ConnectionStatus::Connected
+                || state.turn_in_flight
+                || state.disconnecting
+                || state.pending_permission.is_some()
+                || state.has_active_background_work(now)
+                || now
+                    .signed_duration_since(state.last_activity_at)
+                    .to_std()
+                    .unwrap_or_default()
+                    < timeout
+            {
+                return Ok(false);
+            }
+            state.disconnecting = true;
+            state.preserve_status_on_disconnect = true;
+            drop(state);
+            let conn = connections
+                .remove(id)
+                .expect("connection checked under map lock");
+            self.park_draining(&conn).await;
+            conn
+        };
+        finish_disconnect(removed).await?;
+        Ok(true)
     }
 
     /// Compare each running connection's spawn-time config fingerprint against a
@@ -959,7 +1091,8 @@ impl ConnectionManager {
             if matches!(
                 state.status,
                 ConnectionStatus::Disconnected | ConnectionStatus::Error
-            ) {
+            ) || state.disconnecting
+            {
                 continue;
             }
             return Some(id.clone());
@@ -1021,6 +1154,9 @@ impl ConnectionManager {
             .map_err(|_| AcpError::ProcessExited)?;
         {
             let mut s = state_arc.write().await;
+            if s.disconnecting {
+                return Err(AcpError::ProcessExited);
+            }
             if s.turn_in_flight {
                 // Names the gate, not just the outcome: the linked path checks
                 // the same flag once before its side effects and again here, and
@@ -2355,14 +2491,20 @@ impl ConnectionManager {
             let mut connections = self.connections.lock().await;
             let removed = connections.remove(conn_id);
             if let Some(conn) = &removed {
+                let mut state = conn.state.write().await;
+                state.disconnecting = true;
+                state.preserve_status_on_disconnect = state.status == ConnectionStatus::Connected
+                    && !state.turn_in_flight
+                    && state.pending_permission.is_none()
+                    && !state.has_active_background_work(chrono::Utc::now());
+                drop(state);
                 self.park_draining(conn).await;
             }
             removed
         };
         if let Some(conn) = removed {
             tracing::info!("[ACP] disconnect connection={}", conn_id);
-            let _ = conn.cmd_tx.send(ConnectionCommand::Disconnect).await;
-            Ok(())
+            finish_disconnect(conn).await
         } else {
             Err(AcpError::ConnectionNotFound(conn_id.into()))
         }
@@ -2371,12 +2513,25 @@ impl ConnectionManager {
     /// Remember a connection's child until it is provably finished. Call while
     /// holding the connections lock, immediately after removing the entry.
     async fn park_draining(&self, conn: &AgentConnection) {
+        let state = conn.state.read().await;
+        let session = state
+            .external_id
+            .as_ref()
+            .or(state.requested_session_id.as_ref())
+            .map(|sid| SpawnDedupKey {
+                agent_type: conn.agent_type,
+                working_dir: state.working_dir.clone(),
+                session_id: sid.clone(),
+            });
+        drop(state);
         let mut draining = self.draining.lock().await;
         prune_reaped(&mut draining);
         draining.push(DrainingChild {
             agent: conn.agent_type,
             pid: conn.child_pid.clone(),
             parked_at: std::time::Instant::now(),
+            session,
+            driver_done: conn.driver_done.clone(),
         });
     }
 
@@ -4383,6 +4538,7 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            driver_done: None,
         }
     }
 
@@ -4838,6 +4994,7 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            driver_done: None,
         };
         mgr.connections
             .lock()
@@ -5731,6 +5888,7 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            driver_done: None,
         };
         let mgr = ConnectionManager::new();
         mgr.connections
@@ -7005,6 +7163,111 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn idle_retirement_rechecks_activity_and_queued_prompts() {
+        let mgr = ConnectionManager::new();
+        let _rx = mgr
+            .insert_test_connection("idle-race", AgentType::Codex, None, EventEmitter::Noop)
+            .await;
+        backdate_last_activity(&mgr, "idle-race", 600).await;
+        // Simulate a touch after a sweep collected the candidate.
+        assert!(mgr.touch("idle-race").await);
+        assert!(!mgr
+            .disconnect_if_idle("idle-race", Duration::from_secs(300))
+            .await
+            .unwrap());
+        backdate_last_activity(&mgr, "idle-race", 600).await;
+        let state = mgr.get_state("idle-race").await.unwrap();
+        state.write().await.turn_in_flight = true; // admitted, not dequeued yet
+        assert_eq!(mgr.sweep_idle(Duration::from_secs(300)).await, 0);
+        assert!(!state.read().await.preserve_status_on_disconnect);
+        state.write().await.turn_in_flight = false;
+        assert_eq!(mgr.sweep_idle(Duration::from_secs(300)).await, 1);
+        let state = state.read().await;
+        assert!(state.disconnecting);
+        assert!(state.preserve_status_on_disconnect);
+    }
+
+    #[tokio::test]
+    async fn disconnect_waits_for_driver_exit_and_actual_process_reap() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let mgr = ConnectionManager::new();
+        let mut rx = mgr
+            .insert_test_connection_live("retiring", AgentType::Codex, None, EventEmitter::Noop)
+            .await;
+        let (done_tx, done_rx) = tokio::sync::watch::channel(());
+        let pid = {
+            let mut connections = mgr.connections.lock().await;
+            let conn = connections.get_mut("retiring").unwrap();
+            conn.driver_done = Some(done_rx);
+            conn.child_pid.store(42, SeqCst); // fake identity, never signalled
+            conn.child_pid.clone()
+        };
+        let task = tokio::spawn(async move { mgr.disconnect("retiring").await });
+        assert!(matches!(
+            rx.recv().await,
+            Some(ConnectionCommand::Disconnect)
+        ));
+        assert!(!task.is_finished());
+        drop(done_tx);
+        tokio::task::yield_now().await;
+        assert!(
+            !task.is_finished(),
+            "driver ending alone does not release the writer lock"
+        );
+        pid.store(0, SeqCst);
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn reconnect_waits_for_self_retiring_and_draining_sessions() {
+        use std::sync::atomic::Ordering::SeqCst;
+        for parked in [false, true] {
+            let mgr = ConnectionManager::new();
+            mgr.insert_test_connection("old", AgentType::Codex, None, EventEmitter::Noop)
+                .await;
+            let (done_tx, done_rx) = tokio::sync::watch::channel(());
+            let pid = {
+                let mut conns = mgr.connections.lock().await;
+                let conn = conns.get_mut("old").unwrap();
+                conn.driver_done = Some(done_rx);
+                let mut state = conn.state.write().await;
+                state.disconnecting = true;
+                // A failure before SessionStarted still owns this identity.
+                state.requested_session_id = Some("original".into());
+                conn.child_pid.store(42, SeqCst);
+                conn.child_pid.clone()
+            };
+            if parked {
+                let conn = mgr.connections.lock().await.remove("old").unwrap();
+                mgr.park_draining(&conn).await;
+            }
+            let key = SpawnDedupKey {
+                agent_type: AgentType::Codex,
+                working_dir: None,
+                session_id: "original".into(),
+            };
+            let wait = mgr.wait_for_retiring_session(&key);
+            tokio::pin!(wait);
+            assert!(tokio::time::timeout(Duration::from_millis(20), &mut wait)
+                .await
+                .is_err());
+            drop(done_tx);
+            assert!(tokio::time::timeout(Duration::from_millis(20), &mut wait)
+                .await
+                .is_err());
+            pid.store(0, SeqCst);
+            tokio::time::timeout(Duration::from_secs(1), wait)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn sweep_idle_skips_prompting_connection() {
         let mgr = ConnectionManager::new();
         insert_fake_connection(
@@ -7414,6 +7677,7 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            driver_done: None,
         };
         let mgr = Arc::new(ConnectionManager::new());
         {
@@ -8085,6 +8349,7 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            driver_done: None,
         };
         let mgr = ConnectionManager::new();
         {

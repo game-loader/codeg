@@ -415,24 +415,27 @@ impl AcpAgent {
                 {
                     cmd.creation_flags(CREATE_NO_WINDOW);
                 }
+                // Keep descendants addressable after their launcher exits.
+                // This is a new group, never the host application's group.
+                #[cfg(unix)]
+                cmd.process_group(0);
                 cmd.stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped());
 
-                let mut child = cmd.spawn().map_err(agent_client_protocol::Error::into_internal_error)?;
+                let mut child = cmd
+                    .spawn()
+                    .map_err(agent_client_protocol::Error::into_internal_error)?;
 
-                let child_stdin = child
-                    .stdin
-                    .take()
-                    .ok_or_else(|| agent_client_protocol::util::internal_error("Failed to open stdin"))?;
-                let child_stdout = child
-                    .stdout
-                    .take()
-                    .ok_or_else(|| agent_client_protocol::util::internal_error("Failed to open stdout"))?;
-                let child_stderr = child
-                    .stderr
-                    .take()
-                    .ok_or_else(|| agent_client_protocol::util::internal_error("Failed to open stderr"))?;
+                let child_stdin = child.stdin.take().ok_or_else(|| {
+                    agent_client_protocol::util::internal_error("Failed to open stdin")
+                })?;
+                let child_stdout = child.stdout.take().ok_or_else(|| {
+                    agent_client_protocol::util::internal_error("Failed to open stdout")
+                })?;
+                let child_stderr = child.stderr.take().ok_or_else(|| {
+                    agent_client_protocol::util::internal_error("Failed to open stderr")
+                })?;
 
                 Ok((child_stdin, child_stdout, child_stderr, child))
             }
@@ -461,16 +464,59 @@ struct ChildGuard {
 
 impl ChildGuard {
     async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        let Some(child) = self.child.as_mut() else {
-            return Err(std::io::Error::other("child already handed to the reaper"));
-        };
-        let status = child.wait().await;
-        if status.is_ok() {
-            // `wait` succeeded, so the child has been reaped and its pid is
-            // free for the OS to reassign.
-            self.notify_exit();
+        #[cfg(unix)]
+        {
+            let pid = self
+                .child
+                .as_ref()
+                .and_then(Child::id)
+                .ok_or_else(|| std::io::Error::other("child already handed to the reaper"))?;
+            // Observe without reaping: the leader's pid must stay reserved
+            // until surviving members of its process group have exited too.
+            loop {
+                let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                let result = unsafe {
+                    libc::waitid(
+                        libc::P_PID,
+                        pid as libc::id_t,
+                        &mut info,
+                        libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                    )
+                };
+                if result != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                #[cfg(target_os = "linux")]
+                let exited = unsafe { info.si_pid() } != 0;
+                #[cfg(not(target_os = "linux"))]
+                let exited = info.si_pid != 0;
+                if exited {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            let child = self.child.take().expect("owned child");
+            let callback = self.exit_callback.take();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(reap_agent_tree(child, callback));
+            });
+            rx.await
+                .map_err(|_| std::io::Error::other("agent reaper stopped"))?
         }
-        status
+        #[cfg(not(unix))]
+        {
+            let Some(child) = self.child.as_mut() else {
+                return Err(std::io::Error::other("child already handed to the reaper"));
+            };
+            let status = child.wait().await;
+            if status.is_ok() {
+                // `wait` succeeded, so the child has been reaped and its pid is
+                // free for the OS to reassign.
+                self.notify_exit();
+            }
+            status
+        }
     }
 
     fn notify_exit(&mut self) {
@@ -492,41 +538,138 @@ impl Drop for ChildGuard {
             return;
         };
 
-        let _ = kill_tree::blocking::kill_tree(pid);
-
-        // `kill_tree` only signals (SIGTERM on Unix) and does not wait, so the
-        // process may well outlive this call. Keep OWNING the child until it is
-        // really reaped, and report the exit from there.
-        //
-        // Simply dropping it here would hand it to Tokio's orphan queue, which
-        // reaps it out of sight: the pid would silently become reusable while a
-        // host still held it as "this agent", and a later kill could land on an
-        // unrelated process tree. Holding the child keeps the pid pinned — a
-        // zombie on Unix, an open process handle on Windows — until we ourselves
-        // observe the exit and say so.
         let exit_callback = self.exit_callback.take();
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                handle.spawn(async move {
-                    // Same gate as `ChildGuard::wait`: only a successful `wait`
-                    // proves the child was reaped. Reporting an exit we failed
-                    // to observe would tell the host to stop tracking a pid
-                    // whose process may still be running.
-                    if child.wait().await.is_ok() {
-                        if let Some(callback) = exit_callback {
-                            callback();
-                        }
-                    }
-                });
+        // A blocking reaper survives runtime shutdown and never stalls a Tokio
+        // worker. It owns the Child through escalation and the actual reap.
+        std::thread::spawn(move || {
+            if let Err(error) = reap_agent_tree(child, exit_callback) {
+                tracing::warn!("[ACP] could not reap agent pid={pid}: {error}");
             }
-            Err(_) => {
-                // Dropped outside a runtime, so there is nothing to reap on.
-                // Fall back to the previous behaviour and deliberately stay
-                // silent about an exit we cannot observe.
-                drop(child);
+        });
+    }
+}
+
+/// Keeps the leader unreaped while terminating and observing its descendants.
+/// Signal delivery alone is not proof that a writer released its file locks.
+fn reap_agent_tree(
+    mut child: Child,
+    exit_callback: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
+) -> std::io::Result<std::process::ExitStatus> {
+    let pid = child
+        .id()
+        .ok_or_else(|| std::io::Error::other("agent already reaped"))?;
+    #[cfg(unix)]
+    let owned_group = unsafe { libc::getpgid(pid as libc::pid_t) } == pid as libc::pid_t;
+    let _ = kill_tree::blocking::kill_tree(pid);
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    #[cfg(unix)]
+    if owned_group {
+        // SAFETY: this group was created for our still-owned child;
+        // we have deliberately not reaped its leader yet.
+        unsafe {
+            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+        }
+    }
+    let config = kill_tree::Config {
+        signal: "SIGKILL".into(),
+        ..Default::default()
+    };
+    let _ = kill_tree::blocking::kill_tree_with_config(pid, &config);
+    let _ = child.start_kill();
+    #[cfg(unix)]
+    if owned_group {
+        loop {
+            match process_group_has_live_descendants(pid) {
+                Ok(false) => break,
+                Ok(true) => {}
+                Err(error) => {
+                    // Keep the child owned rather than handing an unreaped
+                    // pid to Tokio's orphan queue and leaving a stale cell.
+                    tracing::warn!("[ACP] cannot confirm process group {pid} exited: {error}");
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if let Some(callback) = exit_callback {
+                    callback();
+                }
+                return Ok(status);
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Err(error) => {
+                return Err(error);
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn process_group_has_live_descendants(group: u32) -> std::io::Result<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        for entry in std::fs::read_dir("/proc")? {
+            let entry = entry?;
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|s| s.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if pid == group {
+                continue;
+            }
+            // Proc entries can disappear between enumeration and read.
+            let stat = match std::fs::read(entry.path().join("stat")) {
+                Ok(stat) => stat,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            if proc_stat_is_live_group_member(&stat, group)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let output = std::process::Command::new("/bin/ps")
+            .args(["-axo", "pid=,pgid=,stat="])
+            .output()?;
+        if !output.status.success() {
+            return Err(std::io::Error::other("cannot inspect agent process group"));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            fields.len() >= 3
+                && fields[0].parse::<u32>().ok() != Some(group)
+                && fields[1].parse::<u32>().ok() == Some(group)
+                && !fields[2].starts_with('Z')
+        }))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn proc_stat_is_live_group_member(stat: &[u8], group: u32) -> std::io::Result<bool> {
+    // comm is arbitrary bytes and can contain spaces, parentheses, or a
+    // truncated UTF-8 sequence. Only the numeric/state suffix is textual.
+    let invalid = || std::io::Error::other("cannot parse process group membership");
+    let end = stat.iter().rposition(|b| *b == b')').ok_or_else(invalid)?;
+    let fields = std::str::from_utf8(&stat[end + 1..]).map_err(|_| invalid())?;
+    let mut fields = fields.split_ascii_whitespace();
+    let state = fields.next().ok_or_else(invalid)?;
+    fields.next().ok_or_else(invalid)?; // ppid
+    let pgrp = fields
+        .next()
+        .ok_or_else(invalid)?
+        .parse::<u32>()
+        .map_err(|_| invalid())?;
+    Ok(pgrp == group && !matches!(state, "Z" | "X"))
 }
 
 fn append_limited_utf8(output: &mut String, chunk: &str, limit: usize) -> bool {
@@ -548,10 +691,8 @@ fn append_limited_utf8(output: &mut String, chunk: &str, limit: usize) -> bool {
 ///
 /// The error message includes any stderr output collected by the background task.
 /// Dropping the returned future drops a [`ChildGuard`], which signals the
-/// child's process tree and — given a runtime to reap on — keeps owning the
-/// child until it is really gone. Neither half is unconditional: see
-/// [`AcpAgent::on_exit`] for why the kill is only a signal, and
-/// `ChildGuard::drop` for why a drop outside a runtime stays silent.
+/// child's process tree, escalates after a grace period, and owns the child
+/// until it is actually reaped. Its reaper does not depend on a Tokio runtime.
 ///
 /// That much has to survive a drop landing *before the first poll*, which is
 /// why this is deliberately NOT an `async fn`: an `async fn` body does not run
@@ -587,7 +728,10 @@ fn monitor_child(
 
         // Wait for the child to exit
         let status = guard.wait().await.map_err(|e| {
-            agent_client_protocol::util::internal_error(format!("Failed to wait for process: {}", e))
+            agent_client_protocol::util::internal_error(format!(
+                "Failed to wait for process: {}",
+                e
+            ))
         })?;
 
         if status.success() {
@@ -619,10 +763,10 @@ impl<Counterpart: AcpAgentCounterpartRole> ConnectTo<Counterpart> for AcpAgent {
         self,
         client: impl ConnectTo<Counterpart::Counterpart>,
     ) -> Result<(), agent_client_protocol::Error> {
+        use futures::io::BufReader;
         use futures::AsyncBufReadExt;
         use futures::AsyncWriteExt;
         use futures::StreamExt;
-        use futures::io::BufReader;
 
         let (child_stdin, child_stdout, child_stderr, child) = self.spawn_process()?;
 
@@ -654,11 +798,8 @@ impl<Counterpart: AcpAgentCounterpartRole> ConnectTo<Counterpart> for AcpAgent {
                     }
                     // Always collect for error reporting
                     if !collected.is_empty() {
-                        truncated |= append_limited_utf8(
-                            &mut collected,
-                            "\n",
-                            MAX_STDERR_CAPTURE_BYTES,
-                        );
+                        truncated |=
+                            append_limited_utf8(&mut collected, "\n", MAX_STDERR_CAPTURE_BYTES);
                     }
                     truncated |=
                         append_limited_utf8(&mut collected, &line, MAX_STDERR_CAPTURE_BYTES);
@@ -720,10 +861,8 @@ impl<Counterpart: AcpAgentCounterpartRole> ConnectTo<Counterpart> for AcpAgent {
 
         // Race the protocol against child process exit
         // If the child exits early (e.g., with an error), we return that error
-        let protocol_future = ConnectTo::<Counterpart>::connect_to(
-            Lines::new(outgoing_sink, incoming_lines),
-            client,
-        );
+        let protocol_future =
+            ConnectTo::<Counterpart>::connect_to(Lines::new(outgoing_sink, incoming_lines), client);
 
         tokio::select! {
             result = protocol_future => result,
@@ -746,7 +885,9 @@ impl AcpAgent {
         let args: Vec<String> = args.into_iter().map(|s| s.to_string()).collect();
 
         if args.is_empty() {
-            return Err(agent_client_protocol::util::internal_error("Arguments cannot be empty"));
+            return Err(agent_client_protocol::util::internal_error(
+                "Arguments cannot be empty",
+            ));
         }
 
         let mut env = vec![];
@@ -779,11 +920,7 @@ impl AcpAgent {
             .to_string();
 
         Ok(AcpAgent {
-            server: McpServer::Stdio(
-                McpServerStdio::new(name, command)
-                    .args(cmd_args)
-                    .env(env),
-            ),
+            server: McpServer::Stdio(McpServerStdio::new(name, command).args(cmd_args).env(env)),
             debug_callback: None,
             current_dir: None,
             spawn_callback: None,
@@ -859,8 +996,9 @@ mod tests {
     /// keeps a Windows process handle open, which is exactly what stops the OS
     /// from reusing the pid there.
     #[cfg(unix)]
-    fn counting_callback(calls: &Arc<std::sync::atomic::AtomicUsize>) -> Arc<dyn Fn() + Send + Sync>
-    {
+    fn counting_callback(
+        calls: &Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Arc<dyn Fn() + Send + Sync> {
         let calls = Arc::clone(calls);
         Arc::new(move || {
             calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -994,13 +1132,11 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
-    /// The case that makes the whole design necessary: a child that ignores the
-    /// kill signal is STILL RUNNING after `drop`. Its pid must stay published so
-    /// a host's shutdown backstop still sweeps it — reporting an exit here would
-    /// disarm that backstop and leave a real orphan behind.
+    /// Ignoring SIGTERM must not leave a writer alive indefinitely, even when
+    /// the runtime is shut down immediately after dropping its connection.
     #[cfg(unix)]
     #[test]
-    fn a_child_that_survives_the_kill_keeps_its_pid_published() {
+    fn stubborn_child_is_reaped_even_after_runtime_shutdown() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let calls = Arc::new(AtomicUsize::new(0));
@@ -1028,7 +1164,6 @@ mod tests {
                 ])
                 .spawn()
                 .expect("spawn sh");
-            let pid = child.id().expect("child has a pid").to_string();
             let guard = ChildGuard {
                 child: Some(child),
                 exit_callback: Some(counting_callback(&calls)),
@@ -1046,40 +1181,93 @@ mod tests {
 
             drop(guard);
 
-            // Well past the signal it ignored. `kill -0` probes for existence
-            // without sending anything (no `libc` dependency in this crate).
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            let alive = std::process::Command::new("kill")
-                .args(["-0", &pid])
-                .status()
-                .expect("run kill -0")
-                .success();
-            assert!(
-                alive,
-                "test setup is wrong — the child was supposed to survive SIGTERM"
-            );
             assert_eq!(
                 calls.load(Ordering::SeqCst),
                 0,
                 "a still-running child must keep its pid published"
             );
-
-            // And once it really dies, the exit is reported — the reaper is
-            // armed the whole time, not abandoned.
-            let _ = std::process::Command::new("kill")
-                .args(["-9", &pid])
-                .status();
-            let mut reported = false;
-            for _ in 0..200 {
-                if calls.load(Ordering::SeqCst) > 0 {
-                    reported = true;
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-            assert!(reported, "the reaper never observed the child's death");
         });
+        drop(rt);
+        for _ in 0..200 {
+            if calls.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "shutdown must escalate and reap without a live runtime"
+        );
         let _ = std::fs::remove_file(&ready);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn shutdown_reaches_stubborn_descendant_after_launcher_exits() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("child-pid");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let descendant = rt.block_on(async {
+            let script = format!(
+                "sh -c 'trap \"\" TERM; echo $$ > \"$1\"; while :; do sleep 1; done' sh '{}' & wait",
+                ready.display()
+            );
+            let agent = AcpAgent::from_args(["/bin/sh", "-c", &script]).unwrap();
+            let (_stdin, _stdout, _stderr, child) = agent.spawn_process().unwrap();
+            let guard = ChildGuard { child: Some(child), exit_callback: Some(counting_callback(&calls)) };
+            for _ in 0..200 {
+                if ready.exists() { break; }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let pid = std::fs::read_to_string(&ready).unwrap().trim().parse::<u32>().unwrap();
+            drop(guard);
+            pid
+        });
+        drop(rt);
+        for _ in 0..200 {
+            if calls.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let stat = std::fs::read_to_string(format!("/proc/{descendant}/stat"));
+        assert!(
+            stat.is_err() || stat.unwrap().split_once(") ").unwrap().1.starts_with('Z'),
+            "descendant must no longer execute or hold file locks"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn normal_launcher_exit_also_waits_for_descendant_cleanup() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("child-pid");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let script = format!(
+                "sh -c 'trap \"\" TERM; echo $$ > \"$1\"; while :; do sleep 1; done' sh '{}' & while [ ! -s '{}' ]; do sleep 0.01; done; exit 0",
+                ready.display(), ready.display()
+            );
+            let agent = AcpAgent::from_args(["/bin/sh", "-c", &script]).unwrap();
+            let (_stdin, _stdout, _stderr, child) = agent.spawn_process().unwrap();
+            let mut guard = ChildGuard {
+                child: Some(child),
+                exit_callback: Some(counting_callback(&calls)),
+            };
+            let status = tokio::time::timeout(std::time::Duration::from_secs(5), guard.wait())
+                .await.unwrap().unwrap();
+            assert!(status.success());
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            let descendant = std::fs::read_to_string(&ready).unwrap();
+            let stat = std::fs::read_to_string(format!("/proc/{}/stat", descendant.trim()));
+            assert!(stat.is_err() || stat.unwrap().rsplit_once(") ").unwrap().1.starts_with('Z'));
+        });
     }
 
     #[test]
@@ -1236,8 +1424,7 @@ mod tests {
             .with_current_dir(&dir);
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let out = rt.block_on(async {
-            let (_stdin, mut stdout, _stderr, mut child) =
-                agent.spawn_process().expect("spawn");
+            let (_stdin, mut stdout, _stderr, mut child) = agent.spawn_process().expect("spawn");
             let mut out = String::new();
             stdout.read_to_string(&mut out).await.expect("read stdout");
             let _ = child.wait().await;
@@ -1246,4 +1433,12 @@ mod tests {
         // The child ran `pwd -P` from `dir`, so it must print exactly `dir`.
         assert_eq!(out.trim(), dir.to_string_lossy());
     }
+}
+#[cfg(target_os = "linux")]
+#[test]
+fn process_group_scan_accepts_non_utf8_process_names() {
+    assert!(proc_stat_is_live_group_member(b"123 (worker ) \xff) D 1 456 0", 456).unwrap());
+    assert!(!proc_stat_is_live_group_member(b"123 (\xff) Z 1 456 0", 456).unwrap());
+    assert!(!proc_stat_is_live_group_member(b"123 (\xff) S 1 789 0", 456).unwrap());
+    assert!(proc_stat_is_live_group_member(b"malformed", 456).is_err());
 }

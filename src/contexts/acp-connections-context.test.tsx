@@ -3667,6 +3667,28 @@ describe("session_load_failed archived-session recovery", () => {
   // a generic -32603 whose data spells out the session and the way back.
   const RAW = `Internal error: {\n  "details": "session ${ARCHIVED_SID} is archived. Run \`codex unarchive ${ARCHIVED_SID}\` to restore it."\n}`
 
+  it("surfaces an unreadable history without replacing the original session", async () => {
+    const handlers = await connectOwner("codex")
+    const reason = "database disk image is malformed"
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "session_load_failed",
+      session_id: "sess-1",
+      message: reason,
+      code: "session_load_error",
+    })
+    expect(h.store!.getConnection(TAB)!.loadError).toBe(
+      "backendErrors.sessionLoadError"
+    )
+    expect(h.store!.getConnection(TAB)!.loadErrorCommand).toBeNull()
+    expect(h.tCalls).toContainEqual([
+      "backendErrors.sessionLoadError",
+      expect.objectContaining({ reason }),
+    ])
+    expect(h.acpConnect).toHaveBeenCalledTimes(1)
+  })
+
   it("names the unarchive command using the id off the event, not the error body", async () => {
     const handlers = await connectOwner("codex")
 

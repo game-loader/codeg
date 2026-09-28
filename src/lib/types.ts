@@ -2677,7 +2677,8 @@ export type AcpEvent =
       message: string
       /**
        * Stable backend identifier: `"resource_not_found"`,
-       * `"session_unavailable"`, `"session_archived"`, or `"session_busy"`.
+       * `"session_unavailable"`, `"session_archived"`, `"session_busy"`, or
+       * `"session_load_error"` (history could not be read; identity preserved).
        *
        * The first three mean the session is gone. `"session_busy"` does not —
        * another live session holds it (codex keeps the parent thread's writer

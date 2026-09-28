@@ -4769,3 +4769,88 @@ describe("WorkspaceProvider PDF files", () => {
     }
   })
 })
+
+describe("WorkspaceProvider video files", () => {
+  function VideoProbe() {
+    const {
+      openFilePreview,
+      reloadOpenFileBackground,
+      activeFileTab,
+      updateFileTabContent,
+    } = useWorkspaceContext()
+    return (
+      <>
+        <button onClick={() => void openFilePreview("/repo/demo.MP4")}>
+          open-video
+        </button>
+        <button onClick={() => void reloadOpenFileBackground("/repo/demo.MP4")}>
+          reload-video
+        </button>
+        <button
+          onClick={() =>
+            activeFileTab && updateFileTabContent(activeFileTab.id, "edited")
+          }
+        >
+          edit-video
+        </button>
+        <output data-testid="video-tab">{JSON.stringify(activeFileTab)}</output>
+      </>
+    )
+  }
+
+  it("opens videos read-only and refreshes them without reading binary data as text or base64", async () => {
+    vi.mocked(api.readFileBase64).mockClear()
+    vi.mocked(api.readFileForEdit).mockClear()
+    render(
+      <WorkspaceProvider>
+        <VideoProbe />
+      </WorkspaceProvider>
+    )
+    await act(async () => screen.getByText("open-video").click())
+    const current = () =>
+      JSON.parse(screen.getByTestId("video-tab").textContent!)
+    expect(current()).toMatchObject({
+      language: "video",
+      readonly: true,
+      loading: false,
+      content: "",
+      previewRevision: 1,
+    })
+    await act(async () => screen.getByText("edit-video").click())
+    expect(current().content).toBe("")
+    await act(async () => screen.getByText("reload-video").click())
+    expect(current()).toMatchObject({
+      language: "video",
+      readonly: true,
+      content: "",
+      previewRevision: 2,
+    })
+    expect(api.readFileForEdit).not.toHaveBeenCalled()
+    expect(api.readFileBase64).not.toHaveBeenCalled()
+  })
+
+  it("refreshes a changed video through the file watcher without text IO", async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(api.readFileForEdit).mockClear()
+      vi.mocked(api.readFileBase64).mockClear()
+      render(
+        <WorkspaceProvider>
+          <VideoProbe />
+        </WorkspaceProvider>
+      )
+      await act(async () => screen.getByText("open-video").click())
+      await act(async () => {
+        workspaceStoreMock.emitRoot("/repo", ["demo.MP4"])
+        await vi.advanceTimersByTimeAsync(300)
+      })
+      expect(
+        JSON.parse(screen.getByTestId("video-tab").textContent!)
+      ).toMatchObject({ previewRevision: 2, saveState: "idle" })
+      expect(api.readFileForEdit).not.toHaveBeenCalled()
+      expect(api.readFileBase64).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

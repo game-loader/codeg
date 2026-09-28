@@ -120,6 +120,9 @@ vi.mock("@/components/ai-elements/code-block", () => ({
 vi.mock("@/components/files/pdf-preview", () => ({
   PdfPreview: () => <div data-testid="pdf" />,
 }))
+vi.mock("@/components/files/video-preview", () => ({
+  VideoPreview: () => <div data-testid="video" />,
+}))
 vi.mock("@/components/files/image-preview", () => ({
   ImagePreview: () => <div data-testid="image" />,
 }))
@@ -246,6 +249,13 @@ describe("FileViewerDrawer", () => {
     state.fileTabs = [tab({ language: "office" })]
     await open({ path: ABS_PATH, line: null })
     expect(screen.getByTestId("office")).toHaveAttribute("data-rel", "plan.md")
+  })
+
+  it("routes a video tab with no text content to the mobile player", async () => {
+    state.fileTabs = [tab({ language: "video", content: "", readonly: true })]
+    await open({ path: "docs/plan.md", folderId: 1, line: null })
+    expect(screen.getByTestId("video")).toBeInTheDocument()
+    expect(screen.queryByTestId("source")).not.toBeInTheDocument()
   })
 
   it("waits for content rather than showing an empty document", async () => {

@@ -1839,6 +1839,14 @@
     }
   },
   "Folder": {
+    "videoPreview": {
+      "player": "视频播放器：{name}",
+      "loading": "正在加载视频…",
+      "loadFailed": "无法预览此视频",
+      "unsupported": "当前浏览器或设备不支持此视频的编码。建议使用 H.264 视频和 AAC 音频编码的 MP4 文件。",
+      "networkError": "视频加载失败，请检查连接或重试以重新加载预览。",
+      "retry": "重试"
+    },
     "pdfPreview": {
       "title": "PDF 预览",
       "previousPage": "上一页",
@@ -3043,7 +3051,8 @@
           "downloadFailed": "{agent} 下载失败：{message}",
           "sessionLoadResourceNotFound": "{agent} 会话加载失败，可重新加载重试，或开始新会话。",
           "sessionLoadUnavailable": "{agent} 无法恢复此会话，它可能已结束或 agent 已停止。可重新加载重试，或开始新会话。",
-          "sessionLoadBusy": "这份历史正被从它分叉出来的会话占用。关掉那个会话，再重新加载即可打开。",
+          "sessionLoadBusy": "此会话正被另一个智能体连接占用。关闭占用它的连接后重新加载，原会话已保留。",
+          "sessionLoadError": "{agent} 无法加载原会话，未创建替代会话。请解决错误后重新加载：{reason}",
           "sessionArchived": "原会话已在 {agent} 侧归档，可在终端运行 {command} 找回历史后重载，或直接开始新会话。",
           "turnFailedRefusal": "{agent} 拒绝继续本轮回复，通常意味着后端或网关出错，请检查代理日志。",
           "turnFailedMaxTokens": "{agent} 已达到本轮回复的最大 Token 限制。",
