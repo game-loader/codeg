@@ -474,22 +474,27 @@ impl ChildGuard {
             // Observe without reaping: the leader's pid must stay reserved
             // until surviving members of its process group have exited too.
             loop {
-                let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-                let result = unsafe {
-                    libc::waitid(
-                        libc::P_PID,
-                        pid as libc::id_t,
-                        &mut info,
-                        libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-                    )
+                // Darwin's siginfo_t contains a raw pointer and is not Send.
+                // Keep it out of the future's state across the sleep below.
+                let exited = {
+                    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                    let result = unsafe {
+                        libc::waitid(
+                            libc::P_PID,
+                            pid as libc::id_t,
+                            &mut info,
+                            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                        )
+                    };
+                    if result != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    #[cfg(target_os = "linux")]
+                    let exited = unsafe { info.si_pid() } != 0;
+                    #[cfg(not(target_os = "linux"))]
+                    let exited = info.si_pid != 0;
+                    exited
                 };
-                if result != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                #[cfg(target_os = "linux")]
-                let exited = unsafe { info.si_pid() } != 0;
-                #[cfg(not(target_os = "linux"))]
-                let exited = info.si_pid != 0;
                 if exited {
                     break;
                 }
