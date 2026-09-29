@@ -13,6 +13,8 @@ export interface Machine {
   source?: "tailscale" | "manual"
   ssh_port?: number
   ssh_user?: string | null
+  auth_method?: SshAuthMethod | null
+  jump_host?: SshJumpHost | null
 }
 
 export interface MachineSnapshot {
@@ -41,13 +43,25 @@ export interface MachineInventory {
   discovery_error: string | null
 }
 
-export interface ManualMachineInput {
-  id: string | null
-  name: string
+export type SshAuthMethod = "password" | "private_key"
+
+export interface SshJumpHost {
   host: string
   port: number
   username: string
+  auth_method: SshAuthMethod
+}
+
+export interface SshEndpointInput extends SshJumpHost {
   password: string | null
+  private_key: string | null
+  passphrase: string | null
+}
+
+export interface ManualMachineInput extends SshEndpointInput {
+  id: string | null
+  name: string
+  jump_host: SshEndpointInput | null
 }
 
 export function saveManualMachine(input: ManualMachineInput): Promise<Machine> {
@@ -151,5 +165,14 @@ function publicMachineContext(machine: Machine) {
     // Tailnet connections can inherit an unobserved port from SSH config.
     ssh_port: machine.source === "manual" ? machine.ssh_port : undefined,
     ssh_user: machine.ssh_user ?? null,
+    auth_method: machine.auth_method ?? undefined,
+    jump_host: machine.jump_host
+      ? {
+          host: machine.jump_host.host,
+          port: machine.jump_host.port,
+          username: machine.jump_host.username,
+          auth_method: machine.jump_host.auth_method,
+        }
+      : undefined,
   }
 }

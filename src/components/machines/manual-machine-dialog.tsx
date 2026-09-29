@@ -12,6 +12,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  endpointForm,
+  endpointInput,
+  SshEndpointFields,
+} from "./ssh-endpoint-fields"
 import { machineError, saveManualMachine, type Machine } from "@/lib/machines"
 
 /** Mounted only while open: closing also discards the password from form state. */
@@ -26,10 +31,20 @@ export function ManualMachineDialog({
 }) {
   const t = useTranslations("Machines")
   const [name, setName] = useState(machine?.name ?? "")
-  const [host, setHost] = useState(machine?.addresses[0] ?? "")
-  const [port, setPort] = useState(String(machine?.ssh_port ?? 22))
-  const [username, setUsername] = useState(machine?.ssh_user ?? "root")
-  const [password, setPassword] = useState("")
+  const [target, setTarget] = useState(() =>
+    endpointForm(
+      machine
+        ? {
+            host: machine.addresses[0] ?? "",
+            port: machine.ssh_port ?? 22,
+            username: machine.ssh_user ?? "root",
+            auth_method: machine.auth_method ?? "password",
+          }
+        : null
+    )
+  )
+  const [useJump, setUseJump] = useState(Boolean(machine?.jump_host))
+  const [jump, setJump] = useState(() => endpointForm(machine?.jump_host))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   async function submit(event: FormEvent) {
@@ -41,17 +56,25 @@ export function ManualMachineDialog({
       const saved = await saveManualMachine({
         id: machine?.id ?? null,
         name: name.trim(),
-        host: host.trim(),
-        port: Number(port),
-        username: username.trim(),
-        password: password || null,
+        ...endpointInput(target),
+        jump_host: useJump ? endpointInput(jump) : null,
       })
-      setPassword("")
+      setTarget(endpointForm())
+      setJump(endpointForm())
       onSaved(saved)
     } catch (err) {
       // The backend never returns a stored secret; also guard request errors.
-      const message = machineError(err)
-      setError(password ? message.split(password).join("••••••") : message)
+      let message = machineError(err)
+      for (const value of [target, jump]) {
+        for (const secret of [
+          value.password,
+          value.private_key,
+          value.passphrase,
+        ]) {
+          if (secret) message = message.split(secret).join("••••••")
+        }
+      }
+      setError(message)
     } finally {
       setSaving(false)
     }
@@ -63,10 +86,13 @@ export function ManualMachineDialog({
         if (!open && !saving) onClose()
       }}
     >
-      <DialogContent showCloseButton={!saving}>
+      <DialogContent
+        showCloseButton={!saving}
+        className="max-h-[90dvh] overflow-y-auto"
+      >
         <DialogHeader>
           <DialogTitle>{t(machine ? "editMachine" : "addMachine")}</DialogTitle>
-          <DialogDescription>{t("manualDescription")}</DialogDescription>
+          <DialogDescription>{t("ssh.description")}</DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-4">
           <fieldset disabled={saving} className="space-y-3">
@@ -80,57 +106,45 @@ export function ManualMachineDialog({
                 autoComplete="off"
               />
             </label>
-            <div className="grid grid-cols-[minmax(0,1fr)_6rem] gap-3">
-              <label className="block space-y-1 text-sm">
-                {t("host")}
-                <Input
-                  required
-                  maxLength={64}
-                  placeholder="203.0.113.10"
-                  value={host}
-                  onChange={(event) => setHost(event.target.value)}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </label>
-              <label className="block space-y-1 text-sm">
-                {t("port")}
-                <Input
-                  required
-                  type="number"
-                  min={1}
-                  max={65535}
-                  step={1}
-                  value={port}
-                  onChange={(event) => setPort(event.target.value)}
-                />
-              </label>
-            </div>
-            <label className="block space-y-1 text-sm">
-              {t("sshUser")}
-              <Input
-                required
-                maxLength={64}
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-                autoComplete="off"
-                spellCheck={false}
+            <SshEndpointFields
+              value={target}
+              onChange={setTarget}
+              canKeepSecret={
+                Boolean(machine) &&
+                target.auth_method === (machine?.auth_method ?? "password")
+              }
+            />
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={useJump}
+                onChange={(event) => {
+                  setUseJump(event.target.checked)
+                  if (!event.target.checked)
+                    setJump(endpointForm(machine?.jump_host))
+                }}
               />
+              {t("ssh.useJump")}
             </label>
-            <label className="block space-y-1 text-sm">
-              {t("password")}
-              <Input
-                type="password"
-                required={!machine}
-                maxLength={4096}
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                autoComplete="new-password"
-              />
-            </label>
-            <p className="text-xs text-muted-foreground">
-              {t(machine ? "passwordKeep" : "passwordPrivacy")}
-            </p>
+            {useJump && (
+              <fieldset className="space-y-3 rounded-md border p-3">
+                <legend className="px-1 text-sm font-medium">
+                  {t("ssh.jumpHost")}
+                </legend>
+                <SshEndpointFields
+                  value={jump}
+                  onChange={setJump}
+                  canKeepSecret={
+                    Boolean(machine?.jump_host) &&
+                    jump.host.trim() === machine?.jump_host?.host &&
+                    Number(jump.port) === machine?.jump_host?.port &&
+                    jump.username.trim() === machine?.jump_host?.username &&
+                    jump.auth_method === machine?.jump_host?.auth_method
+                  }
+                />
+              </fieldset>
+            )}
+            <p className="text-xs text-muted-foreground">{t("ssh.privacy")}</p>
           </fieldset>
           {error && (
             <p role="alert" className="break-words text-sm text-destructive">

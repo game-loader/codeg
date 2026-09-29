@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -204,7 +205,7 @@ describe("manual machine management", () => {
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "Rental GPU" },
     })
-    fireEvent.change(screen.getByLabelText("IP address"), {
+    fireEvent.change(screen.getByLabelText("Host / IP address"), {
       target: { value: "203.0.113.10" },
     })
     fireEvent.change(screen.getByLabelText("SSH port"), {
@@ -222,6 +223,10 @@ describe("manual machine management", () => {
         port: 2222,
         username: "root",
         password: "temporary-secret",
+        auth_method: "password",
+        private_key: null,
+        passphrase: null,
+        jump_host: null,
       })
     )
     await waitFor(() =>
@@ -232,6 +237,124 @@ describe("manual machine management", () => {
     ).toBeInTheDocument()
     expect(JSON.stringify(localStorage)).not.toContain("temporary-secret")
   })
+  it("imports a private key, saves a password bastion and probes the saved machine", async () => {
+    mount()
+    fireEvent.click(screen.getByRole("button", { name: "Add machine" }))
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Private GPU" },
+    })
+    fireEvent.change(screen.getByLabelText("Host / IP address"), {
+      target: { value: "gpu.internal" },
+    })
+    fireEvent.change(screen.getByLabelText("Authentication"), {
+      target: { value: "private_key" },
+    })
+    const key =
+      "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-fixture\n-----END OPENSSH PRIVATE KEY-----"
+    const file = new File([key], "id_ed25519")
+    Object.defineProperty(file, "text", { value: async () => key })
+    fireEvent.change(screen.getByLabelText("Import private key file"), {
+      target: { files: [file] },
+    })
+    await waitFor(() =>
+      expect(screen.getByLabelText("Private key")).toHaveValue(key)
+    )
+    fireEvent.change(screen.getByLabelText("Key passphrase (optional)"), {
+      target: { value: "key-secret" },
+    })
+    fireEvent.click(screen.getByLabelText("Use jump host"))
+    const jump = within(screen.getByRole("group", { name: "Jump host" }))
+    fireEvent.change(jump.getByLabelText("Host / IP address"), {
+      target: { value: "jump.example.com" },
+    })
+    fireEvent.change(jump.getByLabelText("SSH user"), {
+      target: { value: "alice" },
+    })
+    fireEvent.change(jump.getByLabelText("Password"), {
+      target: { value: "jump-secret" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Save machine" }))
+    await waitFor(() =>
+      expect(api.save).toHaveBeenCalledWith({
+        id: null,
+        name: "Private GPU",
+        host: "gpu.internal",
+        port: 22,
+        username: "root",
+        auth_method: "private_key",
+        password: null,
+        private_key: key,
+        passphrase: "key-secret",
+        jump_host: {
+          host: "jump.example.com",
+          port: 22,
+          username: "alice",
+          auth_method: "password",
+          password: "jump-secret",
+          private_key: null,
+          passphrase: null,
+        },
+      })
+    )
+    await waitFor(() =>
+      expect(api.probe).toHaveBeenCalledWith(manual.id, "root")
+    )
+    expect(JSON.stringify(localStorage)).not.toContain("secret")
+  })
+
+  it("edits a key machine without retrieving secrets and can remove its bastion", async () => {
+    api.list.mockResolvedValue({
+      machines: [
+        {
+          ...manual,
+          auth_method: "private_key",
+          jump_host: {
+            host: "jump.example.com",
+            port: 22,
+            username: "alice",
+            auth_method: "private_key",
+          },
+        },
+      ],
+      discovery_error: null,
+    })
+    mount()
+    fireEvent.click(await screen.findByRole("button", { name: /Rental GPU/ }))
+    fireEvent.click(screen.getByRole("button", { name: "Edit machine" }))
+    for (const field of screen.getAllByLabelText("Private key"))
+      expect(field).toHaveValue("")
+    for (const field of screen.getAllByLabelText("Key passphrase (optional)"))
+      expect(field).toHaveValue("")
+    fireEvent.click(screen.getByLabelText("Use jump host"))
+    fireEvent.click(screen.getByRole("button", { name: "Save machine" }))
+    await waitFor(() =>
+      expect(api.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          auth_method: "private_key",
+          private_key: null,
+          passphrase: null,
+          password: null,
+          jump_host: null,
+        })
+      )
+    )
+  })
+
+  it("rejects oversized key imports without submitting them", async () => {
+    mount()
+    fireEvent.click(screen.getByRole("button", { name: "Add machine" }))
+    fireEvent.change(screen.getByLabelText("Authentication"), {
+      target: { value: "private_key" },
+    })
+    const file = new File(["x".repeat(65537)], "large-key")
+    fireEvent.change(screen.getByLabelText("Import private key file"), {
+      target: { files: [file] },
+    })
+    expect(await screen.findByRole("alert")).toHaveTextContent("64 KiB")
+    expect(screen.getByLabelText("Private key")).toHaveValue("")
+    expect(api.save).not.toHaveBeenCalled()
+  })
+
   it("probes a saved manual account and inserts its custom port into the draft", async () => {
     const insert = vi.fn()
     mount(insert)

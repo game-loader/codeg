@@ -62,10 +62,28 @@ it("includes a custom SSH port but never serializes credential fields", () => {
     ssh_port: 2222,
     ssh_user: "root",
     password: "do-not-share",
+    private_key: "private-material",
+    passphrase: "key-secret",
+    jump_host: {
+      host: "jump.example.com",
+      port: 22,
+      username: "jump",
+      auth_method: "private_key" as const,
+      private_key: "jump-material",
+      password: "jump-secret",
+    },
   }
   const text = formatMachineContext(manual, null, null)
   expect(text).toContain('"ssh_port": 2222')
   expect(text).toContain('"ssh_user": "root"')
+  expect(text).toContain("jump.example.com")
+  for (const secret of [
+    "private-material",
+    "key-secret",
+    "jump-material",
+    "jump-secret",
+  ])
+    expect(text).not.toContain(secret)
   expect(text).not.toContain("do-not-share")
   expect(text).not.toContain('"password"')
 })

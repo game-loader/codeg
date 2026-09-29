@@ -53,6 +53,7 @@ describe("i18n locale key parity vs en.json", () => {
           locale !== "zh-CN" &&
           (k.startsWith("Folder.pdfPreview.") ||
             k.startsWith("Folder.videoPreview.") ||
+            k.startsWith("Machines.ssh.") ||
             k === "Academic.mcpTools" ||
             k === "Academic.mcpToolsHint" ||
             k === "AcpAgentSettings.pi.thinking.max" ||
@@ -72,6 +73,7 @@ it("provides English PDF controls in locales without a PDF translation", async (
   expect(t("Folder.videoPreview.player", { name: "demo.mp4" })).toBe(
     "Video player: demo.mp4"
   )
+  expect(t("Machines.ssh.privateKey")).toBe("Private key")
   expect(t("Academic.mcpTools")).toBe(en.Academic.mcpTools)
   expect(t("Academic.mcpToolsHint")).toBe(en.Academic.mcpToolsHint)
 })

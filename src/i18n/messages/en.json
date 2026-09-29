@@ -6684,11 +6684,26 @@
     "unreachable": "Connection failed",
     "removeMachine": "Remove machine",
     "removeTitle": "Remove {name}?",
-    "removeDescription": "This removes the saved connection and password from Codeg. The remote machine and cloud service are unaffected.",
+    "removeDescription": "This removes the saved connection and credentials from Codeg. The remote machine and cloud service are unaffected.",
     "removing": "Removing...",
     "removeConfirm": "Remove",
     "tailscaleLoginRequired": "Tailscale login or SSH authorization is required.",
     "loginTailscale": "Log in to Tailscale",
-    "afterAuthorizing": "After authorizing, click {action} again."
+    "afterAuthorizing": "After authorizing, click {action} again.",
+    "ssh": {
+      "host": "Host / IP address",
+      "description": "Connect with a password or private key, optionally through a jump host.",
+      "authentication": "Authentication",
+      "privateKey": "Private key",
+      "importKey": "Import private key file",
+      "importFailed": "Could not read the key file. Choose a text private key up to 64 KiB.",
+      "passphrase": "Key passphrase (optional)",
+      "keyHint": "Paste or import an OpenSSH / PEM private key. When replacing a key, enter its passphrase again if encrypted.",
+      "keepSecret": "Leave credentials empty to keep the saved values. Changing authentication requires new credentials.",
+      "useJump": "Use jump host",
+      "jumpHost": "Jump host",
+      "privacy": "Credentials are saved on the active Codeg backend and never included in conversation details.",
+      "viaJump": "Via {user}@{host}:{port}"
+    }
   }
 }

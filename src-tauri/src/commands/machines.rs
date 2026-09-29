@@ -11,7 +11,9 @@ use crate::app_error::AppCommandError;
 use sea_orm::DatabaseConnection;
 
 mod manual;
+mod ssh;
 pub use manual::{delete_manual_machine_core, save_manual_machine_core, ManualMachineInput};
+pub use manual::{AuthMethod, JumpHost};
 
 const MAX_DISCOVERY_OUTPUT: usize = 256 * 1024;
 const MAX_PROBE_OUTPUT: usize = 64 * 1024;
@@ -33,6 +35,10 @@ pub struct Machine {
     pub source: String,
     pub ssh_port: u16,
     pub ssh_user: Option<String>,
+    #[serde(default)]
+    pub auth_method: Option<AuthMethod>,
+    #[serde(default)]
+    pub jump_host: Option<JumpHost>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,9 +134,10 @@ pub async fn probe_machine_core(
     if let Some(user) = ssh_user.as_deref() {
         validate_ssh_user(user)?;
     }
-    let (machine, password) = if machine_id.starts_with("manual:") {
-        let (machine, password) = manual::resolve(conn, &machine_id, ssh_user.as_deref()).await?;
-        (machine, Some(password))
+    let (machine, credentials) = if machine_id.starts_with("manual:") {
+        let (machine, credentials) =
+            manual::resolve(conn, &machine_id, ssh_user.as_deref()).await?;
+        (machine, Some(credentials))
     } else {
         let machine = discover_tailscale()
             .await?
@@ -146,19 +153,24 @@ pub async fn probe_machine_core(
     let display_target = user
         .map(|user| format!("{user}@{target}"))
         .unwrap_or_else(|| target.clone());
-    let command = probe_command(&target, machine.ssh_port, user, password.as_deref())?;
+    let (command, _identities) = if let Some(credentials) = &credentials {
+        let prepared = ssh::prepare(&machine, credentials)?;
+        (prepared.command, Some(prepared._identities))
+    } else {
+        (probe_command(&target, user), None)
+    };
     let output = run_process(command, Some(PROBE_SCRIPT.as_bytes()), MAX_PROBE_OUTPUT)
         .await
         .map_err(|mut error| {
-            if let (Some(password), Some(detail)) = (&password, &mut error.detail) {
-                *detail = detail.replace(password, "[redacted]");
+            if let (Some(credentials), Some(detail)) = (&credentials, &mut error.detail) {
+                *detail = credentials.redact(detail);
             }
             error
         })?;
     if !output.status.success() {
         let mut detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if let Some(password) = &password {
-            detail = detail.replace(password, "[redacted]");
+        if let Some(credentials) = &credentials {
+            detail = credentials.redact(&detail);
         }
         return Err(AppCommandError::external_command(
             "SSH machine probe failed",
@@ -193,12 +205,7 @@ fn snapshot_from_probe(
     })
 }
 
-fn probe_command(
-    target: &str,
-    port: u16,
-    user: Option<&str>,
-    password: Option<&str>,
-) -> Result<Command, AppCommandError> {
+fn probe_command(target: &str, user: Option<&str>) -> Command {
     let mut command = Command::new("ssh");
     command
         .args(["-o", &format!("ConnectTimeout={SSH_CONNECT_TIMEOUT}")])
@@ -209,60 +216,23 @@ fn probe_command(
             "StrictHostKeyChecking=accept-new",
             "-T",
         ]);
-    if let Some(password) = password {
-        #[cfg(feature = "tauri-runtime")]
-        let helper = std::env::current_exe().map_err(AppCommandError::io)?;
-        #[cfg(not(feature = "tauri-runtime"))]
-        let helper = crate::update::runtime::self_exe();
-        // Direct IP connections intentionally ignore SSH configuration: in
-        // particular SendEnv/SetEnv/LocalCommand/ProxyCommand must not forward
-        // or expose the helper's child-only password environment.
-        command
-            .args(["-p", &port.to_string()])
-            .args([
-                "-F",
-                "none",
-                "-o",
-                "SendEnv=-*",
-                "-o",
-                "BatchMode=no",
-                "-o",
-                "NumberOfPasswordPrompts=1",
-                "-o",
-                "PreferredAuthentications=password,keyboard-interactive",
-                "-o",
-                "PasswordAuthentication=yes",
-                "-o",
-                "KbdInteractiveAuthentication=yes",
-                "-o",
-                "PubkeyAuthentication=no",
-            ])
-            .env("SSH_ASKPASS", helper)
-            .env("SSH_ASKPASS_REQUIRE", "force")
-            .env("DISPLAY", "codeg:0")
-            .env("LC_ALL", "C")
-            .env(crate::ssh_askpass::MODE_ENV, crate::ssh_askpass::MODE)
-            .env(crate::ssh_askpass::PASSWORD_ENV, password)
-            .env_remove("SSH_ASKPASS_PROMPT");
-    } else {
-        command.args([
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "PreferredAuthentications=publickey",
-            "-o",
-            "PasswordAuthentication=no",
-            "-o",
-            "KbdInteractiveAuthentication=no",
-            "-o",
-            "NumberOfPasswordPrompts=0",
-        ]);
-    }
+    command.args([
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "PreferredAuthentications=publickey",
+        "-o",
+        "PasswordAuthentication=no",
+        "-o",
+        "KbdInteractiveAuthentication=no",
+        "-o",
+        "NumberOfPasswordPrompts=0",
+    ]);
     if let Some(user) = user {
         command.args(["-l", user]);
     }
     command.args([target, "sh", "-s"]);
-    Ok(command)
+    command
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -413,6 +383,8 @@ fn parse_node(
         source: "tailscale".into(),
         ssh_port: 22,
         ssh_user: None,
+        auth_method: None,
+        jump_host: None,
     })
 }
 
@@ -526,6 +498,21 @@ fn parse_probe_output(raw: &str) -> Result<BTreeMap<String, String>, AppCommandE
     Ok(metrics)
 }
 
+// Also kill proxy descendants when the request is cancelled, times out, or
+// exits early because output exceeds its limit.
+#[cfg(unix)]
+struct ProbeProcessGroup(Option<u32>);
+#[cfg(unix)]
+impl Drop for ProbeProcessGroup {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+        }
+    }
+}
+
 async fn run_process(
     mut command: Command,
     stdin: Option<&[u8]>,
@@ -536,7 +523,11 @@ async fn run_process(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
     let mut child = command.spawn().map_err(AppCommandError::io)?;
+    #[cfg(unix)]
+    let _process_group = ProbeProcessGroup(child.id());
     // Keep the buffer outside the timed future so cancellation cannot discard
     // a Tailscale SSH check URL already emitted while waiting for approval.
     let mut stderr_data = Vec::new();
@@ -763,33 +754,8 @@ mod tests {
     }
 
     #[test]
-    fn password_probe_uses_custom_port_and_child_environment_without_secret_argv() {
-        let command =
-            probe_command("2001:db8::8", 2222, Some("root"), Some("test-secret")).unwrap();
-        let process = command.as_std();
-        let args: Vec<_> = process
-            .get_args()
-            .map(|value| value.to_string_lossy().to_string())
-            .collect();
-        assert!(args.windows(2).any(|pair| pair == ["-p", "2222"]));
-        assert!(args.windows(2).any(|pair| pair == ["-l", "root"]));
-        assert!(args.windows(2).any(|pair| pair == ["-F", "none"]));
-        assert!(args.contains(&"StrictHostKeyChecking=accept-new".into()));
-        assert!(args.contains(&"SendEnv=-*".into()));
-        assert!(args.contains(&"BatchMode=no".into()));
-        assert!(args.contains(&"PubkeyAuthentication=no".into()));
-        assert!(!args.iter().any(|arg| arg.contains("test-secret")));
-        assert_eq!(&args[args.len() - 3..], ["2001:db8::8", "sh", "-s"]);
-        let env: std::collections::HashMap<_, _> = process.get_envs().collect();
-        assert_eq!(
-            env.get(std::ffi::OsStr::new(crate::ssh_askpass::PASSWORD_ENV)),
-            Some(&Some(std::ffi::OsStr::new("test-secret")))
-        );
-        assert_eq!(
-            env.get(std::ffi::OsStr::new("SSH_ASKPASS_REQUIRE")),
-            Some(&Some(std::ffi::OsStr::new("force")))
-        );
-        let tailnet = probe_command("100.64.0.2", 22, None, None).unwrap();
+    fn tailnet_preserves_config_without_secret_environment() {
+        let tailnet = probe_command("100.64.0.2", None);
         assert!(tailnet
             .as_std()
             .get_args()
@@ -976,6 +942,8 @@ mod tests {
             source: "tailscale".into(),
             ssh_port: 22,
             ssh_user: None,
+            auth_method: None,
+            jump_host: None,
         }
     }
 }

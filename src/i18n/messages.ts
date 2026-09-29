@@ -58,6 +58,12 @@ export async function getMessagesForLocale(
   // Keep the other locales usable without copying English into their catalogs.
   const messages = {
     ...localized,
+    Machines: {
+      ...(typeof localized.Machines === "object" ? localized.Machines : {}),
+      ssh:
+        (typeof localized.Machines === "object" && localized.Machines.ssh) ||
+        enMessages.Machines.ssh,
+    },
     AcpAgentSettings: {
       ...(typeof agentSettings === "object" ? agentSettings : {}),
       pi: {

@@ -104,7 +104,21 @@ export function MachineDetails({
         {manual && (
           <p className="break-all text-xs text-muted-foreground">
             {machine.ssh_user}@{machine.addresses[0]} · {t("port")}:{" "}
-            {machine.ssh_port}
+            {machine.ssh_port} ·{" "}
+            {t(
+              machine.auth_method === "private_key"
+                ? "ssh.privateKey"
+                : "password"
+            )}
+          </p>
+        )}
+        {machine.jump_host && (
+          <p className="break-all text-xs text-muted-foreground">
+            {t("ssh.viaJump", {
+              user: machine.jump_host.username,
+              host: machine.jump_host.host,
+              port: machine.jump_host.port,
+            })}
           </p>
         )}
         {manual && (

@@ -6684,11 +6684,26 @@
     "unreachable": "连接失败",
     "removeMachine": "移除机器",
     "removeTitle": "移除 {name}？",
-    "removeDescription": "仅从 Codeg 移除保存的连接和密码，不会删除远程机器或停止云服务。",
+    "removeDescription": "这会移除 Codeg 中保存的连接和凭据，不会影响远程机器或云服务。",
     "removing": "正在移除…",
     "removeConfirm": "移除",
     "tailscaleLoginRequired": "需要登录 Tailscale 或完成 SSH 授权。",
     "loginTailscale": "登录 Tailscale",
-    "afterAuthorizing": "授权完成后，再次点击“{action}”。"
+    "afterAuthorizing": "授权完成后，再次点击“{action}”。",
+    "ssh": {
+      "host": "主机名 / IP 地址",
+      "description": "使用密码或私钥连接，可选择通过跳板机访问。",
+      "authentication": "认证方式",
+      "privateKey": "私钥",
+      "importKey": "导入私钥文件",
+      "importFailed": "无法读取密钥文件，请选择不超过 64 KiB 的文本私钥。",
+      "passphrase": "私钥口令（可选）",
+      "keyHint": "粘贴或导入 OpenSSH / PEM 私钥。更换加密私钥时，请重新填写它的口令。",
+      "keepSecret": "凭据留空可保留已保存的值；切换认证方式需要填写新凭据。",
+      "useJump": "使用跳板机",
+      "jumpHost": "跳板机",
+      "privacy": "凭据保存在当前连接的 Codeg 后端，不会包含在对话引用中。",
+      "viaJump": "经由 {user}@{host}:{port}"
+    }
   }
 }
