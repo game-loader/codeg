@@ -45,6 +45,7 @@ export async function getMessagesForLocale(
   const localized = await loadMessages(locale)
   const folder = localized.Folder
   const chat = typeof folder === "object" ? folder.chat : undefined
+  const messageQueue = typeof chat === "object" ? chat.messageQueue : undefined
   const connections = typeof chat === "object" ? chat.acpConnections : undefined
   const backendErrors =
     typeof connections === "object" ? connections.backendErrors : undefined
@@ -83,6 +84,13 @@ export async function getMessagesForLocale(
       ...(typeof folder === "object" ? folder : {}),
       chat: {
         ...(typeof chat === "object" ? chat : {}),
+        messageQueue: {
+          toolBoundaryHint:
+            enMessages.Folder.chat.messageQueue.toolBoundaryHint,
+          interruptAndSend:
+            enMessages.Folder.chat.messageQueue.interruptAndSend,
+          ...(typeof messageQueue === "object" ? messageQueue : {}),
+        },
         acpConnections: {
           ...(typeof connections === "object" ? connections : {}),
           backendErrors: {

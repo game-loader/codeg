@@ -1845,6 +1845,9 @@ async fn build_agent(
                 None
             };
             apply_codex_env_policy(agent_type, &mut merged_env, codex_initial_mode.as_deref());
+            if agent_type == AgentType::Codex {
+                crate::acp::codex_steering_compat::configure(&mut merged_env, scratch).await;
+            }
             // codex-acp 1.0.0 honors APP_SERVER_LOGS as a directory for its
             // adapter-side logs. Surface it only under CODEG_ACP_DEBUG so
             // default runs are unchanged; a directory-creation failure silently
@@ -6039,7 +6042,7 @@ async fn run_connection(
                 init_resp.agent_capabilities.load_session, supports_fork, supports_resume
             );
 
-            // Native live-feedback steering, synthesized ONCE from three gates
+            // Native live-feedback steering, synthesized ONCE from capability
             // so every consumer (the submit split, the snapshot, the frontend)
             // reads a single authoritative bool: (1) the adapter advertises
             // the extension (top-level `_meta`), (2) the registry says this
@@ -6050,7 +6053,9 @@ async fn run_connection(
             // The raw advertisement is deliberately NOT stored: exposing it
             // would tempt the frontend to re-derive eligibility and show the
             // instant channel for adapters (codex) that advertise steering but
-            // would detach a turn on the idle race.
+            // would detach a turn on the idle race. Codex's process-local
+            // compatibility loader supplies a separate capability only after
+            // verifying and patching the bundle actually loaded by Node.
             let steering_advertised = init_advertises_steering(init_resp.meta.as_ref());
             let native_steering_available = synthesize_native_steering(
                 agent_type,
@@ -13335,7 +13340,8 @@ fn steering_version_ok(agent_info: Option<&agent_client_protocol::schema::v1::Im
 /// Synthesize `SessionState.native_steering_available` from an `initialize`
 /// response: extension advertised (top-level `_meta`) AND registry policy says
 /// this agent type honors `promptRequired` AND the running binary's
-/// `agent_info.version` proves it. Pure so the full gate matrix is unit-tested;
+/// `agent_info.version` proves it, or Codex's verified compatibility loader
+/// advertises its patch. Pure so the full gate matrix is unit-tested;
 /// `run_connection` calls it once and everything downstream reads the stored
 /// bool.
 fn synthesize_native_steering(
@@ -13344,8 +13350,13 @@ fn synthesize_native_steering(
     agent_info: Option<&agent_client_protocol::schema::v1::Implementation>,
 ) -> bool {
     init_advertises_steering(meta)
-        && registry::steering_prompt_required_min_version(agent_type)
+        && (registry::steering_prompt_required_min_version(agent_type)
             .is_some_and(|min| steering_version_ok(agent_info, min))
+            || (agent_type == AgentType::Codex
+                && crate::acp::codex_steering_compat::supports_native_steering(
+                    meta,
+                    agent_info.map(|info| info.version.as_str()),
+                )))
 }
 
 /// codex-acp 1.12.0 swapped the question and the short tab header between a

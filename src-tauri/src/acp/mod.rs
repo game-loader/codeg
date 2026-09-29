@@ -9,6 +9,7 @@ pub mod chat_authoring;
 pub mod codex_catalog_source;
 pub mod codex_goal;
 pub mod codex_model_catalog;
+pub mod codex_steering_compat;
 pub mod connection;
 pub mod cursor_acp_retry_compat;
 pub mod cursor_ext;

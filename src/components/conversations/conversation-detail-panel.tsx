@@ -46,6 +46,7 @@ import {
 } from "@/lib/ask-selection-handoff"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import { useMessageQueue, type QueuedMessage } from "@/hooks/use-message-queue"
+import { useToolBoundarySteering } from "@/hooks/use-tool-boundary-steering"
 import { MessageListView } from "@/components/message/message-list-view"
 import {
   GoalControlProvider,
@@ -677,6 +678,7 @@ const ConversationTabView = memo(function ConversationTabView({
     enqueue: mqEnqueue,
     requeueFront: mqRequeueFront,
     getQueueLength: mqGetQueueLength,
+    getQueueItems: mqGetQueueItems,
     dequeue: mqDequeue,
     remove: mqRemove,
     reorder: mqReorder,
@@ -860,6 +862,16 @@ const ConversationTabView = memo(function ConversationTabView({
   // round-trip is enough, and cannot strand the queue: `handleQueueSteer`
   // always clears this in a `finally`, which re-runs the flush effect.
   const [queueSteerInFlight, setQueueSteerInFlight] = useState(false)
+  const queueSteerInFlightRef = useRef(false)
+  const queueInterruptPendingRef = useRef(false)
+  useAcpEvent((event) => {
+    if (
+      event.connection_id === conn.connectionId &&
+      event.type === "user_message"
+    ) {
+      queueInterruptPendingRef.current = false
+    }
+  })
 
   // Flush queued messages whenever the agent is idle. This is the queue's send
   // engine, covering BOTH:
@@ -893,6 +905,7 @@ const ConversationTabView = memo(function ConversationTabView({
     const wait = flushRetryDelayMs(Date.now(), lastFlushBounceAtRef.current)
     const timer = setTimeout(() => {
       if (!connectionReadyRef.current) return
+      if (queueSteerInFlightRef.current) return
       const next = autoSendQueueRef.current()
       if (next) {
         // Mark this as the queue auto-flush: it sends the dequeued head now and,
@@ -2222,25 +2235,31 @@ const ConversationTabView = memo(function ConversationTabView({
   // surfaces the error.
   const handleQueueSteer = useCallback(
     async (id: string) => {
-      const item = msgQueue.find((m) => m.id === id)
-      if (!item) return
+      if (queueSteerInFlightRef.current || queueInterruptPendingRef.current)
+        return false
+      const item = mqGetQueueItems().find((m) => m.id === id)
+      if (!item) return false
       const payload = buildSteerPayload(item.draft)
       // Nothing sendable in this row (no text, and no display text standing in
       // for its attachments). Leave it alone: removing it would delete queued
       // content — including whatever blocks it carries — on a button that
       // promises to SEND it.
-      if (!payload) return
+      if (!payload) return false
       // Set before the first await so the flush effect above is already held
       // when the turn-end edge lands mid-round-trip.
+      queueSteerInFlightRef.current = true
       setQueueSteerInFlight(true)
       try {
         await feedbackSteer(payload.text, payload.blocks)
-        mqRemove(id)
+        // A queued draft may be edited while delivery is in flight. Only
+        // retire the exact item sent; an updated draft stays queued.
+        if (mqGetQueueItems().find((m) => m.id === id) === item) mqRemove(id)
+        return true
       } catch (err: unknown) {
         if (isNoActiveTurnRejection(err)) {
           // The turn ended mid-click — the queue flush will deliver it.
           toast.info(tCmp("steerQueuedInstead"))
-          return
+          return false
         }
         notify({
           level: "error",
@@ -2250,12 +2269,35 @@ const ConversationTabView = memo(function ConversationTabView({
           ),
           description: toErrorMessage(err),
         })
+        return false
       } finally {
+        queueSteerInFlightRef.current = false
         setQueueSteerInFlight(false)
       }
     },
-    [msgQueue, feedbackSteer, mqRemove, feedback.channel, tabId, tCmp]
+    [mqGetQueueItems, feedbackSteer, mqRemove, feedback.channel, tabId, tCmp]
   )
+
+  const steerQueueAtToolBoundary =
+    selectedAgent === "codex" &&
+    feedback.featureEnabled &&
+    feedback.steerAvailable &&
+    feedback.channel === "native" &&
+    connStatus === "prompting"
+  useToolBoundarySteering({
+    enabled: steerQueueAtToolBoundary,
+    connectionId: conn.connectionId,
+    getQueueItems: mqGetQueueItems,
+    editingItemId: mqEditingItemId,
+    onSteer: handleQueueSteer,
+  })
+  const interruptQueuedMessages = useCallback(() => {
+    if (queueSteerInFlightRef.current || mqGetQueueLength() === 0) return
+    // Cancellation settles the running turn; the existing idle flush then
+    // sends the still-owned queue through session/prompt.
+    queueInterruptPendingRef.current = true
+    handleCancel()
+  }, [handleCancel, mqGetQueueLength])
 
   return (
     <ConversationShell
@@ -2332,6 +2374,9 @@ const ConversationTabView = memo(function ConversationTabView({
       isActive={isActive}
       showActiveFlow={showActiveFlow}
       queue={msgQueue}
+      onInterruptQueue={
+        steerQueueAtToolBoundary ? interruptQueuedMessages : undefined
+      }
       onEnqueue={mqEnqueue}
       onQueueReorder={mqReorder}
       onQueueEdit={handleQueueEdit}
@@ -2343,7 +2388,9 @@ const ConversationTabView = memo(function ConversationTabView({
         feedback.featureEnabled &&
         feedback.steerAvailable &&
         connStatus === "prompting"
-          ? handleQueueSteer
+          ? async (id) => {
+              await handleQueueSteer(id)
+            }
           : undefined
       }
       editingItemId={mqEditingItemId}

@@ -20,6 +20,7 @@ import {
 } from "@/components/chat/message-input"
 import { MessageQueueDisplay } from "@/components/chat/message-queue-display"
 import { cn } from "@/lib/utils"
+import { isImeCompositionKey } from "@/lib/ime-composition"
 
 interface ChatInputProps {
   status: ConnectionStatus | null
@@ -59,6 +60,9 @@ interface ChatInputProps {
    *  Threaded straight through; present only while a turn is in flight and
    *  the session has a working channel. */
   onQueueSteer?: (id: string) => Promise<void> | void
+  /** Native Codex queue: Escape cancels the turn, then ordinary idle flush
+   *  sends the pending messages. Also enables the tool-boundary hint. */
+  onInterruptQueue?: () => void
   editingItemId?: string | null
   editingDraftText?: string | null
   editingDraftBlocks?: PromptInputBlock[] | null
@@ -130,6 +134,7 @@ export const ChatInput = memo(function ChatInput({
   onQueueEdit,
   onQueueDelete,
   onQueueSteer,
+  onInterruptQueue,
   editingItemId,
   editingDraftText,
   editingDraftBlocks,
@@ -147,6 +152,7 @@ export const ChatInput = memo(function ChatInput({
   tall = false,
 }: ChatInputProps) {
   const t = useTranslations("Folder.chat.chatInput")
+  const tQueue = useTranslations("Folder.chat.messageQueue")
   const isConnected = status === "connected"
   const isPrompting = status === "prompting"
   const isConnecting = status === "connecting"
@@ -174,6 +180,21 @@ export const ChatInput = memo(function ChatInput({
     <div
       className={cn("pt-0", flush ? "pb-1" : "px-4 pb-1")}
       onContextMenu={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if (
+          event.key === "Escape" &&
+          !event.defaultPrevented &&
+          !isImeCompositionKey(event) &&
+          !isEditingQueueItem &&
+          isPrompting &&
+          queue?.length &&
+          onInterruptQueue
+        ) {
+          event.preventDefault()
+          event.stopPropagation()
+          onInterruptQueue()
+        }
+      }}
       // Touch and pen open a context menu from a LONG PRESS, which Radix arms on
       // pointerdown — and the whole conversation panel (composer included) sits
       // inside its own context-menu trigger. Without this, a slow tap on any
@@ -185,6 +206,18 @@ export const ChatInput = memo(function ChatInput({
         if (event.pointerType !== "mouse") event.stopPropagation()
       }}
     >
+      {isPrompting && Boolean(queue?.length) && onInterruptQueue && (
+        <div className="mb-1 flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+          <span>{tQueue("toolBoundaryHint")}</span>
+          <button
+            type="button"
+            className="underline underline-offset-2 hover:text-foreground"
+            onClick={onInterruptQueue}
+          >
+            {tQueue("interruptAndSend")}
+          </button>
+        </div>
+      )}
       {queue &&
         queue.length > 0 &&
         onQueueReorder &&

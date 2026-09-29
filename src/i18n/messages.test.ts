@@ -56,6 +56,8 @@ describe("i18n locale key parity vs en.json", () => {
             k.startsWith("Machines.ssh.") ||
             k === "Academic.mcpTools" ||
             k === "Academic.mcpToolsHint" ||
+            k === "Folder.chat.messageQueue.toolBoundaryHint" ||
+            k === "Folder.chat.messageQueue.interruptAndSend" ||
             k === "AcpAgentSettings.pi.thinking.max" ||
             k === "Folder.chat.acpConnections.backendErrors.sessionLoadError")
         )
@@ -76,6 +78,28 @@ it("provides English PDF controls in locales without a PDF translation", async (
   expect(t("Machines.ssh.privateKey")).toBe("Private key")
   expect(t("Academic.mcpTools")).toBe(en.Academic.mcpTools)
   expect(t("Academic.mcpToolsHint")).toBe(en.Academic.mcpToolsHint)
+})
+
+it("falls back for steering hints while preserving translated queue controls", async () => {
+  const messages = await getMessagesForLocale("fr")
+  const t = createTranslator({ locale: "fr", messages: messages as typeof en })
+  expect(t("Folder.chat.messageQueue.toolBoundaryHint")).toBe(
+    en.Folder.chat.messageQueue.toolBoundaryHint
+  )
+  expect(t("Folder.chat.messageQueue.interruptAndSend")).toBe(
+    en.Folder.chat.messageQueue.interruptAndSend
+  )
+  expect(t("Folder.chat.messageQueue.addToQueue")).toBe(
+    fr.Folder.chat.messageQueue.addToQueue
+  )
+  const chinese = await getMessagesForLocale("zh_cn")
+  const zh = createTranslator({
+    locale: "zh-CN",
+    messages: chinese as typeof en,
+  })
+  expect(zh("Folder.chat.messageQueue.toolBoundaryHint")).toBe(
+    zhCN.Folder.chat.messageQueue.toolBoundaryHint
+  )
 })
 
 it("falls back to English for Pi max without replacing translated levels", async () => {

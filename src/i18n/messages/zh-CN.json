@@ -3187,6 +3187,8 @@
         "mentionGroupSkill": "技能"
       },
       "messageQueue": {
+        "toolBoundaryHint": "消息将在下一次工具调用后提交。",
+        "interruptAndSend": "中断并立即发送（Esc）",
         "addToQueue": "加入队列",
         "saveEdit": "保存",
         "cancelEdit": "取消编辑",

@@ -386,14 +386,14 @@ const ACP_ADAPTER_DOCS_URL: &str = "https://docs.codeg.app/guide/supported-agent
 /// `SessionState.native_steering_available` at initialize; see
 /// `connection.rs::init_advertises_steering`).
 ///
-/// `None` means "never steer natively" even when the adapter advertises
+/// `None` means "no upstream version guarantee" even when the adapter advertises
 /// `_meta.steering.supported`: an adapter that ignores the opt-in falls back
 /// to `startedNewTurn` on the turn-end race — a detached turn no host request
 /// owns, which codeg's turn-scoped runtime must never trigger. codex-acp
-/// ships `_session/steering` but not `promptRequired` — re-verified against
-/// the published 1.3.0 tarball (zero hits, same as 1.1.9) — so it stays
-/// `None` until a release implements the opt-in — then this is a one-line
-/// flip plus tests.
+/// ships `_session/steering` but not `promptRequired` (verified through 2.0.0).
+/// It stays `None` until upstream implements the opt-in. The process-local
+/// `codex_steering_compat` loader supplies a separate explicit capability for
+/// the exact bundles it patches; stock/unknown Codex bundles stay on pull.
 ///
 /// Honoring the opt-in is necessary but not sufficient: the ACTIVE path must
 /// also keep the owning `session/prompt` in flight across the steered work

@@ -30,6 +30,44 @@ vi.mock("next-intl", () => ({
 
 import { ChatInput } from "./chat-input"
 
+describe("Codex pending-message interrupt", () => {
+  afterEach(cleanup)
+  it("offers Escape and a button only for a pending native queue", () => {
+    const onInterruptQueue = vi.fn()
+    const props = {
+      status: "prompting" as const,
+      promptCapabilities: {
+        image: false,
+        audio: false,
+        embedded_context: false,
+      },
+      onSend: vi.fn(),
+      onCancel: vi.fn(),
+      onInterruptQueue,
+      queue: [
+        {
+          id: "q1",
+          modeId: null,
+          draft: { displayText: "correction", blocks: [] },
+        },
+      ],
+    }
+    const { rerender } = render(<ChatInput {...props} />)
+    expect(screen.getByText("toolBoundaryHint")).toBeInTheDocument()
+    fireEvent.keyDown(screen.getByTestId("agent-icon"), { key: "Escape" })
+    expect(onInterruptQueue).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByText("interruptAndSend"))
+    expect(onInterruptQueue).toHaveBeenCalledTimes(2)
+    rerender(<ChatInput {...props} isEditingQueueItem />)
+    fireEvent.keyDown(screen.getByTestId("agent-icon"), { key: "Escape" })
+    expect(onInterruptQueue).toHaveBeenCalledTimes(2)
+    rerender(<ChatInput {...props} queue={[]} />)
+    expect(screen.queryByText("toolBoundaryHint")).not.toBeInTheDocument()
+    fireEvent.keyDown(screen.getByTestId("agent-icon"), { key: "Escape" })
+    expect(onInterruptQueue).toHaveBeenCalledTimes(2)
+  })
+})
+
 /**
  * jsdom's `fireEvent.pointerDown` drops `pointerType` (it builds a plain
  * MouseEvent), so the property is pinned by hand — the guard under test reads

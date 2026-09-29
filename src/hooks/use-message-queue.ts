@@ -54,6 +54,8 @@ export interface UseMessageQueueReturn {
    * (which lags a render).
    */
   getQueueLength: () => number
+  /** Synchronous snapshot for event-driven delivery before React renders. */
+  getQueueItems: () => readonly QueuedMessage[]
   editingItemId: string | null
   startEditing: (id: string) => void
   cancelEditing: () => void
@@ -161,6 +163,7 @@ export function useMessageQueue(): UseMessageQueueReturn {
   )
 
   const getQueueLength = useCallback(() => queueRef.current.length, [])
+  const getQueueItems = useCallback(() => queueRef.current, [])
 
   const startEditing = useCallback((id: string) => {
     setEditingItemId(id)
@@ -179,6 +182,7 @@ export function useMessageQueue(): UseMessageQueueReturn {
     reorder,
     updateItem,
     getQueueLength,
+    getQueueItems,
     editingItemId,
     startEditing,
     cancelEditing,

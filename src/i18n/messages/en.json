@@ -3187,6 +3187,8 @@
         "mentionGroupSkill": "Skills"
       },
       "messageQueue": {
+        "toolBoundaryHint": "Messages will be submitted after the next tool call.",
+        "interruptAndSend": "Interrupt and send now (Esc)",
         "addToQueue": "Queue message",
         "saveEdit": "Save",
         "cancelEdit": "Cancel edit",
