@@ -4983,8 +4983,8 @@
     },
     "feedback": {
       "label": "Live Feedback",
-      "short": "Add notes mid-turn without interrupting.",
-      "hint": "Send notes and corrections to an agent while it's working. When the agent supports instant steering, your note is inserted into the running turn immediately; otherwise the agent gets a tool to check for your feedback — those agents typically only check when you mention it in your prompt, for example add \"check my live feedback regularly\" to your message."
+      "short": "Let the agent check notes during a running turn.",
+      "hint": "Adds a tool that lets the agent read your notes while it works. The agent must choose to check it, so notes may remain unread. Native insertion is available independently of this switch on supported sessions; compatible Codex sessions submit queued messages after a tool call finishes."
     },
     "ask": {
       "label": "Ask user question",

@@ -56,7 +56,8 @@ function mergeNotes(
 export interface UseSessionFeedbackArgs {
   connectionId: string | null
   connStatus: ConnectionStatus | null
-  /** Whether the live-feedback feature is enabled (global setting). */
+  /** Whether the optional feedback MCP tool is enabled (global setting).
+   *  Native steering is available independently of this setting. */
   enabled: boolean
   /**
    * Note ids the live transcript adopted as mid-turn user turns
@@ -78,22 +79,23 @@ export interface UseSessionFeedbackArgs {
 export interface UseSessionFeedback {
   /** All notes for the current turn (pending + delivered). */
   notes: FeedbackItem[]
-  /** Global feature flag — gates whether the "+" menu entry is shown at all. */
+  /** Whether native steering or the optional feedback feature is enabled.
+   *  Gates whether the "+" menu entry is shown at all. */
   featureEnabled: boolean
   /** Whether a note can be sent right now (entry is enabled vs. greyed out). */
   canSubmit: boolean
   /** Which channel a note would ride: `native` = the ACP `_session/steering`
-   *  push (injected into the running turn immediately), `pull` = the
+   *  push (consumed at the running turn's next safe boundary), `pull` = the
    *  `check_user_feedback` MCP tool (read when the agent next checks). Drives
    *  copy and the composer's mid-turn send entry. Backend-synthesized — never
    *  derived from agent type here. */
   channel: "native" | "pull"
   /** Whether THIS session has a working mid-turn delivery channel at all: a
-   *  live connection plus native push or the pull tool. Gates the composer's
-   *  mid-turn send affordance (`channel` picks its copy); a session with
+   *  live connection plus native push or an enabled pull tool. Gates the
+   *  composer's mid-turn send affordance (`channel` picks its copy); a session with
    *  neither keeps the historical Stop-only prompting form. Distinct from
-   *  `canSubmit`, which additionally folds in the feature flag and the
-   *  prompting scope — the composer enforces that where the button renders. */
+   *  `canSubmit`, which additionally folds in the prompting scope — the
+   *  composer enforces that where the button renders. */
   steerAvailable: boolean
   /** Whether to render the notes list above the composer. */
   showList: boolean
@@ -202,10 +204,12 @@ export function useSessionFeedback({
     consumedRef.current = new Map()
     // `dismissedRef` deliberately survives this reset: note ids are uuids, so a
     // carried-over tombstone can never suppress another connection's row, and
-    // keeping it is what stops a re-hydrate (same connection, feature flag
-    // toggled off and on) from resurrecting a row the user already retired. It
-    // is bounded by the per-turn clear below.
-    if (!enabled || !connectionId) return
+    // keeping it is what stops a re-hydrate (returning to a connection) from
+    // resurrecting a row the user already retired. It is bounded by the
+    // per-turn clear below.
+    // Native insertion needs no injected MCP tool. Discover it even when the
+    // optional feedback setting is off (the default).
+    if (!connectionId) return
     let cancelled = false
     const startGen = turnGenRef.current
     void acpGetSessionSnapshot(connectionId)
@@ -214,7 +218,7 @@ export function useSessionFeedback({
         // Tool availability is fixed at launch and only ever upgrades to true.
         // Never overwrite a confirmed `true` with a stale `false` from a read
         // that raced the spawn — the synchronous reset above is the only place
-        // it goes back to false (on connection / feature-flag change).
+        // it goes back to false (on connection change).
         if (snap.feedback_tool_available) setToolAvailable(true)
         if (snap.native_steering_available && !steeringDowngradedRef.current) {
           setNativeSteering(true)
@@ -238,7 +242,7 @@ export function useSessionFeedback({
     return () => {
       cancelled = true
     }
-  }, [connectionId, enabled])
+  }, [connectionId])
 
   // Self-heal capability flags. The hydrate above is keyed on `connectionId`,
   // which appears the moment a NEW conversation's connection is created — while
@@ -248,7 +252,7 @@ export function useSessionFeedback({
   // connection is actually live, re-read (only while either is still unknown —
   // a `false` no-ops so this can't loop, and it stops once both are known).
   useEffect(() => {
-    if (!enabled || !connectionId || (toolAvailable && nativeSteering)) return
+    if (!connectionId || (toolAvailable && nativeSteering)) return
     if (connStatus !== "connected" && connStatus !== "prompting") return
     let cancelled = false
     void acpGetSessionSnapshot(connectionId)
@@ -264,7 +268,7 @@ export function useSessionFeedback({
     return () => {
       cancelled = true
     }
-  }, [enabled, connectionId, connStatus, toolAvailable, nativeSteering])
+  }, [connectionId, connStatus, toolAvailable, nativeSteering])
 
   // Build the note list from the live event stream, scoped to this connection.
   useAcpEvent(
@@ -376,11 +380,10 @@ export function useSessionFeedback({
       const text = rawText.trim()
       if (!text || submitting || !connectionId) return
       // Eligibility can drop while the dialog is open (e.g. the feature is
-      // toggled off in another window). Don't send into a disabled / unsupported
-      // session — close the dialog instead. NOTE: a merely-ended turn keeps
-      // `enabled`/`toolAvailable` true, so it still flows to the submit below and
-      // gets rerouted via the no-active-turn fallback (draft preserved).
-      if (!enabled || (!toolAvailable && !nativeSteering)) {
+      // toggled off in another window). Native insertion is independent of
+      // that MCP setting. A merely-ended turn keeps its channel, so it still
+      // reaches the no-active-turn fallback below (draft preserved).
+      if (!nativeSteering && (!enabled || !toolAvailable)) {
         setDialogOpen(false)
         return
       }
@@ -488,9 +491,10 @@ export function useSessionFeedback({
   // `submitSessionFeedback(connectionId, …)`, so without one there is no
   // channel to offer — the composer would surface a mid-turn send whose only
   // possible outcome is `steer`'s "nothing to steer" rejection.
+  const featureEnabled = enabled || nativeSteering
   const steerAvailable =
-    Boolean(connectionId) && (toolAvailable || nativeSteering)
-  const canSubmit = enabled && steerAvailable && isPrompting
+    Boolean(connectionId) && (nativeSteering || (enabled && toolAvailable))
+  const canSubmit = steerAvailable && isPrompting
   const channel: "native" | "pull" = nativeSteering ? "native" : "pull"
   // Drop the notes the transcript is already rendering as user turns. Kept as
   // a derivation rather than a filter on `setNotes` so a note stays recoverable
@@ -526,7 +530,7 @@ export function useSessionFeedback({
   return useMemo(
     () => ({
       notes: visibleNotes,
-      featureEnabled: enabled,
+      featureEnabled,
       canSubmit,
       channel,
       steerAvailable,
@@ -543,7 +547,7 @@ export function useSessionFeedback({
     }),
     [
       visibleNotes,
-      enabled,
+      featureEnabled,
       canSubmit,
       channel,
       steerAvailable,

@@ -1,9 +1,10 @@
 //! Live user-feedback settings persistence + the submit command surface.
 //!
 //! One knob survives across restarts:
-//!   * `feedback.enabled` — feature kill switch (default false). When on,
+//!   * `feedback.enabled` — optional MCP feedback switch (default false). When on,
 //!     `codeg-mcp` exposes the `check_user_feedback` tool so an agent can pull
 //!     mid-turn user notes; the conversation UI shows the "send a note" bar.
+//!     Native insertion is discovered from the session independently.
 //!
 //! On startup `apply_persisted_feedback_config` reads this key from
 //! `app_metadata` and pushes it into the shared [`FeedbackRuntimeConfig`] that

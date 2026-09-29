@@ -194,16 +194,21 @@ describe("useSessionFeedback", () => {
     expect(toast.error).toHaveBeenCalled()
   })
 
-  it("gates canSubmit/showList on feature flag and active turn", async () => {
+  it("keeps pull feedback gated by the setting and active turn", async () => {
     const { result, rerender } = renderHook(
       (props: Parameters<typeof useSessionFeedback>[0]) =>
         useSessionFeedback(props),
       { initialProps: { ...baseProps, enabled: false } }
     )
-    // Feature off: never submittable, never fetches the snapshot.
+    // Still discover native capability, but an injected pull tool alone must
+    // not bypass the disabled setting.
+    await waitFor(() => expect(mockSnapshot).toHaveBeenCalled())
+    await act(async () => {
+      await Promise.resolve()
+    })
     expect(result.current.featureEnabled).toBe(false)
     expect(result.current.canSubmit).toBe(false)
-    expect(mockSnapshot).not.toHaveBeenCalled()
+    expect(result.current.steerAvailable).toBe(false)
 
     // Enabled but idle (not prompting): entry shown but not submittable.
     rerender({ ...baseProps, connStatus: "connected" })
@@ -286,6 +291,28 @@ describe("useSessionFeedback", () => {
     await waitFor(() => expect(result.current.canSubmit).toBe(true))
     expect(result.current.channel).toBe("native")
     expect(result.current.steerAvailable).toBe(true)
+  })
+
+  it("offers native insertion with the optional feedback tool disabled", async () => {
+    mockSnapshot.mockResolvedValue(
+      snapshot({
+        feedback_tool_available: false,
+        native_steering_available: true,
+      })
+    )
+    mockSubmit.mockResolvedValue(note("native", "insert now", "delivered"))
+    const { result } = renderHook(() =>
+      useSessionFeedback({ ...baseProps, enabled: false })
+    )
+
+    await waitFor(() => expect(result.current.canSubmit).toBe(true))
+    expect(result.current.featureEnabled).toBe(true)
+    expect(result.current.steerAvailable).toBe(true)
+    expect(result.current.channel).toBe("native")
+
+    await act(async () => result.current.submit("insert now"))
+    expect(mockSubmit).toHaveBeenCalledWith("c1", "insert now")
+    expect(result.current.notes[0].status).toBe("delivered")
   })
 
   it("stays on the pull channel when only the tool is available", async () => {
@@ -518,10 +545,10 @@ describe("useSessionFeedback", () => {
     act(() => result.current.dismissNote("n1"))
     expect(result.current.notes).toHaveLength(0)
 
-    // Toggling the feature off and back on re-runs the hydrate on the SAME
-    // connection, against a snapshot that still lists the note.
+    // Returning to the same connection re-runs hydration against a snapshot
+    // that still lists the note.
     const before = mockSnapshot.mock.calls.length
-    rerender({ ...baseProps, enabled: false })
+    rerender({ ...baseProps, connectionId: null })
     rerender(baseProps)
     await waitFor(() =>
       expect(mockSnapshot.mock.calls.length).toBeGreaterThan(before)
@@ -715,6 +742,39 @@ describe("useSessionFeedback", () => {
     // Connection goes live (streaming) → tool availability is re-read.
     rerender({ ...baseProps, connStatus: "prompting" })
     await waitFor(() => expect(result.current.canSubmit).toBe(true))
+  })
+
+  it("discovers native steering after launch with feedback disabled", async () => {
+    mockSnapshot.mockResolvedValue(
+      snapshot({
+        feedback_tool_available: false,
+        native_steering_available: false,
+      })
+    )
+    const props: UseSessionFeedbackArgs = {
+      ...baseProps,
+      enabled: false,
+      connStatus: "connecting",
+    }
+    const { result, rerender } = renderHook(
+      (args: UseSessionFeedbackArgs) => useSessionFeedback(args),
+      { initialProps: props }
+    )
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(result.current.steerAvailable).toBe(false)
+
+    mockSnapshot.mockResolvedValue(
+      snapshot({
+        feedback_tool_available: false,
+        native_steering_available: true,
+      })
+    )
+    rerender({ ...props, connStatus: "prompting" })
+    await waitFor(() => expect(result.current.canSubmit).toBe(true))
+    expect(result.current.featureEnabled).toBe(true)
+    expect(result.current.channel).toBe("native")
   })
 })
 

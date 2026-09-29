@@ -1,7 +1,7 @@
 # Codex messages during a running turn
 
-With live feedback enabled and a compatible Codex connection, messages queued
-while Codex is working are submitted through `_session/steering` after a tool
+With a compatible Codex connection, messages queued while Codex is working
+are submitted through `_session/steering` after a tool
 call completes (or fails). The queue shows this delivery mode. Escape in the
 composer, or **Interrupt and send now**, cancels the current turn; the ordinary
 queue sends the messages once cancellation settles. Escape still closes editor
@@ -11,6 +11,27 @@ The tool-boundary event triggers delivery; Codex's own `turn/steer` decides the
 next point at which the input enters model context. This does not interrupt an
 already running model request. If no further tool call occurs, ordinary
 end-of-turn delivery remains the fallback. Failed inserts retain the draft.
+
+Native insertion is available regardless of the **Live Feedback** setting.
+That setting controls the optional `check_user_feedback` MCP tool; it is off
+by default and must not prevent discovery of a connection's native capability.
+
+## Manual check
+
+1. Install the updated Codeg build and start a fresh Codex connection so the
+   adapter loads the compatibility patch. Supported adapters are listed below.
+2. While a tool call is running, type a short instruction in the ordinary
+   composer and press Enter. Leave the message in the queue.
+3. The queue should say **Messages will be submitted after the next tool call.**
+   When a tool completes or fails, the queued message should become a user
+   message in the running turn. It does not wait for a feedback-tool check.
+4. If the turn finishes before insertion, the queue sends it as the next turn.
+   Use Escape only to test interrupt-and-send instead.
+
+If the tool-boundary hint is absent, the connection has not enabled native
+insertion: check the installed build, adapter version and fresh connection.
+Enabling Live Feedback instead may only expose the cooperative pull channel;
+its waiting notes are not evidence that native insertion is active.
 
 ## Adapter compatibility
 
