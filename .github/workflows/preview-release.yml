@@ -102,16 +102,6 @@ jobs:
             runner: macos-15
             target: aarch64-apple-darwin
             bundle: dmg
-          - platform: linux
-            arch: x64
-            runner: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            bundle: deb
-          - platform: linux
-            arch: arm64
-            runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            bundle: deb
     steps:
       - uses: actions/checkout@v4
 
@@ -132,15 +122,6 @@ jobs:
         with:
           workspaces: ./src-tauri -> target
           shared-key: preview-desktop-${{ matrix.target }}
-
-      - name: Install Linux desktop dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential pkg-config libssl-dev \
-            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
-            librsvg2-dev patchelf
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -289,14 +270,12 @@ jobs:
           cd release
           assets=(
             codeg-desktop-darwin-arm64.dmg
-            codeg-desktop-linux-x64.deb
-            codeg-desktop-linux-arm64.deb
             codeg-server-linux-x64.tar.gz
             codeg-server-linux-arm64.tar.gz
             codeg-web.tar.gz
             codeg-academic-bridge-*.xpi
           )
-          test "${#assets[@]}" -eq 7
+          test "${#assets[@]}" -eq 5
           for asset in "${assets[@]}"; do
             test -s "$asset"
           done
@@ -316,9 +295,9 @@ jobs:
 
           Build: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
 
-          Packages: macOS Apple Silicon DMG, Linux x64/ARM64 DEB,
-          Linux Server (with codeg-mcp and web/), standalone web/, and Zotero 10 plugin.
-          Linux x64 builds use Ubuntu 22.04; ARM64 builds use Ubuntu 24.04.
+          Packages: macOS Apple Silicon DMG, Linux Server x64/ARM64
+          (with codeg-mcp and web/), standalone web/, and Zotero 10 plugin.
+          Linux Server x64 builds use Ubuntu 22.04; ARM64 builds use Ubuntu 24.04.
 
           macOS packages have ad-hoc signatures, without Developer ID signing or
           Apple notarization. First launch may require allowing this application
