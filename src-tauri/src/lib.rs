@@ -41,6 +41,7 @@ pub mod keyring_store;
 pub mod logging;
 pub mod models;
 mod network;
+pub mod notifications;
 pub mod office_watch;
 pub mod parsers;
 pub mod paths;
@@ -2028,6 +2029,10 @@ mod tauri_app {
                 mcp_commands::mcp_set_server_apps,
                 mcp_commands::mcp_remove_server,
                 notification::send_notification,
+                crate::commands::bark_notifications::get_bark_notification_settings,
+                crate::commands::bark_notifications::set_bark_notification_settings,
+                crate::commands::bark_notifications::list_bark_notification_settings,
+                crate::commands::bark_notifications::test_bark_notification,
                 notification::notification_identity,
                 notification::open_system_notification_settings,
                 file_io::save_binary_file,

@@ -44,6 +44,7 @@ import { relaunchApp } from "@/lib/updater"
 import { toErrorMessage } from "@/lib/app-error"
 import { CloseBehaviorSettingsSection } from "@/components/settings/close-behavior-settings"
 import { DesktopNotificationSettingsSection } from "@/components/settings/desktop-notification-settings"
+import { BarkNotificationSettingsSection } from "@/components/settings/bark-notification-settings"
 import { NotificationSoundSettingsSection } from "@/components/settings/notification-sound-settings"
 
 const TERMINAL_SHELL_OPTION_SYSTEM = "system"
@@ -518,6 +519,8 @@ export function GeneralSettings() {
         {/* The two halves of "how Codeg gets my attention", adjacent on
             purpose: one leaves the window, one does not. */}
         <DesktopNotificationSettingsSection />
+
+        <BarkNotificationSettingsSection />
 
         <NotificationSoundSettingsSection />
       </div>

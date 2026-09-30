@@ -830,6 +830,22 @@ pub fn build_router(
         )
         // ─── System settings ───
         .route(
+            "/list_bark_notification_settings",
+            post(handlers::bark_notifications::list_bark_notification_settings),
+        )
+        .route(
+            "/get_bark_notification_settings",
+            post(handlers::bark_notifications::get_bark_notification_settings),
+        )
+        .route(
+            "/set_bark_notification_settings",
+            post(handlers::bark_notifications::set_bark_notification_settings),
+        )
+        .route(
+            "/test_bark_notification",
+            post(handlers::bark_notifications::test_bark_notification),
+        )
+        .route(
             "/get_system_proxy_settings",
             post(handlers::system_settings::get_system_proxy_settings),
         )

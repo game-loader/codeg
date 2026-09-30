@@ -3,6 +3,7 @@ pub mod acp;
 pub mod app_update;
 pub mod automation;
 pub mod background;
+pub mod bark_notifications;
 pub mod backup;
 #[cfg(feature = "tauri-runtime")]
 pub mod browser;

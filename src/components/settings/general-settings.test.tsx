@@ -58,11 +58,29 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock("@/lib/platform", () => ({ isDesktop: () => true }))
 vi.mock("@/lib/transport", () => ({
   getActiveRemoteConnectionId: () => null,
+  getServerBaseUrl: () => "http://localhost:3000",
+  getTransport: () => barkTransport,
   // Read by the desktop-notification section to decide whether permission is
   // the browser's to grant or the OS's; `false` puts it on the browser branch,
   // which is the one with visible controls to assert on.
   isDesktop: () => false,
   getShellTransport: () => ({ call: vi.fn() }),
+}))
+const barkTransport = vi.hoisted(() => ({
+  call: vi.fn(async (command: string) => {
+    if (command === "list_bark_notification_settings") return []
+    if (command === "get_bark_notification_settings") {
+      return {
+        enabled: false,
+        pushUrl: "",
+        includePreview: false,
+        language: "en",
+        serverUrl: "",
+        sourceName: "",
+      }
+    }
+    throw new Error(`Unexpected command: ${command}`)
+  }),
 }))
 // The rendering section is gated on the host webview having an env knob to
 // flip, so the platform has to be steerable per test. `vi.hoisted` because the
@@ -138,6 +156,7 @@ describe("GeneralSettings", () => {
       "Colorize command output",
       "Disable hardware acceleration",
       "Desktop notifications",
+      "Bark completion notifications",
       "Notification sounds",
     ]) {
       expect(screen.getByRole("heading", { name: heading })).toBeInTheDocument()

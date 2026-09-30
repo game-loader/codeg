@@ -52,6 +52,7 @@ describe("i18n locale key parity vs en.json", () => {
         !(
           locale !== "zh-CN" &&
           (k.startsWith("Folder.pdfPreview.") ||
+            k.startsWith("BarkNotificationSettings.") ||
             k.startsWith("Folder.videoPreview.") ||
             k.startsWith("Machines.ssh.") ||
             k === "Academic.mcpTools" ||
@@ -64,6 +65,28 @@ describe("i18n locale key parity vs en.json", () => {
     const extra = [...localeKeys].filter((k) => !reference.has(k))
     expect({ missing, extra }).toEqual({ missing: [], extra: [] })
   })
+})
+
+it("provides English Bark settings in untranslated locales and Chinese settings in zh-CN", async () => {
+  const french = await getMessagesForLocale("fr")
+  const t = createTranslator({ locale: "fr", messages: french as typeof en })
+  expect(t("BarkNotificationSettings.title")).toBe(
+    en.BarkNotificationSettings.title
+  )
+  expect(t("BarkNotificationSettings.sourceNameHint")).toBe(
+    en.BarkNotificationSettings.sourceNameHint
+  )
+  expect(
+    t("BarkNotificationSettings.phoneSubscription", { id: "12345678" })
+  ).toBe("Phone device 12345678")
+  const chinese = await getMessagesForLocale("zh_cn")
+  const zh = createTranslator({
+    locale: "zh-CN",
+    messages: chinese as typeof en,
+  })
+  expect(zh("BarkNotificationSettings.title")).toBe(
+    zhCN.BarkNotificationSettings.title
+  )
 })
 
 it("provides English PDF controls in locales without a PDF translation", async () => {

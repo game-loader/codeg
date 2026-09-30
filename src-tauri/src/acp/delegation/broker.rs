@@ -4480,6 +4480,40 @@ impl DelegationBroker {
         self.pending.inner.lock().await.running.len()
     }
 
+    pub(crate) async fn running_ids_for_parent(&self, parent: &str) -> Vec<String> {
+        self.pending
+            .inner
+            .lock()
+            .await
+            .running
+            .iter()
+            .filter(|(_, task)| task.parent_connection_id == parent)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    pub(crate) async fn tasks_completed_successfully(&self, parent: &str, ids: &[String]) -> bool {
+        let pending = self.pending.inner.lock().await;
+        ids.iter().all(|id| {
+            pending.completed.get(id).is_some_and(|task| {
+                task.parent_connection_id == parent && task.status == TaskStatus::Completed
+            })
+        })
+    }
+
+    /// Includes children whose ACP tool-call ID could not be matched, plus
+    /// setups not yet parked. These have no `DelegationStarted` snapshot row.
+    pub(crate) async fn has_running_for_parent(&self, parent: &str) -> bool {
+        let pending = self.pending.inner.lock().await;
+        pending
+            .running
+            .values()
+            .any(|task| task.parent_connection_id == parent)
+            || pending.inflight.values().any(|setup| {
+                setup.parent_connection_id == parent && setup.canceled_at.is_none()
+            })
+    }
+
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn pending_count(&self) -> usize {
         self.running_delegation_count().await
@@ -4698,6 +4732,30 @@ mod tests {
         let got = broker.config_snapshot().await;
         assert!(!got.enabled);
         assert_eq!(got.depth_limit, 5);
+    }
+
+    #[tokio::test]
+    async fn notification_guard_accounts_for_synthetic_id_children_and_inflight_setup() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("notification-child".into())).await;
+        mock.queue_send(Ok(42)).await;
+        let broker = DelegationBroker::new(mock as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
+        assert!(!broker.has_running_for_parent("parent-conn").await);
+        let ack = broker.start_delegation(request(1, "delegation-unmatched-call")).await;
+        assert_eq!(ack.status, TaskStatus::Running);
+        assert!(broker.has_running_for_parent("parent-conn").await);
+        assert!(!broker.has_running_for_parent("another-parent").await);
+        let ids = broker.running_ids_for_parent("parent-conn").await;
+        assert_eq!(ids, vec![ack.task_id.unwrap()]);
+        assert!(!broker.tasks_completed_successfully("parent-conn", &ids).await);
+        broker.cancel_by_parent("parent-conn").await;
+        assert!(!broker.has_running_for_parent("parent-conn").await);
+        assert!(!broker.tasks_completed_successfully("parent-conn", &ids).await);
+        let setup = broker.pending.inner.lock().await.register_inflight("parent-conn");
+        assert!(broker.has_running_for_parent("parent-conn").await);
+        broker.pending.inner.lock().await.deregister_inflight(setup);
+        assert!(!broker.has_running_for_parent("parent-conn").await);
     }
 
     #[tokio::test]

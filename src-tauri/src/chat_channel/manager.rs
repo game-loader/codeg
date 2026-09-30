@@ -351,6 +351,12 @@ impl ChatChannelManager {
 
         let db_conn2 = db_conn.clone();
 
+        crate::notifications::spawn_completion_subscriber(
+            bus.clone(),
+            db_conn.clone(),
+            conn_mgr.clone_ref(),
+        );
+
         // Create shared session bridge
         let bridge = Arc::new(Mutex::new(SessionBridge::new()));
 

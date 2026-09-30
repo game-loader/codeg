@@ -598,6 +598,33 @@ impl ConnectionManager {
         self.delegation_injection.get().cloned()
     }
 
+    pub(crate) async fn running_delegation_ids(&self, parent: &str) -> Vec<String> {
+        match self.delegation_injection.get() {
+            Some(injection) => injection.broker.running_ids_for_parent(parent).await,
+            None => Vec::new(),
+        }
+    }
+
+    pub(crate) async fn delegations_completed_successfully(
+        &self,
+        parent: &str,
+        ids: &[String],
+    ) -> bool {
+        match self.delegation_injection.get() {
+            Some(injection) => {
+                injection.broker.tasks_completed_successfully(parent, ids).await
+            }
+            None => ids.is_empty(),
+        }
+    }
+
+    pub(crate) async fn has_running_delegations(&self, parent: &str) -> bool {
+        match self.delegation_injection.get() {
+            Some(injection) => injection.broker.has_running_for_parent(parent).await,
+            None => false,
+        }
+    }
+
     /// Returns the shared terminal-shell setting consumed by ACP terminal
     /// runtimes. Keeping the handle shared makes saves apply immediately to
     /// connections that are already running.

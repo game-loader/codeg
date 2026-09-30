@@ -54,6 +54,12 @@ export async function getMessagesForLocale(
   // Keep the other locales usable without copying English into their catalogs.
   const messages = {
     ...localized,
+    BarkNotificationSettings: {
+      ...enMessages.BarkNotificationSettings,
+      ...(typeof localized.BarkNotificationSettings === "object"
+        ? localized.BarkNotificationSettings
+        : {}),
+    },
     Machines: {
       ...(typeof localized.Machines === "object" ? localized.Machines : {}),
       ssh:
