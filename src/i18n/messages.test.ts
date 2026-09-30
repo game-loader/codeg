@@ -58,7 +58,6 @@ describe("i18n locale key parity vs en.json", () => {
             k === "Academic.mcpToolsHint" ||
             k === "Folder.chat.messageQueue.toolBoundaryHint" ||
             k === "Folder.chat.messageQueue.interruptAndSend" ||
-            k === "AcpAgentSettings.pi.thinking.max" ||
             k === "Folder.chat.acpConnections.backendErrors.sessionLoadError")
         )
     )
@@ -100,22 +99,6 @@ it("falls back for steering hints while preserving translated queue controls", a
   expect(zh("Folder.chat.messageQueue.toolBoundaryHint")).toBe(
     zhCN.Folder.chat.messageQueue.toolBoundaryHint
   )
-})
-
-it("falls back to English for Pi max without replacing translated levels", async () => {
-  const messages = await getMessagesForLocale("fr")
-  const t = createTranslator({ locale: "fr", messages: messages as typeof en })
-  expect(t("AcpAgentSettings.pi.thinking.max")).toBe("Max")
-  expect(t("AcpAgentSettings.pi.thinking.high")).toBe(
-    fr.AcpAgentSettings.pi.thinking.high
-  )
-
-  const chinese = await getMessagesForLocale("zh_cn")
-  const zh = createTranslator({
-    locale: "zh-CN",
-    messages: chinese as typeof en,
-  })
-  expect(zh("AcpAgentSettings.pi.thinking.max")).toBe("最高")
 })
 
 it("falls back for session load errors while preserving localized errors", async () => {

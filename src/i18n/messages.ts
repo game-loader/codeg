@@ -50,11 +50,6 @@ export async function getMessagesForLocale(
   const backendErrors =
     typeof connections === "object" ? connections.backendErrors : undefined
   const academic = localized.Academic
-  const agentSettings = localized.AcpAgentSettings
-  const piSettings =
-    typeof agentSettings === "object" ? agentSettings.pi : undefined
-  const thinking =
-    typeof piSettings === "object" ? piSettings.thinking : undefined
   // New features ship in English and Simplified Chinese first (AGENTS.md).
   // Keep the other locales usable without copying English into their catalogs.
   const messages = {
@@ -64,16 +59,6 @@ export async function getMessagesForLocale(
       ssh:
         (typeof localized.Machines === "object" && localized.Machines.ssh) ||
         enMessages.Machines.ssh,
-    },
-    AcpAgentSettings: {
-      ...(typeof agentSettings === "object" ? agentSettings : {}),
-      pi: {
-        ...(typeof piSettings === "object" ? piSettings : {}),
-        thinking: {
-          max: enMessages.AcpAgentSettings.pi.thinking.max,
-          ...(typeof thinking === "object" ? thinking : {}),
-        },
-      },
     },
     Academic: {
       mcpTools: enMessages.Academic.mcpTools,
