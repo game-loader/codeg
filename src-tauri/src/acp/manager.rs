@@ -978,6 +978,7 @@ impl ConnectionManager {
             let now = chrono::Utc::now();
             if state.status != ConnectionStatus::Connected
                 || state.turn_in_flight
+                || state.agent_initiated_turn
                 || state.disconnecting
                 || state.pending_permission.is_some()
                 || state.has_active_background_work(now)
@@ -7185,6 +7186,30 @@ mod tests {
         let state = state.read().await;
         assert!(state.disconnecting);
         assert!(state.preserve_status_on_disconnect);
+    }
+
+    #[tokio::test]
+    async fn idle_retirement_preserves_an_agent_turn_before_prompting_is_published() {
+        let mgr = ConnectionManager::new();
+        let _rx = mgr
+            .insert_test_connection("agent-turn", AgentType::Grok, None, EventEmitter::Noop)
+            .await;
+        backdate_last_activity(&mgr, "agent-turn", 600).await;
+        let state = mgr.get_state("agent-turn").await.unwrap();
+        assert!(state.write().await.begin_agent_initiated_turn());
+        // The claim precedes StatusChanged(Prompting), leaving the connection
+        // Connected with an old activity timestamp when the sweep rechecks it.
+        assert_eq!(state.read().await.status, ConnectionStatus::Connected);
+        assert_eq!(mgr.sweep_idle(Duration::from_secs(300)).await, 0);
+        assert!(!state.read().await.disconnecting);
+
+        state.write().await.agent_initiated_turn = false;
+        assert!(mgr
+            .disconnect_if_idle("agent-turn", Duration::from_secs(300))
+            .await
+            .unwrap());
+        // Retirement won the reverse ordering: no late chunk may claim a turn.
+        assert!(!state.write().await.begin_agent_initiated_turn());
     }
 
     #[tokio::test]

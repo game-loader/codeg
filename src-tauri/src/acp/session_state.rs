@@ -1547,9 +1547,10 @@ impl SessionState {
     }
 
     /// Claim the next turn for one the agent is starting on its own, unless a
-    /// prompt the manager admitted already owns it. On `true` the caller
-    /// announces the turn (`StatusChanged(Prompting)`); on `false` the admitted
-    /// prompt is about to start and the agent's output streams into it.
+    /// prompt the manager admitted already owns it or retirement has begun.
+    /// On `true` the caller announces the turn (`StatusChanged(Prompting)`).
+    /// On `false` an admitted prompt owns the output, or the connection is
+    /// shutting down and must not open another turn.
     ///
     /// Decided under the same lock as the manager's admission check, so the two
     /// can never both own a turn: a prompt admitted AFTER the claim keeps its
@@ -1561,7 +1562,7 @@ impl SessionState {
     /// (a late frame of the turn before), which no client rendered, and would
     /// otherwise open this turn's snapshot and its captured result.
     pub fn begin_agent_initiated_turn(&mut self) -> bool {
-        if self.turn_in_flight {
+        if self.turn_in_flight || self.disconnecting {
             return false;
         }
         self.agent_initiated_turn = true;
@@ -2791,6 +2792,14 @@ mod tests {
     fn an_agent_initiated_turn_yields_to_an_admitted_prompt() {
         let mut s = fresh_state();
         s.turn_in_flight = true;
+        assert!(!s.begin_agent_initiated_turn());
+        assert!(!s.agent_initiated_turn);
+    }
+
+    #[test]
+    fn an_agent_initiated_turn_cannot_start_after_retirement() {
+        let mut s = fresh_state();
+        s.disconnecting = true;
         assert!(!s.begin_agent_initiated_turn());
         assert!(!s.agent_initiated_turn);
     }
