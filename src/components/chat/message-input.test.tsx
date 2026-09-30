@@ -1644,54 +1644,131 @@ describe("MessageInput mid-turn send (live-feedback channel)", () => {
     expect(screen.queryByLabelText(MI.steerIntoTurn)).toBeNull()
   })
 
-  it("shows the queue/steer split next to Stop once there is content", async () => {
+  it("shows native insertion as the primary action next to Stop", async () => {
     const editor = await mountPrompting({ onSteer: vi.fn() })
     // Empty draft: nothing to queue or steer — still Stop-only.
-    expect(screen.queryByTitle(MI.queueMessage)).toBeNull()
+    expect(screen.queryByTitle(MI.steerIntoTurn)).toBeNull()
 
     typeDraft(editor, "go left")
     await waitFor(() =>
-      expect(screen.getByTitle(MI.queueMessage)).toBeInTheDocument()
+      expect(screen.getByTitle(MI.steerIntoTurn)).toBeInTheDocument()
     )
-    expect(screen.getByLabelText(MI.steerIntoTurn)).toBeInTheDocument()
+    expect(screen.getByLabelText(MI.queueMessage)).toBeInTheDocument()
     expect(screen.getByTitle(MI.cancel)).toBeInTheDocument()
   })
 
-  it("steers the draft text and clears the composer on success", async () => {
+  it.each(["button", "Enter"])(
+    "defaults to native insertion via %s and clears only on success",
+    async (submit) => {
+      const user = userEvent.setup()
+      let resolveSteer: () => void = () => {}
+      const onSteer = vi.fn(
+        () =>
+          new Promise<void>((r) => {
+            resolveSteer = r
+          })
+      )
+      const onEnqueue = vi.fn()
+      const editor = await mountPrompting({ onSteer, onEnqueue })
+      typeDraft(editor, "go left")
+      await waitFor(() =>
+        expect(screen.getByTitle(MI.steerIntoTurn)).toBeInTheDocument()
+      )
+
+      if (submit === "button") {
+        await user.click(screen.getByTitle(MI.steerIntoTurn))
+      } else {
+        fireEvent.keyDown(editor.view.dom, { key: "Enter" })
+      }
+      // A plain-text draft steers as text alone — no blocks payload.
+      await waitFor(() =>
+        expect(onSteer).toHaveBeenCalledWith("go left", undefined)
+      )
+      // Unsettled: the draft must survive until the backend confirms.
+      expect(serializeDocToText(editor.state.doc)).toContain("go left")
+      expect(screen.getByTitle(MI.steerIntoTurn)).toBeDisabled()
+      fireEvent.keyDown(editor.view.dom, { key: "Enter" })
+      expect(onSteer).toHaveBeenCalledTimes(1)
+      expect(onEnqueue).not.toHaveBeenCalled()
+
+      await act(async () => {
+        resolveSteer()
+      })
+      // Confirmed: the composer clears (the split collapses back to Stop-only).
+      await waitFor(() =>
+        expect(serializeDocToText(editor.state.doc)).not.toContain("go left")
+      )
+      await waitFor(() =>
+        expect(screen.queryByTitle(MI.steerIntoTurn)).toBeNull()
+      )
+    }
+  )
+
+  it("allows explicitly queuing a native-session draft from the menu", async () => {
     const user = userEvent.setup()
-    let resolveSteer: () => void = () => {}
-    const onSteer = vi.fn(
-      () =>
-        new Promise<void>((r) => {
-          resolveSteer = r
-        })
-    )
-    const editor = await mountPrompting({ onSteer })
-    typeDraft(editor, "go left")
-    await waitFor(() =>
-      expect(screen.getByLabelText(MI.steerIntoTurn)).toBeInTheDocument()
-    )
-
-    await user.click(screen.getByLabelText(MI.steerIntoTurn))
-    const item = await screen.findByRole("menuitem", { name: MI.steerIntoTurn })
-    // The glyph promises what the label does — the bolt is the instant insert.
-    expect(item.querySelector(".lucide-zap")).not.toBeNull()
+    const onSteer = vi.fn()
+    const onEnqueue = vi.fn()
+    const editor = await mountPrompting({ onSteer, onEnqueue })
+    typeDraft(editor, "send later")
+    await user.click(await screen.findByLabelText(MI.queueMessage))
+    const item = await screen.findByRole("menuitem", { name: MI.queueMessage })
+    expect(item.querySelector(".lucide-clock")).not.toBeNull()
     await user.click(item)
-    // A plain-text draft steers as text alone — no blocks payload.
-    await waitFor(() =>
-      expect(onSteer).toHaveBeenCalledWith("go left", undefined)
+    expect(onEnqueue).toHaveBeenCalledWith(
+      {
+        displayText: "send later",
+        blocks: [{ type: "text", text: "send later" }],
+      },
+      null
     )
-    // Unsettled: the draft must survive until the backend confirms.
-    expect(serializeDocToText(editor.state.doc)).toContain("go left")
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(serializeDocToText(editor.state.doc)).not.toContain("send later")
+  })
 
-    await act(async () => {
-      resolveSteer()
+  it.each(["pull", "unavailable"])(
+    "queues Enter submissions when native insertion is %s",
+    async (channel) => {
+      const onSteer = vi.fn()
+      const onSend = vi.fn()
+      const onEnqueue = vi.fn()
+      const editor = await mountPrompting({
+        onSteer: channel === "pull" ? onSteer : undefined,
+        steerChannel: "pull",
+        onEnqueue,
+        onSend,
+      })
+      typeDraft(editor, "next message")
+      fireEvent.keyDown(editor.view.dom, { key: "Enter" })
+      expect(onEnqueue).toHaveBeenCalledWith(
+        {
+          displayText: "next message",
+          blocks: [{ type: "text", text: "next message" }],
+        },
+        null
+      )
+      expect(onSteer).not.toHaveBeenCalled()
+      expect(onSend).not.toHaveBeenCalled()
+    }
+  )
+
+  it("saves queue edits instead of steering them on Enter", async () => {
+    const onSteer = vi.fn()
+    const onEnqueue = vi.fn()
+    const onSaveQueueEdit = vi.fn()
+    const editor = await mountPrompting({
+      onSteer,
+      onEnqueue,
+      isEditingQueueItem: true,
+      onSaveQueueEdit,
     })
-    // Confirmed: the composer clears (the split collapses back to Stop-only).
-    await waitFor(() =>
-      expect(serializeDocToText(editor.state.doc)).not.toContain("go left")
-    )
-    await waitFor(() => expect(screen.queryByTitle(MI.queueMessage)).toBeNull())
+    typeDraft(editor, "edited message")
+    fireEvent.keyDown(editor.view.dom, { key: "Enter" })
+    expect(onSaveQueueEdit).toHaveBeenCalledWith({
+      displayText: "edited message",
+      blocks: [{ type: "text", text: "edited message" }],
+    })
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onEnqueue).not.toHaveBeenCalled()
   })
 
   it("falls back to the queue when the turn ends in the race window", async () => {
@@ -1703,13 +1780,10 @@ describe("MessageInput mid-turn send (live-feedback channel)", () => {
     const editor = await mountPrompting({ onSteer, onEnqueue })
     typeDraft(editor, "late note")
     await waitFor(() =>
-      expect(screen.getByLabelText(MI.steerIntoTurn)).toBeInTheDocument()
+      expect(screen.getByTitle(MI.steerIntoTurn)).toBeInTheDocument()
     )
 
-    await user.click(screen.getByLabelText(MI.steerIntoTurn))
-    await user.click(
-      await screen.findByRole("menuitem", { name: MI.steerIntoTurn })
-    )
+    await user.click(screen.getByTitle(MI.steerIntoTurn))
 
     await waitFor(() => expect(onEnqueue).toHaveBeenCalled())
     const [draft] = onEnqueue.mock.calls[0]
@@ -1729,13 +1803,10 @@ describe("MessageInput mid-turn send (live-feedback channel)", () => {
     const editor = await mountPrompting({ onSteer, onEnqueue })
     typeDraft(editor, "keep me")
     await waitFor(() =>
-      expect(screen.getByLabelText(MI.steerIntoTurn)).toBeInTheDocument()
+      expect(screen.getByTitle(MI.steerIntoTurn)).toBeInTheDocument()
     )
 
-    await user.click(screen.getByLabelText(MI.steerIntoTurn))
-    await user.click(
-      await screen.findByRole("menuitem", { name: MI.steerIntoTurn })
-    )
+    await user.click(screen.getByTitle(MI.steerIntoTurn))
 
     await waitFor(() => expect(onSteer).toHaveBeenCalled())
     // Real failure: nothing queued, draft intact for retry.
@@ -1804,14 +1875,12 @@ describe("MessageInput mid-turn send (live-feedback channel)", () => {
     const editor = await mountPrompting({ onSteer })
     typeDraft(editor, "match this mock")
     await waitFor(() =>
-      expect(screen.getByLabelText(MI.steerIntoTurn)).toBeInTheDocument()
+      expect(screen.getByTitle(MI.steerIntoTurn)).toBeInTheDocument()
     )
 
-    await user.click(screen.getByLabelText(MI.steerIntoTurn))
-    const item = await screen.findByRole("menuitem", {
-      name: MI.steerIntoTurn,
-    })
-    expect(item).not.toHaveAttribute("aria-disabled", "true")
+    const item = screen.getByTitle(MI.steerIntoTurn)
+    expect(item).toBeEnabled()
+    expect(item.querySelector(".lucide-zap")).not.toBeNull()
     await user.click(item)
     await waitFor(() =>
       expect(onSteer).toHaveBeenCalledWith("match this mock", [
@@ -1895,13 +1964,10 @@ describe("MessageInput mid-turn send (live-feedback channel)", () => {
     const onSteer = vi.fn().mockResolvedValue(undefined)
     await mountPrompting({ onSteer })
     await waitFor(() =>
-      expect(screen.getByLabelText(MI.steerIntoTurn)).toBeInTheDocument()
+      expect(screen.getByTitle(MI.steerIntoTurn)).toBeInTheDocument()
     )
 
-    await user.click(screen.getByLabelText(MI.steerIntoTurn))
-    await user.click(
-      await screen.findByRole("menuitem", { name: MI.steerIntoTurn })
-    )
+    await user.click(screen.getByTitle(MI.steerIntoTurn))
     await waitFor(() =>
       expect(onSteer).toHaveBeenCalledWith("Attached 1 attachment", [
         stagedImageBlock,
@@ -1924,13 +1990,10 @@ describe("MessageInput mid-turn send (live-feedback channel)", () => {
     const editor = await mountPrompting({ onSteer })
     typeDraft(editor, "wait for it")
     await waitFor(() =>
-      expect(screen.getByLabelText(MI.steerIntoTurn)).toBeInTheDocument()
+      expect(screen.getByTitle(MI.steerIntoTurn)).toBeInTheDocument()
     )
 
-    await user.click(screen.getByLabelText(MI.steerIntoTurn))
-    await user.click(
-      await screen.findByRole("menuitem", { name: MI.steerIntoTurn })
-    )
+    await user.click(screen.getByTitle(MI.steerIntoTurn))
     expect(onSteer).not.toHaveBeenCalled()
     expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
       enMessages.Folder.chat.messageInput.attachUploadInProgress
@@ -1956,13 +2019,10 @@ describe("MessageInput mid-turn send (live-feedback channel)", () => {
     const editor = await mountPrompting({ onSteer, onEnqueue })
     typeDraft(editor, "late note")
     await waitFor(() =>
-      expect(screen.getByLabelText(MI.steerIntoTurn)).toBeInTheDocument()
+      expect(screen.getByTitle(MI.steerIntoTurn)).toBeInTheDocument()
     )
 
-    await user.click(screen.getByLabelText(MI.steerIntoTurn))
-    await user.click(
-      await screen.findByRole("menuitem", { name: MI.steerIntoTurn })
-    )
+    await user.click(screen.getByTitle(MI.steerIntoTurn))
 
     await waitFor(() => expect(onEnqueue).toHaveBeenCalled())
     const [draft] = onEnqueue.mock.calls[0]

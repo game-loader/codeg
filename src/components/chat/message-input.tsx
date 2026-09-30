@@ -244,8 +244,8 @@ interface MessageInputProps {
    *  draft. */
   onSteer?: (text: string, blocks?: PromptInputBlock[]) => Promise<void>
   /** Which channel {@link onSteer} rides (`useSessionFeedback().channel`).
-   *  Picks the honest copy for the mid-turn action: `native` = inserted into
-   *  the turn immediately, `pull` = recorded as a note the agent reads on its
+   *  Native insertion is the default mid-turn submit, consumed at the agent's
+   *  next safe boundary. `pull` records a note the agent reads on its
    *  next `check_user_feedback` call. Defaults to `pull` — the weaker promise
    *  — so a caller that wires `onSteer` and forgets this understates delivery
    *  rather than claiming an insert that never happened (same reason
@@ -1600,7 +1600,7 @@ export function MessageInput({
     historyDraftRef.current = null
   }, [clearAttachments, closeSlashMenu])
 
-  const handleSend = useCallback(() => {
+  const handleQueueOrSend = useCallback(() => {
     // The editor stays editable while `disabled` (the agent is busy) so the user
     // can keep typing, but a plain send is blocked — only enqueue / queue-edit
     // save go through. Mirrors the legacy textarea's keydown guard.
@@ -1665,7 +1665,7 @@ export function MessageInput({
   // silently stripped. Only the native wire takes blocks: the pull path
   // rejects them as `NoActiveTurn`, which lands on the same enqueue fallback,
   // so an attachment on a pull session goes to the queue whole. Unsettled
-  // uploads are gated here exactly like `handleSend` (no server-side uri to
+  // uploads are gated here exactly like `handleQueueOrSend` (no server-side uri to
   // hydrate from yet), since the enqueue fallback below bypasses its gate.
   const [steering, setSteering] = useState(false)
   const handleSteerClick = useCallback(async () => {
@@ -1714,6 +1714,19 @@ export function MessageInput({
     steerChannel,
     t,
   ])
+
+  const defaultToSteering =
+    isPrompting &&
+    !isEditingQueueItem &&
+    Boolean(onSteer) &&
+    steerChannel === "native"
+  const handleSend = useCallback(() => {
+    if (defaultToSteering) {
+      void handleSteerClick()
+    } else {
+      handleQueueOrSend()
+    }
+  }, [defaultToSteering, handleSteerClick, handleQueueOrSend])
 
   // Navigation/confirm/escape keys for the `/` (commands) and `$` (Codex skills)
   // runtime menu, routed from inside the editor (RichComposer.onExternalMenuKeyDown)
@@ -2025,14 +2038,9 @@ export function MessageInput({
     </div>
   ) : isPrompting && onCancel ? (
     onSteer && onEnqueue && hasSendableContent ? (
-      // Sessions with a working live-feedback channel surface the mid-turn
-      // actions that already exist but were keyboard-only/invisible: the
-      // primary half of the split queues the draft (what Enter has always
-      // done here), the dropdown sends it over the channel — a native push
-      // inserts into the RUNNING turn, a pull-tool session records a waiting
-      // note for the agent's next check (label keyed on `steerChannel`).
-      // Without `onSteer` this branch stays pixel-identical to the
-      // historical Stop-only form below.
+      // Native sessions default to insertion for both the button and Enter;
+      // their menu offers explicit queueing. Pull sessions queue by default
+      // and offer a waiting note in the menu.
       <div className="flex items-center gap-1">
         <Button
           onClick={onCancel}
@@ -2049,9 +2057,13 @@ export function MessageInput({
             disabled={steering}
             size="icon"
             className="h-8 w-8 rounded-r-none"
-            title={t("queueMessage")}
+            title={t(defaultToSteering ? "steerIntoTurn" : "queueMessage")}
           >
-            <Send className="size-4" />
+            {defaultToSteering ? (
+              <Zap className="size-4" />
+            ) : (
+              <Send className="size-4" />
+            )}
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -2060,7 +2072,7 @@ export function MessageInput({
                 size="icon"
                 className="h-8 w-5 rounded-l-none border-l border-primary-foreground/20"
                 aria-label={t(
-                  steerChannel === "pull" ? "steerAsNote" : "steerIntoTurn"
+                  defaultToSteering ? "queueMessage" : "steerAsNote"
                 )}
               >
                 <ChevronUp className="size-4" />
@@ -2068,18 +2080,14 @@ export function MessageInput({
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" side="top">
               <DropdownMenuItem
-                onSelect={() => void handleSteerClick()}
+                onSelect={() => {
+                  if (defaultToSteering) handleQueueOrSend()
+                  else void handleSteerClick()
+                }}
                 disabled={steering}
               >
-                {/* Icon carries the same promise as the label: the bolt is
-                    the instant insert, the clock is the note that waits —
-                    the very glyph the notes strip uses for `pending`. */}
-                {steerChannel === "pull" ? (
-                  <Clock className="h-4 w-4" />
-                ) : (
-                  <Zap className="h-4 w-4" />
-                )}
-                {t(steerChannel === "pull" ? "steerAsNote" : "steerIntoTurn")}
+                <Clock className="h-4 w-4" />
+                {t(defaultToSteering ? "queueMessage" : "steerAsNote")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
