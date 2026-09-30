@@ -10,6 +10,7 @@ const bundles = new Map([
     "4c1f6c00e67c2ace5a96f0e0fe6e812502a48827a403014d4b68373464f55fce",
   ],
   ["2.0.0", "b401982fc64ae68ed6566b18b7c3d8e879e936650175e453c5a5f1c650c78faa"],
+  ["2.0.1", "2729d2a39c9fde47c494828a76c7eb2fabc0f9940f2723183426c1afbf1a5e7d"],
 ])
 
 export function patchSteering(source, version) {

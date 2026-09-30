@@ -398,7 +398,7 @@ pub const PI_MIN_RUNTIME_VERSION: &str = "0.81.0";
 /// `_meta.steering.supported`: an adapter that ignores the opt-in falls back
 /// to `startedNewTurn` on the turn-end race — a detached turn no host request
 /// owns, which codeg's turn-scoped runtime must never trigger. codex-acp
-/// ships `_session/steering` but not `promptRequired` (verified through 2.0.0).
+/// ships `_session/steering` but not `promptRequired` (verified through 2.0.1).
 /// It stays `None` until upstream implements the opt-in. The process-local
 /// `codex_steering_compat` loader supplies a separate explicit capability for
 /// the exact bundles it patches; stock/unknown Codex bundles stay on pull.
@@ -2288,9 +2288,16 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // (r) `@openai/codex` 0.158.0 deletes the hidden `gpt-5.4` stub (11 →
             // 10 slugs) and adds no `ModelInfo` field; the offline snapshot is
             // regenerated and the strictness re-probed (`codex_model_catalog.rs`).
+            //
+            // 2.0.1 moves Codex to ^0.159.1 and maps `tooManyDenials` to the
+            // existing `provider_error` session failure. No ACP shape changes
+            // from 2.0.0. The steering implementation is byte-identical, so the
+            // verified loader also accepts this published bundle. Codex's
+            // bundled catalog adds listed `gpt-6.1-sol` with no new ModelInfo
+            // fields; regenerate the offline snapshot from 0.159.1.
             distribution: AgentDistribution::Npx {
-                version: "2.0.0",
-                package: "@agentclientprotocol/codex-acp@2.0.0",
+                version: "2.0.1",
+                package: "@agentclientprotocol/codex-acp@2.0.1",
                 cmd: "codex-acp",
                 args: &[],
                 env: &[],
@@ -3650,8 +3657,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Codex,
-            "2.0.0",
-            "@agentclientprotocol/codex-acp@2.0.0",
+            "2.0.1",
+            "@agentclientprotocol/codex-acp@2.0.1",
             Some("20.0.0"),
         );
         assert_npx_version(AgentType::Pi, "0.0.34", "pi-acp@0.0.34", Some("22.0.0"));

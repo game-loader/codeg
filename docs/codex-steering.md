@@ -35,7 +35,7 @@ its waiting notes are not evidence that native insertion is active.
 
 ## Adapter compatibility
 
-Upstream codex-acp 1.13.1 and 2.0.0 ignore
+Upstream codex-acp 1.13.1, 2.0.0 and 2.0.1 ignore
 `_meta.steering.idleBehavior = "promptRequired"`. If the target turn ends before
 injection, they start a detached prompt. Codeg needs the adapter to return
 `{ "outcome": "promptRequired" }` without consuming the input instead.

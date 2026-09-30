@@ -32,7 +32,7 @@ pub fn supports_native_steering(
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
     version: Option<&str>,
 ) -> bool {
-    matches!(version, Some("1.13.1" | "2.0.0"))
+    matches!(version, Some("1.13.1" | "2.0.0" | "2.0.1"))
         && meta
             .and_then(|m| m.get("steering"))
             .and_then(|s| s.get("codegPromptRequired"))
@@ -47,18 +47,16 @@ mod tests {
     #[test]
     fn requires_a_patched_known_adapter() {
         let patched = serde_json::json!({"steering": {"codegPromptRequired": 1}});
-        assert!(supports_native_steering(
-            patched.as_object(),
-            Some("1.13.1")
-        ));
-        assert!(supports_native_steering(patched.as_object(), Some("2.0.0")));
+        for version in ["1.13.1", "2.0.0", "2.0.1"] {
+            assert!(supports_native_steering(patched.as_object(), Some(version)));
+            assert!(!supports_native_steering(None, Some(version)));
+            let stock = serde_json::json!({"steering": {"supported": true}});
+            assert!(!supports_native_steering(stock.as_object(), Some(version)));
+        }
         assert!(!supports_native_steering(
             patched.as_object(),
-            Some("2.0.1")
+            Some("2.0.2")
         ));
         assert!(!supports_native_steering(patched.as_object(), None));
-        assert!(!supports_native_steering(None, Some("1.13.1")));
-        let stock = serde_json::json!({"steering": {"supported": true}});
-        assert!(!supports_native_steering(stock.as_object(), Some("1.13.1")));
     }
 }

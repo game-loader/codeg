@@ -126,6 +126,9 @@ fn enum_spec_for(key: &str) -> Option<EnumSpec> {
 /// `ModelInfo` field at all; it deletes the hidden `gpt-5.4` stub outright
 /// (10 slugs). Re-probed against the 0.158.0 binary: `"yes"` and `null` in a
 /// boolean still take the catalog down, and so does an unknown `shell_type`.
+///
+/// 0.159.1 (codex-acp 2.0.1) adds listed `gpt-6.1-sol` without adding any
+/// ModelInfo fields; the existing override validation still applies.
 const BOOL_FIELDS: &[&str] = &[
     "use_responses_lite",
     "supported_in_api",
@@ -656,15 +659,15 @@ mod tests {
         let models = snap();
         assert_eq!(
             models.len(),
-            10,
-            "snapshot should carry codex 0.158.0's catalog"
+            11,
+            "snapshot should carry codex 0.159.1's catalog"
         );
         // 0.158.0 deleted gpt-5.4 outright (it had shipped hidden, as a
         // retirement stub) rather than hiding it any further.
         assert!(models.iter().all(|m| slug_of(m) != Some("gpt-5.4")));
         assert!(models.iter().any(|m| slug_of(m) == Some("gpt-6-astra")));
-        // 0.156.1 adds GPT-6 Sol and Luna, both listed.
-        for added in ["gpt-6-sol", "gpt-6-luna"] {
+        // 0.159.1 adds GPT-6.1 Sol alongside the listed GPT-6 models.
+        for added in ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"] {
             let m = models
                 .iter()
                 .find(|m| slug_of(m) == Some(added))
@@ -711,7 +714,7 @@ mod tests {
                 "codex dropped {gone} — regenerate the snapshot"
             );
         }
-        assert_eq!(fallback_base_slug(&models).as_deref(), Some("gpt-6-astra"));
+        assert_eq!(fallback_base_slug(&models).as_deref(), Some("gpt-6.1-sol"));
     }
 
     #[test]
@@ -728,8 +731,8 @@ mod tests {
             default: None,
         };
         let cat = expand_to_catalog(&config, &snap());
-        // All 10 officials auto-included + 1 custom = 11.
-        assert_eq!(slugs(&cat).len(), 11);
+        // Every official is auto-included alongside the custom model.
+        assert_eq!(slugs(&cat).len(), snap().len() + 1);
         // Custom is first (top of picker) and forced list + api.
         let c = find(&cat, "gw/opus").expect("custom present");
         assert_eq!(c.get("visibility").unwrap(), "list");
