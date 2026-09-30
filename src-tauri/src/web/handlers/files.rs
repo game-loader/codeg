@@ -1335,7 +1335,9 @@ mod tests {
                     contents.as_bytes()
                 );
             } else {
-                let error = result.err().expect("oversized file must fail");
+                let Err(error) = result else {
+                    panic!("oversized file must fail");
+                };
                 assert_eq!(error.i18n_key.as_deref(), Some(UPLOAD_I18N_KEY_TOO_LARGE));
                 assert_eq!(error.i18n_params.unwrap().get("limit").unwrap(), "4");
             }
