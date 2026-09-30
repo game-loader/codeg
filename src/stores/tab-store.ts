@@ -285,6 +285,8 @@ export interface TabStoreState {
     /** See `openNewConversationTab`'s `forceAgent`. */
     forceAgent?: AgentType
     academicPaperId?: string
+    /** See `openNewConversationTab`'s `index` (global rawTabs slot). */
+    index?: number
   }) => OpenedDraftTarget
   setTabAcademicPaper: (
     tabId: string,
@@ -1785,6 +1787,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     ) {
       return get().openChatModeTab({
         academicPaperId: options?.academicPaperId,
+        index: options?.index,
         ...(options?.targetGroup != null
           ? { targetGroup: options.targetGroup }
           : {}),
@@ -1971,6 +1974,12 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const existingTab = prevState.rawTabs.find(
       (t) => t.conversationId == null && inTargetGroup(t)
     )
+    // Reopening may reuse the target group's singleton draft. Its requested
+    // slot is global, just like a newly inserted draft's slot.
+    const nextRawTabs =
+      existingTab && options?.index != null
+        ? moveTabToSlot(prevState.rawTabs, existingTab.id, options.index)
+        : prevState.rawTabs
 
     if (!existingTab) {
       const newTab: TabItemInternal = {
@@ -1987,7 +1996,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         isChat: true,
       }
       set({
-        rawTabs: [...prevState.rawTabs, newTab],
+        rawTabs: insertTab(prevState.rawTabs, newTab, options?.index),
         activeTabId: tabId,
         groupOf: { ...prevState.groupOf, [tabId]: targetGroup },
       })
@@ -2008,7 +2017,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       ) {
         set({
           activeTabId: existingTab.id,
-          rawTabs: prevState.rawTabs.map((tab) =>
+          rawTabs: nextRawTabs.map((tab) =>
             tab.id === existingTab.id
               ? {
                   ...tab,
@@ -2020,6 +2029,9 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
           ),
         })
         recomputeTabs()
+      } else if (nextRawTabs !== prevState.rawTabs) {
+        set({ rawTabs: nextRawTabs, activeTabId: existingTab.id })
+        recomputeTabs()
       } else {
         focusTab(existingTab.id)
       }
@@ -2030,7 +2042,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       // for chat mode (no folder default).
       set({
         activeTabId: existingTab.id,
-        rawTabs: prevState.rawTabs.map((tab) =>
+        rawTabs: nextRawTabs.map((tab) =>
           tab.id === existingTab.id
             ? {
                 ...tab,

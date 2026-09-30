@@ -9,6 +9,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { DEFAULT_SHORTCUTS } from "@/lib/keyboard-shortcuts"
 import {
+  popClosedTab,
+  pushClosedTab,
+  resetClosedTabStackForTests,
+} from "@/lib/closed-tab-stack"
+import {
   CLOSE_SHORTCUT_EVENT,
   type CloseShortcutPayload,
 } from "@/lib/menu-close-shortcut"
@@ -28,6 +33,8 @@ const state = vi.hoisted(() => ({
 
 const spies = vi.hoisted(() => ({
   closeTab: vi.fn(),
+  openChatModeTab: vi.fn(),
+  openNewConversationTab: vi.fn(),
   closeFileTab: vi.fn(),
   setActivePane: vi.fn(),
   closeCurrentWindow: vi.fn(() => Promise.resolve()),
@@ -52,7 +59,8 @@ vi.mock("@/contexts/terminal-context", () => ({
 }))
 vi.mock("@/contexts/tab-context", () => ({
   useTabActions: () => ({
-    openNewConversationTab: vi.fn(),
+    openNewConversationTab: spies.openNewConversationTab,
+    openChatModeTab: spies.openChatModeTab,
     openTab: vi.fn(),
     switchTab: vi.fn(),
     closeTab: spies.closeTab,
@@ -97,7 +105,6 @@ vi.mock("@/stores/app-workspace-store", () => ({
   isConversationDeleted: () => false,
   useAppWorkspaceStore: { getState: () => ({ getFolder: () => null }) },
 }))
-vi.mock("@/lib/closed-tab-stack", () => ({ popClosedTab: () => null }))
 vi.mock("@/components/conversations/search-command-dialog", () => ({
   SearchCommandDialog: () => null,
 }))
@@ -148,6 +155,9 @@ beforeEach(() => {
   state.shortcuts = { ...DEFAULT_SHORTCUTS }
   state.listeners.clear()
   spies.closeTab.mockClear()
+  spies.openChatModeTab.mockClear()
+  spies.openNewConversationTab.mockClear()
+  resetClosedTabStackForTests()
   spies.closeFileTab.mockClear()
   spies.setActivePane.mockClear()
   spies.closeCurrentWindow.mockClear()
@@ -288,4 +298,40 @@ describe("WorkspaceChromeController — ⌘W the page hears", () => {
     expect(spies.closeFileTab).not.toHaveBeenCalled()
     expect(event.defaultPrevented).toBe(false)
   })
+})
+
+describe("WorkspaceChromeController — reopen draft shortcut", () => {
+  it.each(["paper-a", undefined])(
+    "passes the closed chat draft's index, agent and paper %s to the opener",
+    (academicPaperId) => {
+      pushClosedTab({
+        kind: "conversation",
+        key: "closed-chat-draft",
+        index: 1,
+        folderId: 0,
+        conversationId: null,
+        agentType: "gemini",
+        title: "Draft",
+        academicPaperId,
+        isChat: true,
+        isPinned: true,
+      })
+      render(<WorkspaceChromeController />)
+      const event = createEvent.keyDown(document, {
+        key: "t",
+        metaKey: true,
+        shiftKey: true,
+      })
+      fireEvent(document, event)
+      expect(event.defaultPrevented).toBe(true)
+      expect(spies.openChatModeTab).toHaveBeenCalledTimes(1)
+      expect(spies.openChatModeTab).toHaveBeenCalledWith({
+        index: 1,
+        forceAgent: "gemini",
+        academicPaperId,
+      })
+      expect(spies.openNewConversationTab).not.toHaveBeenCalled()
+      expect(popClosedTab()).toBeNull()
+    }
+  )
 })

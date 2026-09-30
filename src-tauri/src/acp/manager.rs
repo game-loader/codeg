@@ -340,7 +340,8 @@ enum HandshakeWaitOutcome {
     /// connection died during init — `run_connection` returned Err).
     Aborted,
     /// Timeout elapsed before either of the above. Releases the dedup lock
-    /// so the next caller can proceed; the slow agent is no worse off.
+    /// so the next caller can proceed and reuse the pending connection by its
+    /// requested session identity instead of starting a second process.
     TimedOut,
 }
 
@@ -744,7 +745,8 @@ impl ConnectionManager {
         // dedup during the handshake window. The lookup → spawn → wait-for-
         // SessionStarted critical section runs under this lock; the second
         // waiter, on entry, observes the first call's connection with
-        // `state.external_id` already populated and returns its id via
+        // `state.external_id` already populated, or its requested identity if
+        // the handshake timed out, and returns its id via
         // `find_connection_for_reuse`. Skipped entirely when `session_id`
         // is None (fresh sessions can't dedup — by design — since the
         // agent assigns the id).
@@ -1055,7 +1057,8 @@ impl ConnectionManager {
     /// Look up an existing live connection that we can reuse instead of
     /// spawning a new process. Reuse criteria, ALL must hold:
     /// - `session_id` is Some (we never dedup speculative / fresh connects)
-    /// - the connection's `state.external_id` equals `session_id`
+    /// - `state.external_id` equals `session_id`, falling back to the requested
+    ///   identity only while the adapter has not supplied an actual one
     /// - the connection's `agent_type` equals the requested one
     /// - the connection's `working_dir` equals the requested one (compared as
     ///   `Option<PathBuf>` so canonicalization is the caller's concern)
@@ -1083,7 +1086,11 @@ impl ConnectionManager {
                 continue;
             }
             let state = conn.state.read().await;
-            if state.external_id.as_deref() != Some(session_id) {
+            let identity = state
+                .external_id
+                .as_deref()
+                .or(state.requested_session_id.as_deref());
+            if identity != Some(session_id) {
                 continue;
             }
             if state.working_dir.as_ref() != working_dir {
@@ -6984,6 +6991,132 @@ mod tests {
     }
 
     // ---------- Phase: connection dedup ----------
+
+    #[tokio::test]
+    async fn resume_after_handshake_timeout_reuses_the_pending_connection() {
+        let mgr = ConnectionManager::with_spawn_handshake_timeout(Duration::from_millis(1));
+        let working_dir = PathBuf::from("/tmp/slow-resume");
+        let _commands = mgr
+            .insert_test_connection_live(
+                "pending-resume",
+                AgentType::Codex,
+                Some(working_dir.clone()),
+                EventEmitter::Noop,
+            )
+            .await;
+        let state = mgr.get_state("pending-resume").await.unwrap();
+        let ready_rx = {
+            let mut state = state.write().await;
+            state.status = ConnectionStatus::Connecting;
+            state.requested_session_id = Some("slow-session".into());
+            state.install_session_started_signal()
+        };
+        let (outcome, _) = wait_for_session_started(ready_rx, mgr.spawn_handshake_timeout).await;
+        assert_eq!(outcome, HandshakeWaitOutcome::TimedOut);
+        assert!(state.read().await.external_id.is_none());
+        // Assert the guard before exercising spawn_agent: a regression must
+        // fail here rather than launch a real agent in the test environment.
+        assert_eq!(
+            mgr.find_connection_for_reuse(
+                AgentType::Codex,
+                Some(&working_dir),
+                Some("slow-session"),
+            )
+            .await
+            .as_deref(),
+            Some("pending-resume")
+        );
+        for window in ["second-window", "third-window"] {
+            let reused = mgr
+                .spawn_agent(
+                    AgentType::Codex,
+                    Some(working_dir.to_string_lossy().into_owned()),
+                    Some("slow-session".into()),
+                    BTreeMap::new(),
+                    window.into(),
+                    EventEmitter::Noop,
+                    None,
+                    BTreeMap::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(reused, "pending-resume");
+        }
+        assert_eq!(mgr.connections.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn pending_resume_reuse_respects_identity_and_retirement() {
+        let mgr = ConnectionManager::new();
+        let working_dir = PathBuf::from("/tmp/pending-reuse");
+        let _commands = mgr
+            .insert_test_connection_live(
+                "pending",
+                AgentType::Codex,
+                Some(working_dir.clone()),
+                EventEmitter::Noop,
+            )
+            .await;
+        let state = mgr.get_state("pending").await.unwrap();
+        {
+            let mut state = state.write().await;
+            state.status = ConnectionStatus::Connecting;
+            state.requested_session_id = Some("requested".into());
+        }
+        for (agent, dir, session) in [
+            (
+                AgentType::ClaudeCode,
+                working_dir.clone(),
+                Some("requested"),
+            ),
+            (
+                AgentType::Codex,
+                PathBuf::from("/tmp/other"),
+                Some("requested"),
+            ),
+            (AgentType::Codex, working_dir.clone(), Some("other")),
+            (AgentType::Codex, working_dir.clone(), None),
+        ] {
+            assert!(mgr
+                .find_connection_for_reuse(agent, Some(&dir), session)
+                .await
+                .is_none());
+        }
+        for status in [ConnectionStatus::Error, ConnectionStatus::Disconnected] {
+            state.write().await.status = status;
+            assert!(mgr
+                .find_connection_for_reuse(AgentType::Codex, Some(&working_dir), Some("requested"))
+                .await
+                .is_none());
+        }
+        {
+            let mut state = state.write().await;
+            state.status = ConnectionStatus::Connecting;
+            state.disconnecting = true;
+        }
+        assert!(mgr
+            .find_connection_for_reuse(AgentType::Codex, Some(&working_dir), Some("requested"))
+            .await
+            .is_none());
+        {
+            let mut state = state.write().await;
+            state.disconnecting = false;
+            // The adapter may resolve the request to a different identity.
+            state.apply_event(&AcpEvent::SessionStarted {
+                session_id: "actual".into(),
+            });
+        }
+        assert!(mgr
+            .find_connection_for_reuse(AgentType::Codex, Some(&working_dir), Some("requested"))
+            .await
+            .is_none());
+        assert_eq!(
+            mgr.find_connection_for_reuse(AgentType::Codex, Some(&working_dir), Some("actual"))
+                .await
+                .as_deref(),
+            Some("pending")
+        );
+    }
 
     #[tokio::test]
     async fn find_connection_for_reuse_returns_none_when_session_id_is_none() {

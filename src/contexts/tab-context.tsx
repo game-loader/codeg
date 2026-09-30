@@ -242,12 +242,14 @@ export interface TabContextValue {
       targetGroup?: string
       forceAgent?: TabItem["agentType"]
       academicPaperId?: string
+      index?: number
     }
   ) => OpenedDraftTarget
   openChatModeTab: (options?: {
     targetGroup?: string
     forceAgent?: TabItem["agentType"]
     academicPaperId?: string
+    index?: number
   }) => OpenedDraftTarget
   setChatDraftWorkingDir: (tabId: string, workingDir: string) => void
   confirmDraftAgent: (tabId: string, agentType: TabItem["agentType"]) => void

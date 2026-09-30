@@ -360,6 +360,7 @@ export function WorkspaceChromeController() {
           if (closed.isChat) {
             openConversations()
             openChatModeTab({
+              index: closed.index,
               forceAgent: closed.agentType,
               academicPaperId: closed.academicPaperId,
             })
