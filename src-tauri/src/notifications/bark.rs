@@ -204,8 +204,10 @@ pub(super) async fn enabled_devices(
 
 pub(super) fn client() -> Result<reqwest::Client, AppCommandError> {
     reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(15))
+        // Proxy route fallback can take more than five seconds before TLS
+        // completes. Keep the overall deadline below the iOS request's 30s.
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(25))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| {
