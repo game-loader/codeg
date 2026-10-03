@@ -231,6 +231,7 @@ fn make_unc_batch_command_line(
 /// `Client.builder().connect_with(...)`: the process is spawned when the
 /// connection starts, its stdout/stdin become the JSON-RPC line streams, and
 /// the connection ends with an error if the process exits early.
+#[derive(Clone)]
 pub struct AcpAgent {
     server: McpServer,
     debug_callback: Option<DebugCallback>,
@@ -336,6 +337,24 @@ impl AcpAgent {
     {
         self.exit_callback = Some(Arc::new(callback));
         self
+    }
+
+    /// Signal a process recycle only after the previous process tree has been
+    /// reaped. Preserve the host's pid cleanup callback on each launch.
+    pub(crate) fn with_exit_signal(
+        mut self,
+        signal: tokio::sync::oneshot::Sender<()>,
+    ) -> Self {
+        let previous = self.exit_callback.take();
+        let signal = std::sync::Mutex::new(Some(signal));
+        self.on_exit(move || {
+            if let Some(callback) = &previous {
+                callback();
+            }
+            if let Some(signal) = signal.lock().unwrap().take() {
+                let _ = signal.send(());
+            }
+        })
     }
 
     /// Spawn the process and get stdio streams.

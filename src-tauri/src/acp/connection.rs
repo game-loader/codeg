@@ -5609,8 +5609,105 @@ async fn run_connection(
     connection_id: String,
     agent_type: AgentType,
     working_dir: Option<String>,
-    session_id: Option<String>,
+    mut session_id: Option<String>,
     mut cmd_rx: mpsc::Receiver<ConnectionCommand>,
+    emitter: EventEmitter,
+    state: Arc<RwLock<SessionState>>,
+    terminal_base_env: BTreeMap<String, String>,
+    terminal_shell_config: TerminalShellRuntimeConfig,
+    mut preferred_mode_id: Option<String>,
+    mut preferred_config_values: BTreeMap<String, String>,
+    delegation_injection: Option<DelegationInjection>,
+    fs_policy: FsAccessPolicy,
+    host_tools: HostToolsPolicy,
+    stderr_tail: Arc<StderrTail>,
+) -> Result<(), AcpError> {
+    loop {
+        let (exit_tx, exit_rx) = oneshot::channel();
+        let restart = run_connection_once(
+            agent.clone().with_exit_signal(exit_tx),
+            connection_id.clone(),
+            agent_type,
+            working_dir.clone(),
+            session_id.clone(),
+            &mut cmd_rx,
+            emitter.clone(),
+            Arc::clone(&state),
+            terminal_base_env.clone(),
+            terminal_shell_config.clone(),
+            preferred_mode_id.clone(),
+            preferred_config_values.clone(),
+            delegation_injection.clone(),
+            fs_policy.clone(),
+            host_tools,
+            Arc::clone(&stderr_tail),
+        )
+        .await?;
+        let Some(restart) = restart else {
+            return Ok(());
+        };
+
+        // Protocol teardown only signals the child tree. Do not resume either
+        // history until the reaper confirms it has exited and released locks.
+        tokio::time::timeout(std::time::Duration::from_secs(15), exit_rx)
+            .await
+            .map_err(|_| {
+                AcpError::protocol("Timed out releasing the Codex process after fork")
+            })?
+            .map_err(|_| AcpError::ProcessExited)?;
+        // The old companion was part of that process tree. Retire its token
+        // before initialize injects a new companion under this same connection.
+        if let Some(injection) = &delegation_injection {
+            let token = state.write().await.delegation_token.take();
+            if let Some(token) = token {
+                injection.tokens.revoke(&token).await;
+            }
+        }
+        tracing::info!(
+            "[ACP] Recycled Codex process after fork; resuming {} (original: {})",
+            restart.session_id, restart.original_session_id
+        );
+        {
+            let mut state = state.write().await;
+            state.selectors_ready = false;
+            state.requested_session_id = Some(restart.session_id.clone());
+        }
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Connecting,
+            },
+        )
+        .await;
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::SessionStarted {
+                session_id: restart.session_id.clone(),
+            },
+        )
+        .await;
+        let _ = restart
+            .reply
+            .send(Ok(crate::acp::types::ForkProtocolResult {
+                forked_session_id: restart.session_id.clone(),
+                original_session_id: restart.original_session_id,
+            }));
+        session_id = Some(restart.session_id);
+        preferred_mode_id = restart.preferred_mode_id;
+        preferred_config_values = restart.preferred_config_values;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_connection_once(
+    agent: AcpAgent,
+    connection_id: String,
+    agent_type: AgentType,
+    working_dir: Option<String>,
+    session_id: Option<String>,
+    cmd_rx: &mut mpsc::Receiver<ConnectionCommand>,
     emitter: EventEmitter,
     state: Arc<RwLock<SessionState>>,
     terminal_base_env: BTreeMap<String, String>,
@@ -5624,7 +5721,7 @@ async fn run_connection(
     // callback installed by `build_agent`. Read only when a turn ends without
     // agent output, to attach evidence to the synthesized error.
     stderr_tail: Arc<StderrTail>,
-) -> Result<(), AcpError> {
+) -> Result<Option<ForkRestart>, AcpError> {
     let pending_perms: PendingPermissions =
         Arc::new(tokio::sync::Mutex::new(PermissionQueue::default()));
     // `terminal_base_env` already filtered to just the credential helper
@@ -6062,7 +6159,7 @@ async fn run_connection(
             },
             on_receive_notification!(),
         )
-        .connect_with(agent, async move |cx| -> Result<(), agent_client_protocol::Error> {
+        .connect_with(agent, async move |cx| -> Result<Option<ForkRestart>, agent_client_protocol::Error> {
             let state = state_outer;
             let agent_name_for_log = registry::get_agent_meta(agent_type).name;
 
@@ -6405,7 +6502,7 @@ async fn run_connection(
                                 &state,
                                 agent_type,
                                 &perms,
-                                &mut cmd_rx,
+                                cmd_rx,
                                 terminal_runtime.clone(),
                                 &cwd_string,
                                 supports_fork,
@@ -6427,7 +6524,7 @@ async fn run_connection(
                                 &state,
                                 agent_type,
                                 &perms,
-                                &mut cmd_rx,
+                                cmd_rx,
                                 terminal_runtime.clone(),
                                 &cwd,
                                 &cwd_string,
@@ -6676,7 +6773,7 @@ async fn run_connection(
                             &state,
                             agent_type,
                             &perms,
-                            &mut cmd_rx,
+                            cmd_rx,
                             terminal_runtime.clone(),
                             &cwd_string,
                             supports_fork,
@@ -6694,7 +6791,7 @@ async fn run_connection(
                             &state,
                             agent_type,
                             &perms,
-                            &mut cmd_rx,
+                            cmd_rx,
                             terminal_runtime.clone(),
                             &cwd,
                             &cwd_string,
@@ -6766,7 +6863,7 @@ async fn run_connection(
                                 },
                             )
                             .await;
-                            return Ok(());
+                            return Ok(None);
                         }
                         if attempted_load {
                             tracing::warn!(
@@ -6785,7 +6882,7 @@ async fn run_connection(
                         // credentials have expired (e.g. Gemini CLI) — skip
                         // session/new too since it will also fail.
                         if err_str.contains("Authentication required") {
-                            return Ok(());
+                            return Ok(None);
                         }
                         // An agent that simply forgot a session codeg recorded
                         // itself is the expected steady state after a restart,
@@ -6875,7 +6972,7 @@ async fn run_connection(
                             &state,
                             agent_type,
                             &perms,
-                            &mut cmd_rx,
+                            cmd_rx,
                             terminal_runtime.clone(),
                             &cwd_string,
                             supports_fork,
@@ -6895,7 +6992,7 @@ async fn run_connection(
                             &state,
                             agent_type,
                             &perms,
-                            &mut cmd_rx,
+                            cmd_rx,
                             terminal_runtime.clone(),
                             &cwd,
                             &cwd_string,
@@ -6961,7 +7058,7 @@ async fn run_connection(
                     &state,
                     agent_type,
                     &perms,
-                    &mut cmd_rx,
+                    cmd_rx,
                     terminal_runtime.clone(),
                     &cwd_string,
                     supports_fork,
@@ -6979,7 +7076,7 @@ async fn run_connection(
                     &state,
                     agent_type,
                     &perms,
-                    &mut cmd_rx,
+                    cmd_rx,
                     terminal_runtime.clone(),
                     &cwd,
                     &cwd_string,
@@ -9457,10 +9554,19 @@ struct ForkExitInfo {
     connection: ConnectionTo<Agent>,
 }
 
+struct ForkRestart {
+    session_id: String,
+    original_session_id: String,
+    preferred_mode_id: Option<String>,
+    preferred_config_values: BTreeMap<String, String>,
+    reply: oneshot::Sender<Result<crate::acp::types::ForkProtocolResult, AcpError>>,
+}
+
 /// After `run_conversation_loop` returns, handle normal exit or fork transition.
 ///
 /// When fork is requested, the original session has already been dropped by the
-/// caller. The forked session (S2) is then RE-ESTABLISHED with `session/resume`
+/// caller. Codex returns a restart request to release the parent's writer;
+/// other agents re-establish S2 with `session/resume` on the same process
 /// before it is attached — see the comment at the resume call for why the
 /// `ForkSessionResponse` alone is not enough to prompt on.
 #[allow(clippy::too_many_arguments)]
@@ -9492,10 +9598,10 @@ async fn handle_fork_or_exit(
     // the SAME connection-scoped stderr buffer — the agent process is unchanged
     // across a fork, so its stderr history stays relevant.
     stderr_tail: &Arc<StderrTail>,
-) -> Result<(), agent_client_protocol::Error> {
+) -> Result<Option<ForkRestart>, agent_client_protocol::Error> {
     let fork_info = match loop_result {
         Ok(Some(info)) => info,
-        Ok(None) => return Ok(()),
+        Ok(None) => return Ok(None),
         Err(e) => return Err(e),
     };
 
@@ -9540,6 +9646,21 @@ async fn handle_fork_or_exit(
         inherited_mode_id,
         inherited_config_values
     );
+
+    // Codex keeps unsubscribed threads loaded (and their writer locks held)
+    // until an idle eviction. Even session/close only unsubscribes. Recycle the
+    // app-server process before acknowledging the fork so the preserved parent
+    // can resume independently; the outer driver resumes S2 on the same codeg
+    // connection and restores these selectors.
+    if agent_type == AgentType::Codex {
+        return Ok(Some(ForkRestart {
+            session_id: new_sid,
+            original_session_id: fork_info.original_session_id,
+            preferred_mode_id: inherited_mode_id,
+            preferred_config_values: inherited_config_values,
+            reply: fork_info.reply,
+        }));
+    }
 
     // Reply protocol-level result to manager.fork_session, which will combine
     // it with the freshly-created sibling row id to produce the wire ForkResultInfo.
@@ -17449,6 +17570,10 @@ async fn emit_conversation_update(
     }
 }
 
+#[cfg(all(test, unix))]
+#[path = "connection_fork_tests.rs"]
+mod fork_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -19836,7 +19961,7 @@ mod tests {
 
     /// After a codex fork, the sibling row codeg creates to keep the pre-fork
     /// history points at the PARENT thread — whose writer the forking process
-    /// still holds, because `session/fork` only unsubscribes the child. Opening
+    /// can still be held by an older client or an unrelated process. Opening
     /// it must stop with a banner, never fall through to `session/new`: that
     /// rebinds the row to a fresh empty session and destroys the only pointer to
     /// the history the row exists for. The lock clears when the fork is closed.
