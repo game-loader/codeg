@@ -14,15 +14,15 @@
 | 文件 | 用途 |
 | --- | --- |
 | `codeg-desktop-darwin-arm64.dmg` | Apple Silicon Mac 桌面客户端 |
-| `codeg-server-linux-x64.tar.gz` | Linux x64 Server、MCP 伴生程序及网页资源 |
-| `codeg-server-linux-arm64.tar.gz` | Linux ARM64 Server、MCP 伴生程序及网页资源 |
+| `codeg-server-linux-x64.tar.gz` | Linux x64 Server、MCP 伴生程序、Computer Use helper 及网页资源 |
+| `codeg-server-linux-arm64.tar.gz` | Linux ARM64 Server、MCP 伴生程序、Computer Use helper 及网页资源 |
 | `codeg-web.tar.gz` | 单独的网页静态资源，解压后为 `web/` |
 | `codeg-academic-bridge-*.xpi` | Zotero 10 插件 |
 | `SHA256SUMS` | 所有安装包的 SHA-256 校验值 |
 
 桌面端仅构建 macOS Apple Silicon（ARM64）版本。
 
-Linux Server 保留 x64 和 ARM64 构建，分别使用 Ubuntu 22.04 和 Ubuntu 24.04；更旧系统需要自行编译。工作流同时打包真正的 `codeg-mcp`，不会使用本地开发时可能生成的零字节占位文件。
+Linux Server 保留 x64 和 ARM64 构建，分别使用 Ubuntu 22.04 和 Ubuntu 24.04；更旧系统需要自行编译。工作流同时打包真正的 `codeg-mcp` 和 `codeg-computer-helper`，不会使用本地开发时可能生成的零字节占位文件。服务器的 Computer Use 仍需管理员显式启用。
 
 ## macOS 签名说明
 
@@ -32,7 +32,7 @@ Linux Server 保留 x64 和 ARM64 构建，分别使用 Ubuntu 22.04 和 Ubuntu 
 
 ## 部署服务器和网页
 
-解压与服务器架构对应的包，保留 `codeg-server`、`codeg-mcp` 和 `web/` 的相对位置。配置 `CODEG_STATIC_DIR` 指向这个 `web/`，`CODEG_DATA_DIR` 指向现有持久化数据目录，并沿用现有 Codeg 访问令牌。停止旧进程后切换程序和网页资源，再启动服务器。
+解压与服务器架构对应的包，保留 `codeg-server`、`codeg-mcp`、`codeg-computer-helper` 和 `web/` 的相对位置。配置 `CODEG_STATIC_DIR` 指向这个 `web/`，`CODEG_DATA_DIR` 指向现有持久化数据目录，并沿用现有 Codeg 访问令牌。停止旧进程后切换程序和网页资源，再启动服务器。
 
 单独的网页压缩包不能代替 Codeg Server。远端工作区的界面由桌面客户端内置，因此使用学术功能需要同步更新客户端和服务器。Zotero 插件的安装及配对参见 [学术工作区说明](academic-zotero.md)。
 

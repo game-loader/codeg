@@ -133,20 +133,19 @@ jobs:
 
       # Stage an actual native binary before Tauri's build.rs can create a
       # development placeholder. Every matrix entry uses a native runner.
-      - name: Build and verify MCP sidecar
+      - name: Stage and verify desktop sidecars
         shell: bash
         env:
           BUILD_TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          cargo build --manifest-path src-tauri/Cargo.toml --locked \
-            --release --no-default-features --bin codeg-mcp --target "$BUILD_TARGET"
-          mkdir -p src-tauri/binaries
+          pnpm tauri:prepare-sidecars --target "$BUILD_TARGET"
           sidecar="src-tauri/binaries/codeg-mcp-$BUILD_TARGET"
-          cp "src-tauri/target/$BUILD_TARGET/release/codeg-mcp" "$sidecar"
-          chmod +x "$sidecar"
           test -s "$sidecar"
           "$sidecar" --help | grep -F 'codeg-mcp --parent-connection-id'
+          helper_app="src-tauri/binaries/codeg-computer-helper.app"
+          test -s "$helper_app/Contents/MacOS/codeg-computer-helper"
+          codesign --verify --strict "$helper_app"
 
       - name: Build desktop installer without release signing secrets
         env:
@@ -214,12 +213,14 @@ jobs:
           name: frontend-dist
           path: out/
 
-      - name: Build server and MCP companion
+      - name: Build server, MCP companion and computer-use helper
         env:
           BUILD_TARGET: ${{ matrix.target }}
         run: |
           cargo build --manifest-path src-tauri/Cargo.toml --locked --release \
-            --no-default-features --bin codeg-server --bin codeg-mcp --target "$BUILD_TARGET"
+            --no-default-features --features server-bin,mcp-bin,computer-helper \
+            --bin codeg-server --bin codeg-mcp --bin codeg-computer-helper \
+            --target "$BUILD_TARGET"
 
       - name: Package and smoke test native executables
         shell: bash
@@ -232,9 +233,12 @@ jobs:
           mkdir -p "$package_dir" release
           cp "src-tauri/target/$BUILD_TARGET/release/codeg-server" "$package_dir/"
           cp "src-tauri/target/$BUILD_TARGET/release/codeg-mcp" "$package_dir/"
-          chmod +x "$package_dir/codeg-server" "$package_dir/codeg-mcp"
+          cp "src-tauri/target/$BUILD_TARGET/release/codeg-computer-helper" "$package_dir/"
+          chmod +x "$package_dir/codeg-server" "$package_dir/codeg-mcp" \
+            "$package_dir/codeg-computer-helper"
           test -s "$package_dir/codeg-server"
           test -s "$package_dir/codeg-mcp"
+          test -s "$package_dir/codeg-computer-helper"
           "$package_dir/codeg-server" --version
           "$package_dir/codeg-mcp" --help | grep -F 'codeg-mcp --parent-connection-id'
           cp -R out "$package_dir/web"

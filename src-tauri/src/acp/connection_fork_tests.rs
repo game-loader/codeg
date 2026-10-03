@@ -36,7 +36,7 @@ readline.createInterface({input: process.stdin}).on('line', line => {
       case 'session/resume': own(p.sessionId); result = response(p.sessionId); break;
       case 'session/fork':
         if (fs.existsSync(path.join(root, 'fail-fork'))) throw new Error('fork rejected');
-        result = response('s' + (Number(p.sessionId.slice(1)) + 1)); break;
+        result = response(fs.existsSync(path.join(root, 'same-fork')) ? p.sessionId : 's' + (Number(p.sessionId.slice(1)) + 1)); break;
       case 'session/set_config_option': result = {configOptions: [{id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: p.value, options: []}]}; break;
       case 'session/prompt':
         own(p.sessionId);
@@ -257,6 +257,22 @@ async fn rejected_codex_fork_keeps_the_original_process_and_session() {
     assert!(driver.fork().await.is_err());
     assert_eq!(driver.exits.load(Ordering::SeqCst), 0);
     assert_eq!(driver.state.read().await.external_id.as_deref(), Some("s1"));
+    driver.prompt().await;
+    driver.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codex_fork_onto_the_same_session_keeps_its_writer_and_process() {
+    let root = tempfile::tempdir().unwrap();
+    let script = root.path().join("agent.cjs");
+    std::fs::write(&script, AGENT).unwrap();
+    std::fs::write(root.path().join("same-fork"), "").unwrap();
+    let mut driver = Driver::start(root.path(), &script, None).await;
+    let result = driver.fork().await.unwrap();
+    assert_eq!(result.original_session_id, "s1");
+    assert_eq!(result.forked_session_id, "s1");
+    assert_eq!(driver.exits.load(Ordering::SeqCst), 0);
+    driver.wait_selectors().await;
     driver.prompt().await;
     driver.stop().await;
 }
