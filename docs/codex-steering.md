@@ -42,7 +42,7 @@ its waiting notes are not evidence that native insertion is active.
 
 ## Adapter compatibility
 
-Upstream codex-acp 1.13.1, 2.0.0 and 2.0.1 ignore
+Upstream codex-acp 1.13.1, 2.0.0, 2.0.1 and 2.1.1 ignore
 `_meta.steering.idleBehavior = "promptRequired"`. If the target turn ends before
 injection, they start a detached prompt. Codeg needs the adapter to return
 `{ "outcome": "promptRequired" }` without consuming the input instead.
@@ -83,3 +83,15 @@ exercise the active/idle/racing branches with a stub app-server client. Confirm
 that callers without the opt-in retain upstream's fallback, unreviewed bytes
 are not patched, failed sends stay queued, and duplicate tool events do not
 resubmit the same message.
+
+For codex-acp 2.1.1, unpack the published npm package without modifying its
+`dist/index.js`, then run the deterministic compatibility checks:
+
+```bash
+CODEG_CODEX_ACP_BUNDLE=/path/to/package/dist/index.js \
+  node --test scripts/codex-steering-compat.test.mjs
+```
+
+These checks execute the verified bundle with a stub app-server client. They
+cover initialization, idle and active insertion, the turn-completion race,
+upstream fallback, serialized requests, and rejection of modified bundles.
