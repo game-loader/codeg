@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feat/academic-zotero
+      - feat/multi-host-worktrees
       - main
   workflow_dispatch:
 

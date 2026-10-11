@@ -4,7 +4,7 @@
 
 ## 触发与下载
 
-- 推送到 `feat/academic-zotero` 或 `main` 会触发构建；不通过 Pull Request 发布。
+- 推送到 `feat/academic-zotero`、`feat/multi-host-worktrees` 或 `main` 会触发构建；不通过 Pull Request 发布。
 - 工作流也声明了 `workflow_dispatch`。GitHub 的手动运行入口要求工作流存在于默认分支；届时可以在 Actions 中选择分支并点击 **Run workflow**。
 - 所有构建成功后，在当前仓库创建独立的预览版 Release，标签为 `preview-<run_id>-<run_attempt>`，记录对应提交和构建链接。它不会移动旧标签或替换正式版的 `latest`。
 - 从 [Releases](https://github.com/game-loader/codeg/releases) 下载。构建失败时不会公开不完整的 Release，可以在 Actions 日志中查看失败步骤。
