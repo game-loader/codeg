@@ -6,10 +6,10 @@
 // the first read, so nothing that happens in between is missed; a broadcast
 // that lands while that read is in flight is newer than it.
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 
 import { toErrorMessage } from "@/lib/app-error"
-import { subscribe } from "@/lib/platform"
 
 import {
   computerDriverInfo,
@@ -20,6 +20,8 @@ import {
 import { COMPUTER_DRIVER_EVENT, type DriverInfo } from "./types"
 
 export function useComputerDriver() {
+  const backendPlatform = useBackendPlatform()
+
   const [info, setInfo] = useState<DriverInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
   /** Broadcasts heard so far: an answer to something asked before the last
@@ -34,7 +36,7 @@ export function useComputerDriver() {
     const asked = heardRef.current
     const ask = () => {
       if (disposed) return
-      computerDriverInfo()
+      computerDriverInfo(backendPlatform)
         .then((read) => {
           if (!disposed && heardRef.current === asked) setInfo(read)
         })
@@ -42,10 +44,11 @@ export function useComputerDriver() {
           if (!disposed) setError(toErrorMessage(e))
         })
     }
-    subscribe<DriverInfo>(COMPUTER_DRIVER_EVENT, (next) => {
-      heardRef.current += 1
-      setInfo(next)
-    })
+    backendPlatform
+      .subscribe<DriverInfo>(COMPUTER_DRIVER_EVENT, (next) => {
+        heardRef.current += 1
+        setInfo(next)
+      })
       .then((fn) => {
         if (disposed) fn()
         else unsubscribe = fn
@@ -56,7 +59,7 @@ export function useComputerDriver() {
       disposed = true
       unsubscribe?.()
     }
-  }, [available])
+  }, [available, backendPlatform])
 
   const run = useCallback(async (action: () => Promise<DriverInfo>) => {
     setError(null)
@@ -73,8 +76,14 @@ export function useComputerDriver() {
     }
   }, [])
 
-  const install = useCallback(() => run(computerDriverInstall), [run])
-  const uninstall = useCallback(() => run(computerDriverUninstall), [run])
+  const install = useCallback(
+    () => run(() => computerDriverInstall(backendPlatform)),
+    [run, backendPlatform]
+  )
+  const uninstall = useCallback(
+    () => run(() => computerDriverUninstall(backendPlatform)),
+    [run, backendPlatform]
+  )
 
   return { info, error, install, uninstall }
 }

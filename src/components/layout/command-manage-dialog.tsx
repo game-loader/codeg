@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import {
   useCallback,
   useEffect,
@@ -12,13 +13,7 @@ import {
 import { GripVertical, Loader2, Plus, Save, Trash2 } from "lucide-react"
 import { Reorder, useDragControls } from "motion/react"
 import { useTranslations } from "next-intl"
-import {
-  createFolderCommand,
-  deleteFolderCommand,
-  listFolderCommands,
-  reorderFolderCommands,
-  updateFolderCommand,
-} from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import type { FolderCommand } from "@/lib/types"
 import { Button } from "@/components/ui/button"
@@ -145,6 +140,8 @@ export function CommandManageDialog({
   folderId,
   onChanged,
 }: CommandManageDialogProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.commandDropdown.manageDialog")
   const tCommon = useTranslations("Folder.common")
   const [commands, setCommands] = useState<FolderCommand[]>([])
@@ -177,7 +174,7 @@ export function CommandManageDialog({
     setLoading(true)
     setLoadError(null)
     try {
-      const list = await listFolderCommands(folderId)
+      const list = await backendApi.listFolderCommands(folderId)
       if (seq !== loadSeqRef.current) return
       setCommands(list)
       setSelectedId((prev) => {
@@ -196,7 +193,7 @@ export function CommandManageDialog({
     } finally {
       if (seq === loadSeqRef.current) setLoading(false)
     }
-  }, [folderId, t])
+  }, [folderId, t, backendApi])
 
   // Reloads on open and whenever folderId changes while open (refresh is keyed
   // on folderId), resetting transient UI so a folder switch never shows stale
@@ -295,7 +292,7 @@ export function CommandManageDialog({
       setReordering(true)
       setFormError(null)
       try {
-        await reorderFolderCommands(folderId, ids)
+        await backendApi.reorderFolderCommands(folderId, ids)
         onChanged()
       } catch (err) {
         setFormError(`${t("orderFailed")}: ${toErrorMessage(err)}`)
@@ -304,7 +301,7 @@ export function CommandManageDialog({
         setReordering(false)
       }
     },
-    [folderId, onChanged, refresh, t]
+    [folderId, onChanged, refresh, t, backendApi]
   )
 
   const handleReorder = useCallback(
@@ -328,8 +325,8 @@ export function CommandManageDialog({
       const command = draft.command.trim()
       const saved =
         draft.id === null
-          ? await createFolderCommand(folderId, name, command)
-          : await updateFolderCommand(draft.id, name, command)
+          ? await backendApi.createFolderCommand(folderId, name, command)
+          : await backendApi.updateFolderCommand(draft.id, name, command)
       setCommands((prev) => {
         const exists = prev.some((item) => item.id === saved.id)
         if (exists) {
@@ -349,7 +346,7 @@ export function CommandManageDialog({
     } finally {
       setSaving(false)
     }
-  }, [draft, folderId, onChanged, t])
+  }, [draft, folderId, onChanged, t, backendApi])
 
   const handleDelete = useCallback(async () => {
     if (deleteTargetId === null) return
@@ -357,7 +354,7 @@ export function CommandManageDialog({
     setDeleting(true)
     setFormError(null)
     try {
-      await deleteFolderCommand(target)
+      await backendApi.deleteFolderCommand(target)
       setCommands((prev) => {
         const next = prev.filter((item) => item.id !== target)
         setSelectedId((current) =>
@@ -373,7 +370,7 @@ export function CommandManageDialog({
     } finally {
       setDeleting(false)
     }
-  }, [deleteTargetId, onChanged, t])
+  }, [deleteTargetId, onChanged, t, backendApi])
 
   const saveDisabled =
     saving || deleting || loading || !draft.name.trim() || !draft.command.trim()

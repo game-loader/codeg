@@ -8,7 +8,10 @@ export interface RemoteTransportConfig {
   baseUrl: string
   token: string
   windowInstanceId: string
+  configRevision?: string
   onUnauthorized?: () => void
+  onDisconnected?: () => void
+  onConfigurationChanged?: () => void
 }
 
 /**

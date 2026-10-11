@@ -1,11 +1,13 @@
 "use client"
 
+import { useTabStore as legacyTabs } from "@/contexts/tab-context"
+import { useConversationRuntimeStore as legacyConversationRuntime } from "@/stores/conversation-runtime-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useCallback, useSyncExternalStore } from "react"
 import { Coins } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useConnectionStore } from "@/contexts/acp-connections-context"
-import { useTabStore } from "@/contexts/tab-context"
-import { useConversationRuntimeStore } from "@/stores/conversation-runtime-store"
+
 import { formatTokenCount } from "@/lib/token-format"
 import { formatContextWindowPercent } from "@/lib/context-window"
 import {
@@ -32,6 +34,13 @@ const ICON_CIRCUMFERENCE = 2 * Math.PI * ICON_RADIUS
  * every loaded/tiled composer shows its own context, not the active one's.
  */
 export function ComposerContextUsage({ tabId }: { tabId: string | null }) {
+  const backendStores = useBackendStores({
+    tabs: legacyTabs,
+    conversationRuntime: legacyConversationRuntime,
+  })
+  const useTabStore = backendStores.tabs
+  const useConversationRuntimeStore = backendStores.conversationRuntime
+
   const t = useTranslations("Folder.statusBar.tokens")
   const store = useConnectionStore()
   // This tab's own conversation → its per-conversation session stats, read

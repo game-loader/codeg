@@ -301,7 +301,10 @@ describe("DocGuestPreview", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Open with system app" })
     )
-    expect(api.openWithOsHandler).toHaveBeenCalledWith("mailto:a@example.com")
+    expect(api.openWithOsHandler).toHaveBeenCalledWith(
+      "mailto:a@example.com",
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
     act(() =>
       setBrowserTabNotice(key, {
         kind: "navigation-blocked",

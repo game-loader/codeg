@@ -1,5 +1,8 @@
 "use client"
 
+import { useCommandTerminalLinkStore as legacyCommandTerminalLinks } from "@/stores/command-terminal-link-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { Play, Plus, Square, Terminal } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -13,16 +16,9 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
-import {
-  bootstrapFolderCommandsFromPackageJson,
-  listFolderCommands,
-  terminalKill,
-} from "@/lib/api"
+
 import type { FolderCommand } from "@/lib/types"
-import {
-  resolveLiveCommandTerminalId,
-  useCommandTerminalLinkStore,
-} from "@/stores/command-terminal-link-store"
+import { resolveLiveCommandTerminalId } from "@/stores/command-terminal-link-store"
 import { cn } from "@/lib/utils"
 import { CommandManageDialog } from "./command-manage-dialog"
 
@@ -44,6 +40,13 @@ function setSelectedCommandId(folderId: number, cmdId: number) {
 }
 
 export function CommandDropdown() {
+  const backendStores = useBackendStores({
+    commandTerminalLinks: legacyCommandTerminalLinks,
+  })
+  const useCommandTerminalLinkStore = backendStores.commandTerminalLinks
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.commandDropdown")
   const { activeFolder: folder } = useActiveFolder()
   const {
@@ -121,13 +124,13 @@ export function CommandDropdown() {
     if (!folderId) return
     const epoch = (loadEpochRef.current += 1)
     try {
-      const list = await listFolderCommands(folderId)
+      const list = await backendApi.listFolderCommands(folderId)
       if (epoch !== loadEpochRef.current) return
       setCommands(list)
     } catch (err) {
       console.error("Failed to load commands:", err)
     }
-  }, [folderId])
+  }, [folderId, backendApi])
 
   useEffect(() => {
     if (!folderId) return
@@ -136,7 +139,7 @@ export function CommandDropdown() {
     const loadCommands = async () => {
       try {
         setBootstrapping(false)
-        const data = await listFolderCommands(folderId)
+        const data = await backendApi.listFolderCommands(folderId)
         if (ignore) return
 
         if (data.length > 0 || !folderPath) {
@@ -145,10 +148,11 @@ export function CommandDropdown() {
         }
 
         setBootstrapping(true)
-        const bootstrapped = await bootstrapFolderCommandsFromPackageJson(
-          folderId,
-          folderPath
-        )
+        const bootstrapped =
+          await backendApi.bootstrapFolderCommandsFromPackageJson(
+            folderId,
+            folderPath
+          )
         if (!ignore) setCommands(bootstrapped)
       } catch (err) {
         console.error("Failed to load commands:", err)
@@ -162,7 +166,7 @@ export function CommandDropdown() {
     return () => {
       ignore = true
     }
-  }, [folderId, folderPath])
+  }, [folderId, folderPath, backendApi])
 
   const runCommand = useCallback(
     async (cmd: FolderCommand) => {
@@ -191,6 +195,7 @@ export function CommandDropdown() {
       isTerminalLive,
       selectCommand,
       setLink,
+      useCommandTerminalLinkStore,
     ]
   )
 
@@ -201,12 +206,12 @@ export function CommandDropdown() {
 
       clearLink(cmd.id)
       try {
-        await terminalKill(terminalId)
+        await backendApi.terminalKill(terminalId)
       } catch (err) {
         console.error("Failed to stop command terminal:", err)
       }
     },
-    [clearLink]
+    [clearLink, backendApi, useCommandTerminalLinkStore]
   )
 
   const activeCmd = useMemo(

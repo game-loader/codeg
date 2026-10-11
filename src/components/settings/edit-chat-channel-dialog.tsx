@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useId, useState } from "react"
 import { Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -15,11 +16,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Switch } from "@/components/ui/switch"
-import {
-  updateChatChannel,
-  saveChatChannelToken,
-  getChatChannelHasToken,
-} from "@/lib/api"
+
 import type { ChatChannelInfo } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
 
@@ -36,6 +33,8 @@ export function EditChatChannelDialog({
   onOpenChange,
   onChannelUpdated,
 }: EditChatChannelDialogProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("ChatChannelSettings")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -58,11 +57,12 @@ export function EditChatChannelDialog({
 
   useEffect(() => {
     if (open) {
-      getChatChannelHasToken(channel.id)
+      backendApi
+        .getChatChannelHasToken(channel.id)
         .then(setHasToken)
         .catch(() => {})
     }
-  }, [open, channel.id])
+  }, [open, channel.id, backendApi])
 
   const handleSubmit = useCallback(async () => {
     if (!name.trim()) {
@@ -84,7 +84,7 @@ export function EditChatChannelDialog({
             ? JSON.stringify({ app_id: appId, chat_id: chatId })
             : JSON.stringify({ chat_id: chatId, topic_mode: topicMode })
 
-      await updateChatChannel({
+      await backendApi.updateChatChannel({
         id: channel.id,
         name: name.trim(),
         configJson,
@@ -93,7 +93,7 @@ export function EditChatChannelDialog({
       })
 
       if (token.trim()) {
-        await saveChatChannelToken(channel.id, token.trim())
+        await backendApi.saveChatChannelToken(channel.id, token.trim())
       }
 
       onOpenChange(false)
@@ -118,6 +118,7 @@ export function EditChatChannelDialog({
     onOpenChange,
     onChannelUpdated,
     t,
+    backendApi,
   ])
 
   return (

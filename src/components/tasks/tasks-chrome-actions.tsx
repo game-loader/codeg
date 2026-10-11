@@ -4,6 +4,7 @@ import { useTranslations } from "next-intl"
 import { Kanban, List, Settings2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useTasksView } from "@/contexts/tasks-view-context"
+import { useBackendEventScope } from "@/hooks/use-runtime-event-scope"
 import type { WorkbenchChromeActionsProps } from "@/components/workbench/workbench-content"
 
 /** Fired by the chrome cluster's settings button; TasksPage owns the dialog
@@ -26,6 +27,7 @@ export function TasksChromeActions({
   buttonClassName,
   iconClassName,
 }: WorkbenchChromeActionsProps) {
+  const backendScope = useBackendEventScope()
   const t = useTranslations("Tasks")
   const { tasks, viewMode, setViewMode } = useTasksView()
   // A single toggle rather than a segmented pair, and it shows the mode it
@@ -59,7 +61,11 @@ export function TasksChromeActions({
         size="icon"
         className={buttonClassName}
         onClick={() =>
-          window.dispatchEvent(new Event(OPEN_TASK_SETTINGS_EVENT))
+          window.dispatchEvent(
+            new CustomEvent(OPEN_TASK_SETTINGS_EVENT, {
+              detail: { backendScope },
+            })
+          )
         }
         title={t("settingsTitle")}
         aria-label={t("settingsTitle")}

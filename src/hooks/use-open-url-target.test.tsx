@@ -230,7 +230,10 @@ describe("useOpenUrlTarget", () => {
     expect(result.current("mailto:a@b.c", { source: "transcript" }).kind).toBe(
       "os-handler"
     )
-    expect(mocks.openWithOsHandler).toHaveBeenCalledWith("mailto:a@b.c")
+    expect(mocks.openWithOsHandler).toHaveBeenCalledWith(
+      "mailto:a@b.c",
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
     expect(
       result.current("vscode://x", { source: "transcript" })
     ).toMatchObject({

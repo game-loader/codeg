@@ -1,4 +1,4 @@
-import { create } from "zustand"
+import { createStoreScope } from "@/stores/backend-store-scope"
 
 /**
  * The command launcher (`CommandDropdown`) lives inside the aux panel's Session
@@ -23,47 +23,69 @@ interface CommandTerminalLinkState {
   pruneTerminals: (shouldRemove: (terminalId: string) => boolean) => void
 }
 
-export const useCommandTerminalLinkStore = create<CommandTerminalLinkState>(
-  (set) => ({
-    links: {},
-    setLink: (commandId, terminalId) =>
-      set((s) =>
-        s.links[commandId] === terminalId
-          ? s
-          : { links: { ...s.links, [commandId]: terminalId } }
-      ),
-    clearLink: (commandId) =>
-      set((s) => {
-        if (!(commandId in s.links)) return s
-        const next = { ...s.links }
-        delete next[commandId]
-        return { links: next }
-      }),
-    pruneTerminals: (shouldRemove) =>
-      set((s) => {
-        let changed = false
-        const next: Record<number, string> = {}
-        for (const [cmdId, termId] of Object.entries(s.links)) {
-          if (shouldRemove(termId)) changed = true
-          else next[Number(cmdId)] = termId
-        }
-        return changed ? { links: next } : s
-      }),
-  })
-)
+/** Create an independently owned backend store and its bound helper namespace. */
+export function createCommandTerminalLinkStore() {
+  const scope = createStoreScope()
 
-/**
- * The terminal a command is currently linked to *and* running in, or
- * `undefined`. A persisted link is only "live" when its terminal still exists
- * and hasn't exited — so a stale link left over from a terminal that ended
- * while the panel was closed reads as not-running (no false "Stop" state).
- * Pure + exported for unit testing.
- */
-export function resolveLiveCommandTerminalId(
-  links: Record<number, string>,
-  commandId: number,
-  isLive: (terminalId: string) => boolean
-): string | undefined {
-  const terminalId = links[commandId]
-  return terminalId && isLive(terminalId) ? terminalId : undefined
+  const useCommandTerminalLinkStore = scope.create<CommandTerminalLinkState>(
+    (set) => ({
+      links: {},
+      setLink: (commandId, terminalId) =>
+        set((s) =>
+          s.links[commandId] === terminalId
+            ? s
+            : { links: { ...s.links, [commandId]: terminalId } }
+        ),
+      clearLink: (commandId) =>
+        set((s) => {
+          if (!(commandId in s.links)) return s
+          const next = { ...s.links }
+          delete next[commandId]
+          return { links: next }
+        }),
+      pruneTerminals: (shouldRemove) =>
+        set((s) => {
+          let changed = false
+          const next: Record<number, string> = {}
+          for (const [cmdId, termId] of Object.entries(s.links)) {
+            if (shouldRemove(termId)) changed = true
+            else next[Number(cmdId)] = termId
+          }
+          return changed ? { links: next } : s
+        }),
+    })
+  )
+
+  /**
+   * The terminal a command is currently linked to *and* running in, or
+   * `undefined`. A persisted link is only "live" when its terminal still exists
+   * and hasn't exited — so a stale link left over from a terminal that ended
+   * while the panel was closed reads as not-running (no false "Stop" state).
+   * Pure + exported for unit testing.
+   */
+  function resolveLiveCommandTerminalId(
+    links: Record<number, string>,
+    commandId: number,
+    isLive: (terminalId: string) => boolean
+  ): string | undefined {
+    const terminalId = links[commandId]
+    return terminalId && isLive(terminalId) ? terminalId : undefined
+  }
+
+  scope.onDispose(() => {
+    useCommandTerminalLinkStore.setState({ links: {} })
+  })
+  return Object.assign(useCommandTerminalLinkStore, {
+    useCommandTerminalLinkStore,
+    resolveLiveCommandTerminalId,
+    dispose: scope.dispose,
+    isDisposed: () => scope.disposed,
+  })
 }
+
+export type CommandTerminalLinkStore = ReturnType<
+  typeof createCommandTerminalLinkStore
+>
+
+export const useCommandTerminalLinkStore = createCommandTerminalLinkStore()
+export const { resolveLiveCommandTerminalId } = useCommandTerminalLinkStore

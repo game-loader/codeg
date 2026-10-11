@@ -1,6 +1,10 @@
 "use client"
 
 import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
+import {
   useCallback,
   useEffect,
   useMemo,
@@ -35,16 +39,9 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn, randomUUID } from "@/lib/utils"
-import {
-  cancelWorkspaceTransfer,
-  isUploadAbortError,
-  listenWorkspaceTransferProgress,
-  uploadWorkspaceFile,
-  uploadWorkspaceLocalPathsToRemote,
-} from "@/lib/api"
+import { isUploadAbortError } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import { joinFsPath } from "@/lib/path-utils"
-import { isRemoteDesktopMode } from "@/lib/transport"
 
 type QueueStatus = "pending" | "uploading" | "success" | "error" | "cancelled"
 
@@ -158,6 +155,9 @@ export function WorkspaceUploadDialog({
   folderUploadSupported,
   onComplete,
 }: WorkspaceUploadDialogProps) {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Folder.fileTreeTab.uploadDialog")
   const tCommon = useTranslations("Folder.common")
 
@@ -192,7 +192,7 @@ export function WorkspaceUploadDialog({
   // session. We don't watch the prop after that — overwriting an
   // in-progress edit would feel like the dialog fighting the user.
   const [editableTargetPath, setEditableTargetPath] = useState(targetPath)
-  const remoteDesktop = isRemoteDesktopMode()
+  const remoteDesktop = backendPlatform.isRemoteDesktopMode()
   useEffect(() => {
     if (open) {
       setEditableTargetPath(targetPath)
@@ -251,41 +251,43 @@ export function WorkspaceUploadDialog({
     if (!remoteDesktop) return
     let disposed = false
     let cleanup: (() => void) | null = null
-    void listenWorkspaceTransferProgress((event) => {
-      if (event.direction !== "upload") return
-      activeTransferIdRef.current = event.transferId
-      setItems((prev) => {
-        const active = prev.find((it) => it.status === "uploading")
-        if (!active) return prev
-        return prev.map((it) =>
-          it.id === active.id
-            ? {
-                ...it,
-                loaded: event.loaded,
-                total: event.total ?? it.total,
-                status:
-                  event.state === "cancelled"
-                    ? "cancelled"
-                    : event.state === "error"
-                      ? "error"
-                      : it.status,
-                error: event.error ?? it.error,
-              }
-            : it
-        )
+    void backendApi
+      .listenWorkspaceTransferProgress((event) => {
+        if (event.direction !== "upload") return
+        activeTransferIdRef.current = event.transferId
+        setItems((prev) => {
+          const active = prev.find((it) => it.status === "uploading")
+          if (!active) return prev
+          return prev.map((it) =>
+            it.id === active.id
+              ? {
+                  ...it,
+                  loaded: event.loaded,
+                  total: event.total ?? it.total,
+                  status:
+                    event.state === "cancelled"
+                      ? "cancelled"
+                      : event.state === "error"
+                        ? "error"
+                        : it.status,
+                  error: event.error ?? it.error,
+                }
+              : it
+          )
+        })
       })
-    }).then((unlisten) => {
-      if (disposed) {
-        unlisten()
-      } else {
-        cleanup = unlisten
-      }
-    })
+      .then((unlisten) => {
+        if (disposed) {
+          unlisten()
+        } else {
+          cleanup = unlisten
+        }
+      })
     return () => {
       disposed = true
       cleanup?.()
     }
-  }, [remoteDesktop])
+  }, [remoteDesktop, backendApi])
 
   // Drop the queue once the dialog is closed and idle, so reopening
   // doesn't show stale results from a previous session. Also drain the
@@ -363,7 +365,7 @@ export function WorkspaceUploadDialog({
 
           try {
             if (next.source.kind === "browserFile") {
-              await uploadWorkspaceFile({
+              await backendApi.uploadWorkspaceFile({
                 rootPath,
                 targetPath: sessionTargetPath,
                 file: next.source.file,
@@ -384,16 +386,18 @@ export function WorkspaceUploadDialog({
                 },
               })
             } else {
-              const result = await uploadWorkspaceLocalPathsToRemote({
-                rootPath,
-                targetPath: sessionTargetPath,
-                entries: [
-                  {
-                    localPath: next.source.localPath,
-                    relativePath: next.source.relativePath || null,
-                  },
-                ],
-              })
+              const result = await backendApi.uploadWorkspaceLocalPathsToRemote(
+                {
+                  rootPath,
+                  targetPath: sessionTargetPath,
+                  entries: [
+                    {
+                      localPath: next.source.localPath,
+                      relativePath: next.source.relativePath || null,
+                    },
+                  ],
+                }
+              )
               activeTransferIdRef.current = result.transferId
               const loaded = result.bytes || next.total
               setItems((prev) =>
@@ -473,7 +477,7 @@ export function WorkspaceUploadDialog({
         }
       }
     })()
-  }, [rootPath, editableTargetPath])
+  }, [rootPath, editableTargetPath, backendApi])
 
   // Once the user clicks "Start upload", any files dropped or picked
   // later in the same session should join the running batch instead
@@ -710,9 +714,9 @@ export function WorkspaceUploadDialog({
     abortRef.current?.abort()
     const transferId = activeTransferIdRef.current
     if (transferId) {
-      void cancelWorkspaceTransfer(transferId).catch(() => {})
+      void backendApi.cancelWorkspaceTransfer(transferId).catch(() => {})
     }
-  }, [])
+  }, [backendApi])
 
   const handleRemoveItem = useCallback((id: string) => {
     // Record the removal first — the pump may still be holding a stale

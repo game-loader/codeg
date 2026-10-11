@@ -1,14 +1,11 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
-import { subscribe } from "@/lib/platform"
 import {
-  terminalSpawn,
-  terminalSnapshot,
-  terminalWrite,
-  terminalResize,
-  terminalKill,
-} from "@/lib/api"
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
+import { useEffect, useRef, useState } from "react"
+
 import { createWriteQueue, type WriteQueue } from "@/lib/terminal/write-queue"
 import { getTerminalTheme } from "@/lib/terminal/theme"
 import {
@@ -120,6 +117,9 @@ export function TerminalView({
   ignoreAppZoom = false,
   onProcessExited,
 }: TerminalViewProps) {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const containerRef = useRef<HTMLDivElement>(null)
   const fitAddonRef = useRef<{ fit: () => void } | null>(null)
   const termRef = useRef<XTermTerminal | null>(null)
@@ -302,7 +302,9 @@ export function TerminalView({
       // send is dropped, not retried — re-sending an ambiguous write could
       // duplicate already-delivered bytes, worse than a drop in a shell. See
       // lib/terminal/write-queue.ts.
-      const writeQueue = createWriteQueue((d) => terminalWrite(terminalId, d))
+      const writeQueue = createWriteQueue((d) =>
+        backendApi.terminalWrite(terminalId, d)
+      )
       // 暴露给键栏按键——必须走这条队列，否则与软键盘输入抢着发会乱序。
       writeQueueRef.current = writeQueue
 
@@ -387,7 +389,7 @@ export function TerminalView({
           lastResizeRef.current = { cols, rows }
           if (resizeTimer) clearTimeout(resizeTimer)
           resizeTimer = setTimeout(() => {
-            terminalResize(terminalId, cols, rows).catch(() => {})
+            backendApi.terminalResize(terminalId, cols, rows).catch(() => {})
           }, 50)
         }
       )
@@ -416,7 +418,7 @@ export function TerminalView({
       }
 
       // Subscribe to events BEFORE spawning so no initial output is lost
-      const unlisten = await subscribe<TerminalEvent>(
+      const unlisten = await backendPlatform.subscribe<TerminalEvent>(
         `terminal://output/${terminalId}`,
         (payload) => {
           if (replayBuffer) {
@@ -437,7 +439,7 @@ export function TerminalView({
         for (const event of buffered) writeEvent(event)
       }
 
-      const unlistenExit = await subscribe<TerminalEvent>(
+      const unlistenExit = await backendPlatform.subscribe<TerminalEvent>(
         `terminal://exit/${terminalId}`,
         () => {
           // PTY is gone — stop the input pump (the reliable terminal-gone
@@ -483,7 +485,9 @@ export function TerminalView({
       // 像「终端起不来」——实际上进程好好的，只是屏幕是空的）。
       let attached = false
       if (attach) {
-        const snapshot = await terminalSnapshot(terminalId).catch(() => null)
+        const snapshot = await backendApi
+          .terminalSnapshot(terminalId)
+          .catch(() => null)
         if (cancelled) {
           teardown()
           return
@@ -501,7 +505,12 @@ export function TerminalView({
       // Spawn the terminal AFTER subscribing to events
       if (!attached) {
         try {
-          await terminalSpawn(workingDir, shell, initialCommand, terminalId)
+          await backendApi.terminalSpawn(
+            workingDir,
+            shell,
+            initialCommand,
+            terminalId
+          )
           // spawn 成功 ⇒ 这个 id 上此前没有 PTY，缓冲里只可能是我们刚起的这个
           // 进程的头几个字节，没有任何东西需要去重。
           flushReplay(null)
@@ -512,7 +521,7 @@ export function TerminalView({
           // 当作 attach 走完，而不是在一个正常运行的 shell 上打红字并把卡片
           // 切到「已退出」。只有再问也没有时才是真失败。
           const retry = attach
-            ? await terminalSnapshot(terminalId).catch(() => null)
+            ? await backendApi.terminalSnapshot(terminalId).catch(() => null)
             : null
           if (cancelled) {
             teardown()
@@ -538,7 +547,7 @@ export function TerminalView({
       // not to this mount — that is the whole point of attaching, and killing
       // here would take a running command down with a view switch.
       if (cancelled) {
-        if (!attach) terminalKill(terminalId).catch(() => {})
+        if (!attach) backendApi.terminalKill(terminalId).catch(() => {})
         teardown()
         return
       }
@@ -595,7 +604,15 @@ export function TerminalView({
       // menu must not outlive it and open the old terminal's link.
       setLinkClick(null)
     }
-  }, [terminalId, workingDir, shell, initialCommand, attach])
+  }, [
+    terminalId,
+    workingDir,
+    shell,
+    initialCommand,
+    attach,
+    backendApi,
+    backendPlatform,
+  ])
 
   // Refit and focus when becoming active or panel becomes visible
   useEffect(() => {

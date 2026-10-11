@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -18,7 +19,7 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { acpQoderAuthStatus, acpUpdateAgentConfig } from "@/lib/api"
+
 import type { AcpAgentInfo, QoderAuthStatus } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -106,6 +107,8 @@ export function QoderConfigPanel({
    * restart-required (the env step reports its own count internally). */
   onAffectedSessions: (count: number) => void
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("AcpAgentSettings")
 
   // --- auth card ---
@@ -175,7 +178,7 @@ export function QoderConfigPanel({
   const refreshAuth = useCallback(async () => {
     setAuthLoading(true)
     try {
-      const status = await acpQoderAuthStatus(tokenRef.current)
+      const status = await backendApi.acpQoderAuthStatus(tokenRef.current)
       if (mountedRef.current) setAuth(status)
     } catch {
       // Probe failures surface through `auth.error`; a transport-level failure
@@ -183,7 +186,7 @@ export function QoderConfigPanel({
     } finally {
       if (mountedRef.current) setAuthLoading(false)
     }
-  }, [])
+  }, [backendApi])
 
   useEffect(() => {
     void refreshAuth()
@@ -248,7 +251,7 @@ export function QoderConfigPanel({
     try {
       // The whole document, written verbatim — unlike the generic config
       // channel's merge, this is what lets a key be DELETED.
-      const affected = await acpUpdateAgentConfig(agent.agent_type, {
+      const affected = await backendApi.acpUpdateAgentConfig(agent.agent_type, {
         config_json: submitted,
       })
       onAffectedSessions(affected)
@@ -267,7 +270,7 @@ export function QoderConfigPanel({
     } finally {
       if (mountedRef.current) setSavingRaw(false)
     }
-  }, [agent.agent_type, onAffectedSessions, onSaved, rawConfig, t])
+  }, [agent.agent_type, onAffectedSessions, onSaved, rawConfig, t, backendApi])
 
   const busy = saving || savingToken
 

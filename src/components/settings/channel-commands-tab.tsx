@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useState } from "react"
 import { Loader2, Save } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -7,7 +8,6 @@ import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { getChatCommandPrefix, setChatCommandPrefix } from "@/lib/api"
 
 const BUILT_IN_COMMANDS = [
   { name: "folder [n|path]", descKey: "folderDesc" },
@@ -25,6 +25,8 @@ const BUILT_IN_COMMANDS = [
 ] as const
 
 export function ChannelCommandsTab() {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("ChatChannelSettings.commands")
   const [prefix, setPrefix] = useState("/")
   const [inputPrefix, setInputPrefix] = useState("/")
@@ -32,14 +34,15 @@ export function ChannelCommandsTab() {
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    getChatCommandPrefix()
+    backendApi
+      .getChatCommandPrefix()
       .then((p) => {
         setPrefix(p)
         setInputPrefix(p)
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [])
+  }, [backendApi])
 
   const handleSavePrefix = useCallback(async () => {
     const trimmed = inputPrefix.trim()
@@ -53,7 +56,7 @@ export function ChannelCommandsTab() {
     }
     setSaving(true)
     try {
-      await setChatCommandPrefix(trimmed)
+      await backendApi.setChatCommandPrefix(trimmed)
       setPrefix(trimmed)
       toast.success(t("prefixSaved"))
     } catch {
@@ -61,7 +64,7 @@ export function ChannelCommandsTab() {
     } finally {
       setSaving(false)
     }
-  }, [inputPrefix, t])
+  }, [inputPrefix, t, backendApi])
 
   const dirty = inputPrefix !== prefix
 

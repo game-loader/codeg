@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useTranslations } from "next-intl"
 import { AlertTriangle, Clock } from "lucide-react"
 import { usePetSessions } from "../_hooks/usePetSessions"
@@ -29,6 +30,8 @@ import { isDesktop } from "@/lib/transport"
  * "open the panel" is reachable exactly when there's something to show.
  */
 export function PetBadge() {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Pet")
   const badge = pickPetBadge(usePetSessions())
 
@@ -51,7 +54,7 @@ export function PetBadge() {
       }}
       onClick={() => {
         if (!isDesktop()) return
-        void togglePetPanel().catch((err) =>
+        void togglePetPanel(backendPlatform).catch((err) =>
           console.warn("[Pet] toggle panel failed:", err)
         )
       }}

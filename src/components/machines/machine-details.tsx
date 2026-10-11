@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Loader2, Pencil, RefreshCw, Trash2 } from "lucide-react"
@@ -40,10 +41,14 @@ export function MachineDetails({
   onRemove: () => void
   onProbeStatus: (id: string, status: MachineProbeStatus) => void
 }) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Machines")
   const manual = machine.source === "manual"
   const [user, setUser] = useState(() =>
-    manual ? (machine.ssh_user ?? "") : loadMachineUser(machine.id)
+    manual
+      ? (machine.ssh_user ?? "")
+      : loadMachineUser(machine.id, backendPlatform)
   )
   const [appliedUser, setAppliedUser] = useState(user)
   const [probeVersion, setProbeVersion] = useState(0)
@@ -52,10 +57,10 @@ export function MachineDetails({
   const loginUrl = tailscaleLoginUrl(error)
   const [probing, setProbing] = useState(true)
   const requestProbe = useCallback(() => {
-    if (!manual) saveMachineUser(machine.id, user)
+    if (!manual) saveMachineUser(machine.id, user, backendPlatform)
     setAppliedUser(user.trim())
     setProbeVersion((n) => n + 1)
-  }, [machine.id, user, manual])
+  }, [machine.id, user, manual, backendPlatform])
 
   useEffect(() => {
     let active = true
@@ -66,7 +71,7 @@ export function MachineDetails({
     setSnapshot(null)
     setError(null)
     onProbeStatus(machine.id, "probing")
-    probeMachine(machine.id, appliedUser)
+    probeMachine(machine.id, appliedUser, backendPlatform)
       .then((result) => {
         if (active) {
           setSnapshot(result)
@@ -87,7 +92,14 @@ export function MachineDetails({
       active = false
       if (!settled) onProbeStatus(machine.id, "notProbed")
     }
-  }, [machine.id, appliedUser, probeVersion, refresh, onProbeStatus])
+  }, [
+    machine.id,
+    appliedUser,
+    probeVersion,
+    refresh,
+    onProbeStatus,
+    backendPlatform,
+  ])
 
   return (
     <section className="min-w-0 space-y-4 overflow-y-auto rounded-xl border p-4">

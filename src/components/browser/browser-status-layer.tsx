@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useEffect, useState } from "react"
 
 import {
@@ -48,7 +49,7 @@ import type {
 import { browserTabBackendId } from "@/lib/file-tab-id"
 import { getAllowedExternalProtocol } from "@/lib/link-classify"
 import { openWithOsHandler } from "@/lib/link-open"
-import { openUrl, revealItemInDir } from "@/lib/platform"
+import { openUrl } from "@/lib/platform"
 import { cn } from "@/lib/utils"
 
 function noticeText(
@@ -143,6 +144,8 @@ export function BrowserNoticeBar({
   tab: BrowserWorkspaceTab
   state: BrowserTabState | null
 }) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Browser.status")
   const notice = useBrowserTabNotice(tab.id)
   // A remote tab's tunnel: the banner that names the remote host turns red
@@ -220,7 +223,7 @@ export function BrowserNoticeBar({
               type="button"
               className="shrink-0 rounded px-1.5 py-0.5 text-xs font-medium text-primary hover:bg-primary/8"
               onClick={() => {
-                void openWithOsHandler(notice.url)
+                void openWithOsHandler(notice.url, backendPlatform)
                 setBrowserTabNotice(tab.id, null)
               }}
             >
@@ -480,18 +483,9 @@ export function BrowserOwnedWindowCard({
  * reachable through the fallback.
  */
 async function revealDownload(download: BrowserDownload): Promise<void> {
-  try {
-    await revealItemInDir(download.path)
-  } catch {
-    await browserRevealDownload(download.id)
-  }
+  await browserRevealDownload(download.id)
 }
 
-/**
- * Downloads of this tab, above the page. A download is never opened for the
- * user — the bar offers "show in folder", which is what a file arriving from
- * the web deserves; running it is their decision, in their file manager.
- */
 export function BrowserDownloadBar({ tab }: { tab: BrowserWorkspaceTab }) {
   const t = useTranslations("Browser.download")
   const downloads = useBrowserTabDownloads(tab.id)

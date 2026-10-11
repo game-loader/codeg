@@ -1,5 +1,10 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+
+import { useCanvasBoardsStore as legacyCanvasBoards } from "@/stores/canvas-boards-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   Crosshair,
@@ -19,7 +24,7 @@ import {
 import { useTranslations } from "next-intl"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useSidebarContext } from "@/contexts/sidebar-context"
-import { useTabActions } from "@/contexts/tab-context"
+
 import { useAutomationsView } from "@/contexts/automations-view-context"
 import { useTasksView } from "@/contexts/tasks-view-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
@@ -73,7 +78,7 @@ import {
   type SidebarSectionOrder,
 } from "@/lib/sidebar-view-mode-storage"
 import { AcademicSidebar } from "@/components/academic/academic-sidebar"
-import { useCanvasBoardsStore } from "@/stores/canvas-boards-store"
+
 import { SidebarSectionOrderControl } from "./sidebar-section-order-control"
 import { cn } from "@/lib/utils"
 
@@ -152,6 +157,14 @@ function SidebarNavButton({
 }
 
 export function Sidebar() {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({ canvasBoards: legacyCanvasBoards })
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+  const useCanvasBoardsStore = backendStores.canvasBoards
+
   const t = useTranslations("Folder.sidebar")
   const { isOpen, toggle } = useSidebarContext()
   const { activeFolder } = useActiveFolder()
@@ -201,7 +214,7 @@ export function Sidebar() {
 
   useEffect(() => {
     // Hydrate from localStorage after mount to keep SSR/CSR markup consistent.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+
     setShowCompleted(loadShowCompleted())
     setShowWorktrees(loadShowWorktrees())
     setShowRecent(loadShowRecent())

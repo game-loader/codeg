@@ -1,5 +1,7 @@
 "use client"
 
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { Check, Copy, Loader2 } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
@@ -10,7 +12,7 @@ import type {
   SessionStats,
 } from "@/lib/types"
 import { STATUS_ORDER } from "@/lib/types"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import { cn, copyTextToClipboard } from "@/lib/utils"
 import { formatConversationTitle } from "@/lib/conversation-title"
 import { formatTokenCount } from "@/lib/token-format"
@@ -18,7 +20,7 @@ import {
   formatContextWindowPercent,
   resolveContextWindowPercent,
 } from "@/lib/context-window"
-import { getFolderConversation } from "@/lib/api"
+
 import { useCopiedFlag } from "@/hooks/use-copied-flag"
 import { useModelLabels } from "@/hooks/use-model-labels"
 import { pickModelFromTurns } from "./active-session-details"
@@ -82,6 +84,8 @@ export function SessionIdentityChips({
    *  chip renders whatever the agent calls it when that is known. */
   model?: string | null
 }) {
+  const { getAgentLabel } = useAgentDisplay()
+
   const tStatus = useTranslations("Folder.statusLabels")
   const modelLabel = useModelLabels(agentType)
   const displayModel = modelLabel(model)
@@ -252,6 +256,8 @@ export function SessionDetailsContent({
   model: modelProp,
   active = true,
 }: SessionDetailsContentProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.sessionDetails")
   const locale = useLocale()
 
@@ -281,7 +287,8 @@ export function SessionDetailsContent({
     // fill in token usage.
     const id = summaryProp.id
     let cancelled = false
-    getFolderConversation(id)
+    backendApi
+      .getFolderConversation(id)
       .then((detail) => {
         if (!cancelled)
           setFetchResult({
@@ -300,7 +307,7 @@ export function SessionDetailsContent({
     return () => {
       cancelled = true
     }
-  }, [active, statsProp, summaryProp.id])
+  }, [active, statsProp, summaryProp.id, backendApi])
 
   const result =
     fetchResult && fetchResult.id === summaryProp.id ? fetchResult : null

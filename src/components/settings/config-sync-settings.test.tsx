@@ -313,7 +313,10 @@ describe("ConfigSyncSettings — file import", () => {
     expect(confirm).toBeEnabled()
     fireEvent.click(confirm)
     await waitFor(() =>
-      expect(importPickedConfig).toHaveBeenCalledWith(picked.source)
+      expect(importPickedConfig).toHaveBeenCalledWith(
+        picked.source,
+        expect.objectContaining({ getTransport: expect.any(Function) })
+      )
     )
   })
 
@@ -340,7 +343,10 @@ describe("ConfigSyncSettings — file import", () => {
     await screen.findByText(t.importConfirmTitle)
     fireEvent.click(screen.getByRole("button", { name: t.importConfirmAction }))
     await waitFor(() =>
-      expect(importPickedConfig).toHaveBeenCalledWith(picked.source)
+      expect(importPickedConfig).toHaveBeenCalledWith(
+        picked.source,
+        expect.objectContaining({ getTransport: expect.any(Function) })
+      )
     )
   })
 
@@ -563,7 +569,10 @@ describe("ConfigSyncSettings — rollback snapshots", () => {
       screen.getByRole("button", { name: t.rollbackConfirmAction })
     )
     await waitFor(() =>
-      expect(applyConfigRollback).toHaveBeenCalledWith(OLDER.id)
+      expect(applyConfigRollback).toHaveBeenCalledWith(
+        OLDER.id,
+        expect.objectContaining({ getTransport: expect.any(Function) })
+      )
     )
   })
 

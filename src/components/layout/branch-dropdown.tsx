@@ -1,5 +1,14 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   ChevronDown,
@@ -35,18 +44,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import {
-  gitInit,
-  gitNewBranch,
-  gitWorktreeAdd,
-  gitListAllBranches,
-  gitMerge,
-  gitRebase,
-  gitDeleteBranch,
-  gitDeleteRemoteBranch,
-  gitRemoveWorktree,
-} from "@/lib/api"
-import { subscribe } from "@/lib/platform"
+
 import { DirectoryPathInput } from "@/components/shared/directory-path-input"
 import { useSwitchToBranch } from "@/hooks/use-switch-to-branch"
 import {
@@ -65,8 +63,7 @@ import { useGitQuickActions } from "@/hooks/use-git-quick-actions"
 import { useImeGuard } from "@/hooks/use-ime-guard"
 import type { FolderDetail, GitBranchList } from "@/lib/types"
 import { fsBaseName, siblingFsPath } from "@/lib/path-utils"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabActions } from "@/contexts/tab-context"
+
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useGitCredential } from "@/contexts/git-credential-context"
 
@@ -134,6 +131,17 @@ interface BranchDropdownProps {
 // conversation tile with that tile's own `folder`, and carries per-instance
 // machinery (git event subscriptions + dialogs).
 export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Folder.branchDropdown")
   const ime = useImeGuard()
   const tCommon = useTranslations("Folder.common")
@@ -263,23 +271,24 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
   useEffect(() => {
     if (!folderId) return
     let unlisten: (() => void) | null = null
-    subscribe<GitCommitSucceededEventPayload>(
-      "folder://git-commit-succeeded",
-      (payload) => {
-        if (payload.folder_id !== folderId) return
-        // Folder-scoped toast id: this component is mounted once per
-        // conversation tile, and the changes tab raises the same toast locally
-        // after a quick commit. Sharing one id makes sonner update a single
-        // toast instead of stacking one per listener.
-        toast.success(t("toasts.commitCodeCompleted"), {
-          id: `git-commit-succeeded:${folderId}`,
-          description: t("toasts.committedFiles", {
-            count: payload.committed_files,
-          }),
-        })
-        refresh()
-      }
-    )
+    backendPlatform
+      .subscribe<GitCommitSucceededEventPayload>(
+        "folder://git-commit-succeeded",
+        (payload) => {
+          if (payload.folder_id !== folderId) return
+          // Folder-scoped toast id: this component is mounted once per
+          // conversation tile, and the changes tab raises the same toast locally
+          // after a quick commit. Sharing one id makes sonner update a single
+          // toast instead of stacking one per listener.
+          toast.success(t("toasts.commitCodeCompleted"), {
+            id: `git-commit-succeeded:${folderId}`,
+            description: t("toasts.committedFiles", {
+              count: payload.committed_files,
+            }),
+          })
+          refresh()
+        }
+      )
       .then((fn) => {
         unlisten = fn
       })
@@ -289,31 +298,32 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
     return () => {
       unlisten?.()
     }
-  }, [folderId, refresh, t])
+  }, [folderId, refresh, t, backendPlatform])
 
   useEffect(() => {
     if (!folderId) return
     let unlisten: (() => void) | null = null
-    subscribe<GitPushSucceededEventPayload>(
-      "folder://git-push-succeeded",
-      (payload) => {
-        if (payload.folder_id !== folderId) return
-        const { pushed_commits, upstream_set } = payload
-        let description: string
-        if (upstream_set) {
-          description =
-            pushed_commits === 0
-              ? t("toasts.upstreamSet")
-              : t("toasts.upstreamSetAndPushed", { count: pushed_commits })
-        } else if (pushed_commits === 0) {
-          description = t("toasts.noCommitsToPush")
-        } else {
-          description = t("toasts.pushedCommits", { count: pushed_commits })
+    backendPlatform
+      .subscribe<GitPushSucceededEventPayload>(
+        "folder://git-push-succeeded",
+        (payload) => {
+          if (payload.folder_id !== folderId) return
+          const { pushed_commits, upstream_set } = payload
+          let description: string
+          if (upstream_set) {
+            description =
+              pushed_commits === 0
+                ? t("toasts.upstreamSet")
+                : t("toasts.upstreamSetAndPushed", { count: pushed_commits })
+          } else if (pushed_commits === 0) {
+            description = t("toasts.noCommitsToPush")
+          } else {
+            description = t("toasts.pushedCommits", { count: pushed_commits })
+          }
+          toast.success(t("toasts.pushCodeCompleted"), { description })
+          refresh()
         }
-        toast.success(t("toasts.pushCodeCompleted"), { description })
-        refresh()
-      }
-    )
+      )
       .then((fn) => {
         unlisten = fn
       })
@@ -323,13 +333,13 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
     return () => {
       unlisten?.()
     }
-  }, [folderId, refresh, t])
+  }, [folderId, refresh, t, backendPlatform])
 
   const loadAllBranches = useCallback(async () => {
     if (!folderPath) return
     setBranchLoading(true)
     try {
-      const list = await gitListAllBranches(folderPath)
+      const list = await backendApi.gitListAllBranches(folderPath)
       setBranchList(list)
     } catch {
       setBranchList({
@@ -341,7 +351,7 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
     } finally {
       setBranchLoading(false)
     }
-  }, [folderPath])
+  }, [folderPath, backendApi])
 
   function handleDropdownOpenChange(open: boolean) {
     setDropdownOpen(open)
@@ -374,7 +384,7 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
     setNewBranchOpen(false)
     setNewBranchName("")
     await runGitTask(t("tasks.newBranch", { name }), () =>
-      gitNewBranch(folderPath, name)
+      backendApi.gitNewBranch(folderPath, name)
     )
   }
 
@@ -404,7 +414,7 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
     if (!name || !wtPath) return
     setWorktreeOpen(false)
     await runGitTask(t("tasks.newWorktree", { name }), async () => {
-      await gitWorktreeAdd(folderPath, name, wtPath)
+      await backendApi.gitWorktreeAdd(folderPath, name, wtPath)
       // Register the worktree as a folder parented to this repo (flattened to
       // the root), then open a draft conversation in it. Once child folders are
       // merged under their parent in the sidebar, a worktree with no
@@ -427,7 +437,7 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
       case "merge":
         await runGitTask(
           t("tasks.mergeBranch", { branchName }),
-          () => gitMerge(folderPath, branchName),
+          () => backendApi.gitMerge(folderPath, branchName),
           (result) => {
             if (result.conflict?.has_conflicts) {
               reportConflict(result.conflict)
@@ -443,7 +453,7 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
       case "rebase":
         await runGitTask(
           t("tasks.rebaseTo", { branchName }),
-          () => gitRebase(folderPath, branchName),
+          () => backendApi.gitRebase(folderPath, branchName),
           (result) => {
             if (result.conflict?.has_conflicts) {
               reportConflict(result.conflict)
@@ -456,7 +466,7 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
       case "delete":
         await runGitTask(
           t("tasks.deleteBranch", { branchName }),
-          () => gitDeleteBranch(folderPath, branchName),
+          () => backendApi.gitDeleteBranch(folderPath, branchName),
           undefined,
           (errorMsg) => {
             if (/not fully merged/i.test(errorMsg)) {
@@ -469,7 +479,7 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
         break
       case "forceDelete":
         await runGitTask(t("tasks.deleteBranch", { branchName }), () =>
-          gitDeleteBranch(folderPath, branchName, true)
+          backendApi.gitDeleteBranch(folderPath, branchName, true)
         )
         break
       // All four worktree removals are the same backend call under different
@@ -485,7 +495,7 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
             ? t("tasks.removeWorktreeAndBranch", { branchName })
             : t("tasks.removeWorktree", { branchName }),
           () =>
-            gitRemoveWorktree(
+            backendApi.gitRemoveWorktree(
               folderPath,
               branchName,
               folderId,
@@ -512,7 +522,8 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
         const rb = branchName.substring(idx + 1)
         await runGitTask(t("tasks.deleteRemoteBranch", { branchName }), () =>
           withCredentialRetry(
-            (creds) => gitDeleteRemoteBranch(folderPath, remote, rb, creds),
+            (creds) =>
+              backendApi.gitDeleteRemoteBranch(folderPath, remote, rb, creds),
             { folderPath }
           )
         )
@@ -668,7 +679,9 @@ export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
             disabled={loading}
             onClick={() => {
               setDropdownOpen(false)
-              void runGitTask(t("tasks.initGitRepo"), () => gitInit(folderPath))
+              void runGitTask(t("tasks.initGitRepo"), () =>
+                backendApi.gitInit(folderPath)
+              )
             }}
             className="flex w-full select-none items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50"
           >

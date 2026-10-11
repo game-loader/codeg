@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useEffect, useRef, useState } from "react"
 import { isDesktop } from "@/lib/transport"
 import {
@@ -20,6 +21,7 @@ export interface PetOneShotEvent {
 }
 
 export function usePetOneShot(): PetOneShotEvent | null {
+  const backendPlatform = useBackendPlatform()
   const [event, setEvent] = useState<PetOneShotEvent | null>(null)
   // Survives strict-mode mount → unmount → remount so the key really is
   // monotonic across the component's lifetime. A useEffect-local counter
@@ -52,14 +54,12 @@ export function usePetOneShot(): PetOneShotEvent | null {
             unlisten = off
           }
         } else {
-          const { getTransport } = await import("@/lib/transport")
-          const off = await getTransport().subscribe<PetState>(
-            PET_ONESHOT_EVENT,
-            (payload) => {
+          const off = await backendPlatform
+            .getTransport()
+            .subscribe<PetState>(PET_ONESHOT_EVENT, (payload) => {
               if (cancelled) return
               deliver(payload)
-            }
-          )
+            })
           if (cancelled) {
             off()
           } else {
@@ -81,7 +81,7 @@ export function usePetOneShot(): PetOneShotEvent | null {
         unlisten()
       }
     }
-  }, [])
+  }, [backendPlatform])
 
   return event
 }

@@ -46,4 +46,7 @@ pub struct RemoteWorkspaceConnectionInfo {
     pub sort_order: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Opaque revision for optional proxy fencing; contains no credentials.
+    #[serde(default)]
+    pub config_revision: String,
 }

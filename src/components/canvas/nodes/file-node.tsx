@@ -1,5 +1,7 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { memo, useCallback, useEffect, useMemo, useState } from "react"
 import { type Node, type NodeProps } from "@xyflow/react"
 import {
@@ -24,7 +26,7 @@ import {
 import { buildFileTabId } from "@/lib/file-tab-id"
 import { findOwningFolder, splitAbsPath } from "@/lib/file-open-target"
 import { isHtmlPreviewable } from "@/lib/language-detect"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import {
   FILE_CARD_MIN_HEIGHT,
   FILE_CARD_MIN_WIDTH,
@@ -60,6 +62,9 @@ export const FileNode = memo(function FileNode({
   data,
   selected,
 }: NodeProps<FileFlowNode>) {
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
   const t = useTranslations("Canvas")
   // The unavailable notice reuses the file viewer's wording — the card and the
   // transcript's drawer are the same answer to the same situation.

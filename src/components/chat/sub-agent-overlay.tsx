@@ -15,8 +15,9 @@
  * child's full conversation via `SubAgentSessionDialog` ("查看会话").
  */
 
+import { useAgentDisplay } from "@/hooks/use-agent-display"
 import { memo, useState } from "react"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import { useTranslations } from "next-intl"
 import { BotIcon, ChevronDownIcon } from "lucide-react"
 
@@ -114,6 +115,8 @@ const SubAgentOverlayRow = memo(function SubAgentOverlayRow({
 }: {
   source: DelegationCardSource
 }) {
+  const { getAgentLabel } = useAgentDisplay()
+
   const t = useTranslations("Folder.chat.delegation")
   // Same host as the inline card — so the two entry points share one viewer,
   // and neither depends on its own row surviving. `null` = rendered outside a

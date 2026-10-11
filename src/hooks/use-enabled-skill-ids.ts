@@ -1,106 +1,127 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useBackendApi } from "@/contexts/backend-client-context"
+import type { BackendApi } from "@/lib/backend/types"
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react"
 
-import {
-  expertsListAllInstallStatuses,
-  officecliSkillListAllInstallStatuses,
-  scienceListAllInstallStatuses,
-} from "@/lib/api"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { piUsesCustomAgentDir } from "@/lib/pi-config"
 import type { AgentType, ExpertInstallStatus } from "@/lib/types"
 
-// Module-level cache shared across QuickActions mounts. The snapshots are
-// agent-agnostic (one entry per (skill, agent) pair), so switching the selected
-// agent only re-filters in memory — no refetch. Refreshed on window focus to
-// pick up enable/disable performed in the settings window.
-let cached: ExpertInstallStatus[] | null = null
-let inflight: Promise<ExpertInstallStatus[] | null> | null = null
-// Bumped on every invalidation (focus). A load whose generation is stale by the
-// time it resolves must not overwrite a fresher snapshot — guards the
-// focus-refetch race where an orphaned earlier request resolves last.
-let generation = 0
-const subscribers = new Set<(snapshot: ExpertInstallStatus[]) => void>()
+function createSkillStatusCache(fixedApi: BackendApi) {
+  // Module-level cache shared across QuickActions mounts. The snapshots are
+  // agent-agnostic (one entry per (skill, agent) pair), so switching the selected
+  // agent only re-filters in memory — no refetch. Refreshed on window focus to
+  // pick up enable/disable performed in the settings window.
+  let cached: ExpertInstallStatus[] | null = null
+  let inflight: Promise<ExpertInstallStatus[] | null> | null = null
+  // Bumped on every invalidation (focus). A load whose generation is stale by the
+  // time it resolves must not overwrite a fresher snapshot — guards the
+  // focus-refetch race where an orphaned earlier request resolves last.
+  let generation = 0
+  const subscribers = new Set<(snapshot: ExpertInstallStatus[]) => void>()
 
-/**
- * Load the experts + office-tools + science install-status snapshots and merge
- * them.
- *
- * Fails *open*: if any request rejects, we keep (and return) the previous
- * cached snapshot rather than substituting an empty list. That matters because
- * a locked card blocks injection — turning a transient backend error into an
- * empty snapshot would make every skill look "not enabled" and wrongly block
- * skills the user actually enabled. With no prior snapshot the result stays
- * `null`, so `ready` remains false and callers treat everything as usable
- * (the pre-gating behavior) instead of locking it all.
- */
-async function loadSnapshot(): Promise<ExpertInstallStatus[] | null> {
-  if (inflight) return inflight
-  const myGeneration = generation
-  const request: Promise<ExpertInstallStatus[] | null> = Promise.all([
-    expertsListAllInstallStatuses(),
-    officecliSkillListAllInstallStatuses(),
-    scienceListAllInstallStatuses(),
-  ])
-    .then(([experts, office, science]) => {
-      // Only clear the shared handle if it still points at *this* request: a
-      // focus refresh may have superseded it, and nulling unconditionally would
-      // orphan the newer in-flight request and let a concurrent mount kick off a
-      // duplicate scan.
-      if (inflight === request) inflight = null
-      // A newer invalidation superseded this request while it was in flight —
-      // discard its result so it can't clobber the fresher snapshot.
-      if (myGeneration !== generation) return cached
-      const merged = [...experts, ...office, ...science]
-      cached = merged
-      for (const notify of subscribers) notify(merged)
-      return merged
-    })
-    .catch((err) => {
-      if (inflight === request) inflight = null
-      console.warn("[useEnabledSkillIds] failed to load statuses:", err)
-      return cached
-    })
-  inflight = request
-  return inflight
+  /**
+   * Load the experts + office-tools + science install-status snapshots and merge
+   * them.
+   *
+   * Fails *open*: if any request rejects, we keep (and return) the previous
+   * cached snapshot rather than substituting an empty list. That matters because
+   * a locked card blocks injection — turning a transient backend error into an
+   * empty snapshot would make every skill look "not enabled" and wrongly block
+   * skills the user actually enabled. With no prior snapshot the result stays
+   * `null`, so `ready` remains false and callers treat everything as usable
+   * (the pre-gating behavior) instead of locking it all.
+   */
+  async function loadSnapshot(
+    backendApi: BackendApi = fixedApi
+  ): Promise<ExpertInstallStatus[] | null> {
+    if (inflight) return inflight
+    const myGeneration = generation
+    const request: Promise<ExpertInstallStatus[] | null> = Promise.all([
+      backendApi.expertsListAllInstallStatuses(),
+      backendApi.officecliSkillListAllInstallStatuses(),
+      backendApi.scienceListAllInstallStatuses(),
+    ])
+      .then(([experts, office, science]) => {
+        // Only clear the shared handle if it still points at *this* request: a
+        // focus refresh may have superseded it, and nulling unconditionally would
+        // orphan the newer in-flight request and let a concurrent mount kick off a
+        // duplicate scan.
+        if (inflight === request) inflight = null
+        // A newer invalidation superseded this request while it was in flight —
+        // discard its result so it can't clobber the fresher snapshot.
+        if (myGeneration !== generation) return cached
+        const merged = [...experts, ...office, ...science]
+        cached = merged
+        for (const notify of subscribers) notify(merged)
+        return merged
+      })
+      .catch((err) => {
+        if (inflight === request) inflight = null
+        console.warn("[useEnabledSkillIds] failed to load statuses:", err)
+        return cached
+      })
+    inflight = request
+    return inflight
+  }
+
+  // Window-focus refetch is shared across all hook instances via a single
+  // module-level listener + refcount. Skill links are edited in the settings
+  // window, so we refresh when this window regains focus — but a per-instance
+  // listener meant every mounted consumer (e.g. each conversation composer) fired
+  // its own refresh on the same focus event, and because the handler clears
+  // `inflight` before calling `loadSnapshot`, those N calls defeated the in-flight
+  // dedup and ran N concurrent (expert + office) status scans. One coalesced
+  // refresh per focus keeps the cost flat regardless of how many composers mount.
+  let focusRefcount = 0
+  let focusListener: (() => void) | null = null
+
+  function refreshSnapshotOnFocus(backendApi: BackendApi = fixedApi): void {
+    // Force a fresh load even if one is in flight: it may have started before the
+    // settings change we just returned from. The generation bump makes any stale
+    // request discard its result instead of clobbering the fresh one. On failure
+    // the cache is kept, so a transient error never resets a good snapshot.
+    generation += 1
+    inflight = null
+    loadSnapshot(backendApi)
+  }
+
+  function acquireFocusRefresh(backendApi: BackendApi): void {
+    if (typeof window === "undefined") return
+    focusRefcount += 1
+    if (focusListener) return
+    focusListener = () => refreshSnapshotOnFocus(backendApi)
+    window.addEventListener("focus", focusListener)
+  }
+
+  function releaseFocusRefresh(): void {
+    if (typeof window === "undefined") return
+    focusRefcount = Math.max(0, focusRefcount - 1)
+    if (focusRefcount > 0 || !focusListener) return
+    window.removeEventListener("focus", focusListener)
+    focusListener = null
+  }
+
+  return {
+    loadSnapshot,
+    acquireFocusRefresh,
+    releaseFocusRefresh,
+    subscribers,
+    getSnapshot: () => cached,
+  }
 }
-
-// Window-focus refetch is shared across all hook instances via a single
-// module-level listener + refcount. Skill links are edited in the settings
-// window, so we refresh when this window regains focus — but a per-instance
-// listener meant every mounted consumer (e.g. each conversation composer) fired
-// its own refresh on the same focus event, and because the handler clears
-// `inflight` before calling `loadSnapshot`, those N calls defeated the in-flight
-// dedup and ran N concurrent (expert + office) status scans. One coalesced
-// refresh per focus keeps the cost flat regardless of how many composers mount.
-let focusRefcount = 0
-let focusListener: (() => void) | null = null
-
-function refreshSnapshotOnFocus(): void {
-  // Force a fresh load even if one is in flight: it may have started before the
-  // settings change we just returned from. The generation bump makes any stale
-  // request discard its result instead of clobbering the fresh one. On failure
-  // the cache is kept, so a transient error never resets a good snapshot.
-  generation += 1
-  inflight = null
-  loadSnapshot()
-}
-
-function acquireFocusRefresh(): void {
-  if (typeof window === "undefined") return
-  focusRefcount += 1
-  if (focusListener) return
-  focusListener = refreshSnapshotOnFocus
-  window.addEventListener("focus", focusListener)
-}
-
-function releaseFocusRefresh(): void {
-  if (typeof window === "undefined") return
-  focusRefcount = Math.max(0, focusRefcount - 1)
-  if (focusRefcount > 0 || !focusListener) return
-  window.removeEventListener("focus", focusListener)
-  focusListener = null
+const caches = new WeakMap<
+  BackendApi,
+  ReturnType<typeof createSkillStatusCache>
+>()
+function getSkillStatusCache(api: BackendApi) {
+  let cache = caches.get(api)
+  if (!cache) {
+    cache = createSkillStatusCache(api)
+    caches.set(api, cache)
+  }
+  return cache
 }
 
 /**
@@ -129,43 +150,28 @@ export function useEnabledSkillIds(agentType: AgentType | null): {
   ready: boolean
   supported: boolean
 } {
+  const backendApi = useBackendApi()
+
   const { agents, fresh: agentsFresh } = useAcpAgents()
-  const [snapshot, setSnapshot] = useState<ExpertInstallStatus[] | null>(
-    () => cached
+  const cache = getSkillStatusCache(backendApi)
+  const snapshot = useSyncExternalStore(
+    useCallback(
+      (notify: () => void) => {
+        cache.subscribers.add(notify)
+        return () => {
+          cache.subscribers.delete(notify)
+        }
+      },
+      [cache]
+    ),
+    cache.getSnapshot,
+    cache.getSnapshot
   )
-
-  // Initial load + subscribe for updates (covers the focus refetch below and
-  // any concurrent QuickActions instance resolving the shared fetch first).
-  // Only adopt a non-null result: a null means "load failed / not loaded yet",
-  // and overwriting a good local snapshot with null would needlessly drop us
-  // back to not-ready.
   useEffect(() => {
-    let cancelled = false
-    if (!cached) {
-      loadSnapshot().then((next) => {
-        if (!cancelled && next) setSnapshot(next)
-      })
-    }
-    const onUpdate = (next: ExpertInstallStatus[]) => {
-      if (!cancelled) setSnapshot(next)
-    }
-    subscribers.add(onUpdate)
-    return () => {
-      cancelled = true
-      subscribers.delete(onUpdate)
-    }
-  }, [])
-
-  // Re-fetch when the window regains focus — the settings window links/unlinks
-  // skills while this conversation window stays mounted. The listener is shared
-  // at module scope (refcounted), so N mounted consumers trigger a single
-  // coalesced refresh per focus event rather than one scan each. The refresh
-  // notifies every subscriber (no direct setState here, so the lint rule against
-  // state-in-effect stays satisfied).
-  useEffect(() => {
-    acquireFocusRefresh()
-    return () => releaseFocusRefresh()
-  }, [])
+    if (!cache.getSnapshot()) void cache.loadSnapshot()
+    cache.acquireFocusRefresh(backendApi)
+    return () => cache.releaseFocusRefresh()
+  }, [cache, backendApi])
 
   // A pi pointed at a custom PI_CODING_AGENT_DIR isn't managed by codeg's
   // default-dir skill store. The custom dir lives in the agent registry's

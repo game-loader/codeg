@@ -21,8 +21,8 @@ use crate::app_error::AppCommandError;
 use crate::db::error::DbError;
 use crate::db::service::{folder_group_service, folder_service};
 use crate::db::AppDatabase;
-use crate::models::GitCredentials;
 use crate::models::{FolderDetail, FolderGroupDetail, FolderHistoryEntry, SidebarLayoutEntry};
+use crate::models::{GitCredentials, GitWorktreeInfo};
 use crate::web::event_bridge::EventEmitter;
 
 /// Configure a git command for remote operations:
@@ -472,10 +472,7 @@ pub(crate) fn ensure_pushable_branch_name(branch: &str) -> Result<(), AppCommand
 /// `show-ref --verify` deliberately, NOT `rev-parse --verify`: the latter takes
 /// a revision EXPRESSION, so `main^` and `main@{1}` would both resolve and slip
 /// through. `show-ref --verify` only accepts an exact ref path.
-async fn ensure_local_branch_exists(
-    path: &str,
-    branch: &str,
-) -> Result<(), AppCommandError> {
+async fn ensure_local_branch_exists(path: &str, branch: &str) -> Result<(), AppCommandError> {
     let output = crate::process::tokio_command("git")
         .args([
             "show-ref",
@@ -488,8 +485,9 @@ async fn ensure_local_branch_exists(
         .await
         .map_err(AppCommandError::io)?;
     if !output.status.success() {
-        return Err(AppCommandError::not_found("Branch not found")
-            .with_detail(format!("branch={branch}")));
+        return Err(
+            AppCommandError::not_found("Branch not found").with_detail(format!("branch={branch}"))
+        );
     }
     Ok(())
 }
@@ -588,7 +586,7 @@ async fn estimate_push_commit_count(path: &str, branch: Option<&str>) -> usize {
 pub async fn get_folder_core(db: &AppDatabase, folder_id: i32) -> Result<FolderDetail, DbError> {
     folder_service::get_folder_by_id(&db.conn, folder_id)
         .await?
-        .ok_or_else(|| DbError::Migration(format!("Folder {} not found", folder_id)))
+        .ok_or_else(|| DbError::NotFound(format!("Folder {} not found", folder_id)))
 }
 
 /// Emit a `folder://changed` Upsert so every client inserts-or-replaces the
@@ -965,7 +963,10 @@ pub async fn delete_folder_group_core(
     if !removed {
         return Err(AppCommandError::not_found("Folder group not found"));
     }
-    emit_folder_group_change(emitter, crate::web::event_bridge::FolderGroupChange::Deleted { id: group_id });
+    emit_folder_group_change(
+        emitter,
+        crate::web::event_bridge::FolderGroupChange::Deleted { id: group_id },
+    );
     // Members moved back to the top level, so their rows changed too.
     emit_folder_group_change(emitter, crate::web::event_bridge::FolderGroupChange::Layout);
     Ok(())
@@ -1377,10 +1378,7 @@ pub struct GitHeadInfo {
     pub short_sha: Option<String>,
 }
 
-async fn git_output(
-    path: &str,
-    args: &[&str],
-) -> Result<std::process::Output, AppCommandError> {
+async fn git_output(path: &str, args: &[&str]) -> Result<std::process::Output, AppCommandError> {
     crate::process::tokio_command("git")
         .args(args)
         .current_dir(path)
@@ -2751,7 +2749,9 @@ pub async fn git_show_file_base64(
         .map_err(AppCommandError::io)?;
 
     let oid = if oid_output.status.success() {
-        String::from_utf8_lossy(&oid_output.stdout).trim().to_string()
+        String::from_utf8_lossy(&oid_output.stdout)
+            .trim()
+            .to_string()
     } else {
         String::new()
     };
@@ -2798,7 +2798,9 @@ pub async fn git_show_file_base64(
         .map_err(|_| {
             AppCommandError::external_command(
                 "git cat-file returned an unreadable object size",
-                String::from_utf8_lossy(&size_output.stdout).trim().to_string(),
+                String::from_utf8_lossy(&size_output.stdout)
+                    .trim()
+                    .to_string(),
             )
         })?;
 
@@ -3045,10 +3047,7 @@ pub async fn git_list_all_branches(path: String) -> Result<GitBranchList, AppCom
         .current_dir(&path)
         .output();
 
-    let wt_fut = crate::process::tokio_command("git")
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(&path)
-        .output();
+    let wt_fut = git_worktree_inventory(&path);
 
     let (local_output, remote_output, wt_output) = tokio::join!(local_fut, remote_fut, wt_fut);
 
@@ -3075,20 +3074,20 @@ pub async fn git_list_all_branches(path: String) -> Result<GitBranchList, AppCom
     // Worktree entries, excluding the queried path's own checkout. git reports
     // the main working tree first, which is how it is singled out here.
     let (worktree_branches, main_worktree_branch) = match wt_output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(entries) => {
             let canonical_path =
                 std::fs::canonicalize(&path).unwrap_or_else(|_| PathBuf::from(&path));
             let mut branches = Vec::new();
             let mut main_branch = None;
-            for (index, (wt_path, branch)) in parse_worktrees(&stdout).into_iter().enumerate() {
-                let Some(branch) = branch else { continue };
+            for entry in entries {
+                let Some(branch) = entry.branch else { continue };
+                let wt_path = entry.path;
                 let wt_canonical =
                     std::fs::canonicalize(&wt_path).unwrap_or_else(|_| PathBuf::from(&wt_path));
                 if wt_canonical == canonical_path {
                     continue;
                 }
-                if index == 0 {
+                if entry.is_main {
                     main_branch = Some(branch.clone());
                 }
                 branches.push(branch);
@@ -3106,37 +3105,349 @@ pub async fn git_list_all_branches(path: String) -> Result<GitBranchList, AppCom
     })
 }
 
-/// Parse `git worktree list --porcelain` into `(worktree_path, branch)` pairs.
-/// Each porcelain block starts with a `worktree <path>` line and is terminated
-/// by a blank line; a `branch refs/heads/<name>` line carries the checked-out
-/// branch (absent for detached/bare worktrees → `None`). Trailing blocks with
-/// no terminating blank line are flushed at EOF.
-fn parse_worktrees(stdout: &str) -> Vec<(String, Option<String>)> {
-    let mut entries: Vec<(String, Option<String>)> = Vec::new();
-    let mut current_path: Option<String> = None;
-    let mut current_branch: Option<String> = None;
-
-    for line in stdout.lines() {
-        if let Some(p) = line.strip_prefix("worktree ") {
-            // Defensive flush in case a block wasn't blank-line terminated.
-            if let Some(path) = current_path.take() {
-                entries.push((path, current_branch.take()));
+/// Parse NUL-delimited porcelain without unquoting or trimming path/reason
+/// fields. Git emits an empty field between records; EOF also ends a record.
+fn parse_worktrees(stdout: &[u8]) -> Vec<GitWorktreeInfo> {
+    let mut entries = Vec::new();
+    let mut current: Option<GitWorktreeInfo> = None;
+    for field in stdout.split(|byte| *byte == 0) {
+        let field = String::from_utf8_lossy(field);
+        if let Some(path) = field.strip_prefix("worktree ") {
+            if let Some(entry) = current.take() {
+                entries.push(entry);
             }
-            current_path = Some(p.trim().to_string());
-            current_branch = None;
-        } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
-            current_branch = Some(b.trim().to_string());
-        } else if line.is_empty() {
-            if let Some(path) = current_path.take() {
-                entries.push((path, current_branch.take()));
+            current = Some(GitWorktreeInfo {
+                path: path.to_string(),
+                is_main: entries.is_empty(),
+                ..Default::default()
+            });
+        } else if field.is_empty() {
+            if let Some(entry) = current.take() {
+                entries.push(entry);
             }
-            current_branch = None;
+        } else if let Some(entry) = current.as_mut() {
+            if let Some(head) = field.strip_prefix("HEAD ") {
+                entry.head = Some(head.to_string());
+            } else if let Some(branch) = field.strip_prefix("branch refs/heads/") {
+                entry.branch = Some(branch.to_string());
+            } else if field == "detached" {
+                entry.detached = true;
+            } else if field == "bare" {
+                entry.bare = true;
+            } else if field == "locked" {
+                entry.locked = Some(String::new());
+            } else if let Some(reason) = field.strip_prefix("locked ") {
+                entry.locked = Some(reason.to_string());
+            } else if field == "prunable" {
+                entry.prunable = Some(String::new());
+            } else if let Some(reason) = field.strip_prefix("prunable ") {
+                entry.prunable = Some(reason.to_string());
+            }
         }
     }
-    if let Some(path) = current_path.take() {
-        entries.push((path, current_branch.take()));
+    if let Some(entry) = current {
+        entries.push(entry);
     }
     entries
+}
+
+/// Prefer -z while keeping ordinary worktrees usable on older Git. Old
+/// porcelain quotes reasons but cannot delimit paths containing newlines.
+async fn git_worktree_inventory(path: &str) -> Result<Vec<GitWorktreeInfo>, AppCommandError> {
+    let output = crate::process::tokio_command("git")
+        .args(["worktree", "list", "--porcelain", "-z"])
+        .env("LC_ALL", "C")
+        .current_dir(path)
+        .output()
+        .await
+        .map_err(AppCommandError::io)?;
+    if output.status.success() {
+        return Ok(parse_worktrees(&output.stdout));
+    }
+    if !String::from_utf8_lossy(&output.stderr).contains("unknown switch `z'") {
+        return Err(git_command_error("worktree list", &output.stderr));
+    }
+    let legacy = crate::process::tokio_command("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(path)
+        .output()
+        .await
+        .map_err(AppCommandError::io)?;
+    if !legacy.status.success() {
+        return Err(git_command_error("worktree list", &legacy.stderr));
+    }
+    let mut entries = parse_legacy_worktrees(&legacy.stdout)?;
+    verify_legacy_worktree_paths(path, &mut entries).await?;
+    Ok(entries)
+}
+
+fn ambiguous_legacy_worktrees() -> AppCommandError {
+    AppCommandError::new(
+        crate::app_error::AppErrorCode::DependencyMissing,
+        "Upgrade Git for ambiguous worktree paths (-z support is required)",
+    )
+}
+
+/// Legacy paths are printed raw. Enforce Git's field order and cardinality;
+/// registration verification below also catches injected complete records.
+fn parse_legacy_worktrees(stdout: &[u8]) -> Result<Vec<GitWorktreeInfo>, AppCommandError> {
+    let mut nul = Vec::with_capacity(stdout.len());
+    let mut stage = 0;
+    let mut bare = false;
+    let mut paths = HashSet::new();
+    for line in stdout.split(|byte| *byte == b'\n') {
+        if line.is_empty() {
+            if stage == 1 {
+                return Err(ambiguous_legacy_worktrees());
+            }
+            stage = 0;
+            bare = false;
+            nul.push(0);
+            continue;
+        }
+        if line.contains(&0) {
+            return Err(ambiguous_legacy_worktrees());
+        }
+        if let Some(path) = line.strip_prefix(b"worktree ") {
+            if stage != 0 || path.is_empty() || !paths.insert(path.to_vec()) {
+                return Err(ambiguous_legacy_worktrees());
+            }
+            stage = 1;
+        } else if let Some(head) = line.strip_prefix(b"HEAD ") {
+            if stage != 1
+                || ![40, 64].contains(&head.len())
+                || !head.iter().all(u8::is_ascii_hexdigit)
+            {
+                return Err(ambiguous_legacy_worktrees());
+            }
+            stage = 2;
+        } else if line == b"bare" {
+            if stage != 1 {
+                return Err(ambiguous_legacy_worktrees());
+            }
+            bare = true;
+            stage = 2;
+        } else if line == b"detached" || line.starts_with(b"branch refs/heads/") {
+            if stage != 2 || bare || line == b"branch refs/heads/" {
+                return Err(ambiguous_legacy_worktrees());
+            }
+            stage = 3;
+        } else if line == b"locked" || line.starts_with(b"locked ") {
+            if !(2..=3).contains(&stage) {
+                return Err(ambiguous_legacy_worktrees());
+            }
+            stage = 4;
+        } else if line == b"prunable" || line.starts_with(b"prunable ") {
+            if !(2..=4).contains(&stage) {
+                return Err(ambiguous_legacy_worktrees());
+            }
+            stage = 5;
+        } else {
+            return Err(ambiguous_legacy_worktrees());
+        }
+        let decoded = if let Some(split) = line.iter().position(|byte| *byte == b' ') {
+            let (prefix, value) = line.split_at(split + 1);
+            let mut field = prefix.to_vec();
+            field.extend(
+                decode_git_porcelain_value(value).map_err(|_| ambiguous_legacy_worktrees())?,
+            );
+            field
+        } else {
+            line.to_vec()
+        };
+        std::str::from_utf8(&decoded).map_err(|_| ambiguous_legacy_worktrees())?;
+        nul.extend(decoded);
+        nul.push(0);
+    }
+    if stage == 1 {
+        return Err(ambiguous_legacy_worktrees());
+    }
+    Ok(parse_worktrees(&nul))
+}
+
+/// Establish a one-to-one inventory using the undelimited paths in Git's
+/// registration files, never the potentially truncated legacy output. Refuse
+/// the whole inventory if any registration contains a newline or aliases
+/// another entry, including when a newline injects a valid blank record.
+async fn verify_legacy_worktree_paths(
+    repo: &str,
+    entries: &mut [GitWorktreeInfo],
+) -> Result<(), AppCommandError> {
+    let common = crate::process::tokio_command("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(repo)
+        .output()
+        .await
+        .map_err(AppCommandError::io)?;
+    if !common.status.success() {
+        return Err(git_command_error("rev-parse", &common.stderr));
+    }
+    let common = std::str::from_utf8(&common.stdout)
+        .map_err(|_| ambiguous_legacy_worktrees())?
+        .strip_suffix('\n')
+        .ok_or_else(ambiguous_legacy_worktrees)?;
+    // Preserve the common directory's spelling for Git's main-path rule;
+    // resolving a symlink named .git first would point at its backing store.
+    let common = if Path::new(common).is_absolute() {
+        PathBuf::from(common)
+    } else {
+        std::fs::canonicalize(repo)
+            .map_err(AppCommandError::io)?
+            .join(common)
+    };
+    // This is Git's get_main_worktree rule, also for bare/separate git dirs.
+    let main = if common.file_name().is_some_and(|name| name == ".git") {
+        common
+            .parent()
+            .ok_or_else(ambiguous_legacy_worktrees)?
+            .to_path_buf()
+    } else {
+        common.clone()
+    };
+    let checked_path = |path: &Path| -> Result<PathBuf, AppCommandError> {
+        let text = path.to_str().ok_or_else(ambiguous_legacy_worktrees)?;
+        if !path.is_absolute() || text.contains(['\n', '\r', '\0']) {
+            return Err(ambiguous_legacy_worktrees());
+        }
+        Ok(normalized_worktree_path(repo, text))
+    };
+    let main = checked_path(&main)?;
+    let mut registered = HashMap::from([(main.clone(), None)]);
+    match std::fs::read_dir(common.join("worktrees")) {
+        Ok(dirs) => {
+            for dir in dirs {
+                let dir = dir.map_err(AppCommandError::io)?;
+                let gitdir = std::fs::read(dir.path().join("gitdir"))
+                    .map_err(|_| ambiguous_legacy_worktrees())?;
+                let gitdir = std::str::from_utf8(&gitdir)
+                    .map_err(|_| ambiguous_legacy_worktrees())?
+                    .strip_suffix('\n')
+                    .ok_or_else(ambiguous_legacy_worktrees)?;
+                let path = Path::new(gitdir)
+                    .parent()
+                    .ok_or_else(ambiguous_legacy_worktrees)?;
+                if Path::new(gitdir)
+                    .file_name()
+                    .is_none_or(|name| name != ".git")
+                    || registered.contains_key(&checked_path(path)?)
+                {
+                    return Err(ambiguous_legacy_worktrees());
+                }
+                // Git 2.25's porcelain omits locks, including on missing
+                // checkouts. The verified registration is authoritative.
+                let locked = match std::fs::read(dir.path().join("locked")) {
+                    Ok(reason) => Some(
+                        String::from_utf8_lossy(&reason)
+                            .trim_matches(|c: char| c.is_ascii_whitespace())
+                            .to_string(),
+                    ),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(AppCommandError::io(error)),
+                };
+                registered.insert(checked_path(path)?, locked);
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(AppCommandError::io(error)),
+    }
+    if entries.len() != registered.len()
+        || entries
+            .first()
+            .is_none_or(|entry| normalized_worktree_path(repo, &entry.path) != main)
+    {
+        return Err(ambiguous_legacy_worktrees());
+    }
+    for entry in entries {
+        let locked = registered
+            .remove(&checked_path(Path::new(&entry.path))?)
+            .ok_or_else(ambiguous_legacy_worktrees)?;
+        if locked.is_some() {
+            entry.locked = locked;
+        }
+    }
+    Ok(())
+}
+
+/// Git's C quoting includes octal UTF-8 bytes and control-character escapes.
+/// Reject malformed values rather than risk selecting the wrong directory.
+fn decode_git_porcelain_value(value: &[u8]) -> Result<Vec<u8>, AppCommandError> {
+    if !value.starts_with(b"\"") {
+        return Ok(value.to_vec());
+    }
+    let invalid = || {
+        AppCommandError::external_command(
+            "Invalid quoted Git worktree field",
+            "Malformed porcelain output",
+        )
+    };
+    if value.len() < 2 || !value.ends_with(b"\"") {
+        return Err(invalid());
+    }
+    let mut decoded = Vec::new();
+    let mut bytes = value[1..value.len() - 1].iter().copied();
+    while let Some(byte) = bytes.next() {
+        if byte != b'\\' {
+            decoded.push(byte);
+            continue;
+        }
+        let escaped = bytes.next().ok_or_else(invalid)?;
+        decoded.push(match escaped {
+            b'a' => 7,
+            b'b' => 8,
+            b't' => b'\t',
+            b'n' => b'\n',
+            b'v' => 11,
+            b'f' => 12,
+            b'r' => b'\r',
+            b'\\' => b'\\',
+            b'"' => b'"',
+            b'0'..=b'3' => {
+                let second = bytes
+                    .next()
+                    .filter(|b| (b'0'..=b'7').contains(b))
+                    .ok_or_else(invalid)?;
+                let third = bytes
+                    .next()
+                    .filter(|b| (b'0'..=b'7').contains(b))
+                    .ok_or_else(invalid)?;
+                (escaped - b'0') * 64 + (second - b'0') * 8 + (third - b'0')
+            }
+            _ => return Err(invalid()),
+        });
+    }
+    Ok(decoded)
+}
+
+pub async fn git_list_worktrees_core(
+    path: String,
+) -> Result<Vec<GitWorktreeInfo>, AppCommandError> {
+    // Listing a bare repository is useful even though it cannot be opened as
+    // an editor workspace. Keep that exception local to this inventory API.
+    if !crate::git_repo::is_git_repo(Path::new(&path)) {
+        let bare = crate::process::tokio_command("git")
+            .args(["rev-parse", "--is-bare-repository"])
+            .current_dir(&path)
+            .output()
+            .await
+            .map_err(AppCommandError::io)?;
+        if !bare.status.success() || bare.stdout != b"true\n" {
+            ensure_git_repo(&path)?;
+        }
+    }
+    let mut entries = git_worktree_inventory(&path).await?;
+    for entry in &mut entries {
+        if let Ok(path) = std::fs::canonicalize(&entry.path) {
+            entry.path = crate::paths::simplify_verbatim_path(&path)
+                .to_string_lossy()
+                .into_owned();
+        }
+    }
+    Ok(entries)
+}
+
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn git_list_worktrees(path: String) -> Result<Vec<GitWorktreeInfo>, AppCommandError> {
+    git_list_worktrees_core(path).await
 }
 
 /// Resolve where `branch` is checked out and which registered folder owns that
@@ -3151,21 +3462,11 @@ pub async fn resolve_worktree_folder_core(
 ) -> Result<WorktreeResolution, AppCommandError> {
     ensure_git_repo(&repo_path)?;
 
-    let output = crate::process::tokio_command("git")
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(&repo_path)
-        .output()
-        .await
-        .map_err(AppCommandError::io)?;
-    if !output.status.success() {
-        return Err(git_command_error("worktree list", &output.stderr));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let wt_path = parse_worktrees(&stdout)
+    let wt_path = git_list_worktrees_core(repo_path)
+        .await?
         .into_iter()
-        .find(|(_, b)| b.as_deref() == Some(branch.as_str()))
-        .map(|(p, _)| p);
+        .find(|entry| entry.branch.as_deref() == Some(branch.as_str()))
+        .map(|entry| entry.path);
 
     let Some(wt_path) = wt_path else {
         // Branch is not checked out in any worktree → caller checks it out in root.
@@ -3245,24 +3546,81 @@ pub async fn git_remove_worktree_core(
     force: bool,
 ) -> Result<GitWorktreeRemoval, AppCommandError> {
     ensure_git_repo(&repo_path)?;
-
-    let listed = crate::process::tokio_command("git")
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(&repo_path)
-        .output()
-        .await
-        .map_err(AppCommandError::io)?;
-    if !listed.status.success() {
-        return Err(git_command_error("worktree list", &listed.stderr));
-    }
-    let entries = parse_worktrees(&String::from_utf8_lossy(&listed.stdout));
-    // `git worktree list` always reports the main working tree first.
-    let main_path = entries.first().map(|(path, _)| path.clone());
-    let hosting = entries
+    let hosting = git_list_worktrees_core(repo_path.clone())
+        .await?
         .into_iter()
-        .find(|(_, branch)| branch.as_deref() == Some(branch_name.as_str()))
-        .map(|(path, _)| path);
+        .find(|entry| entry.branch.as_deref() == Some(branch_name.as_str()));
+    remove_worktree_entry(
+        emitter,
+        db,
+        repo_path,
+        hosting,
+        Some(branch_name),
+        source_folder_id,
+        delete_branch,
+        force,
+        false,
+    )
+    .await
+}
 
+/// A path identifies detached checkouts too. Only an inventory entry can be
+/// removed; a caller-supplied directory is never passed straight to Git.
+#[allow(clippy::too_many_arguments)]
+pub async fn git_remove_worktree_path_core(
+    emitter: &EventEmitter,
+    db: &AppDatabase,
+    repo_path: String,
+    worktree_path: String,
+    source_folder_id: i32,
+    delete_branch: bool,
+    force: bool,
+) -> Result<GitWorktreeRemoval, AppCommandError> {
+    let target = normalized_worktree_path(&repo_path, &worktree_path);
+    let hosting = git_list_worktrees_core(repo_path.clone())
+        .await?
+        .into_iter()
+        .find(|entry| normalized_worktree_path(&repo_path, &entry.path) == target)
+        .ok_or_else(|| {
+            AppCommandError::not_found("Worktree path is not registered in this repository")
+        })?;
+    let branch = hosting.branch.clone();
+    remove_worktree_entry(
+        emitter,
+        db,
+        repo_path,
+        Some(hosting),
+        branch,
+        source_folder_id,
+        delete_branch,
+        force,
+        true,
+    )
+    .await
+}
+
+fn normalized_worktree_path(repo: &str, path: &str) -> PathBuf {
+    let path = Path::new(path);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        Path::new(repo).join(path)
+    };
+    std::fs::canonicalize(&absolute).unwrap_or(absolute)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn remove_worktree_entry(
+    emitter: &EventEmitter,
+    db: &AppDatabase,
+    repo_path: String,
+    hosting: Option<GitWorktreeInfo>,
+    branch_name: Option<String>,
+    source_folder_id: i32,
+    delete_branch: bool,
+    force: bool,
+    cleanup_folder: bool,
+) -> Result<GitWorktreeRemoval, AppCommandError> {
     let mut removal = GitWorktreeRemoval {
         worktree_path: None,
         branch_deleted: false,
@@ -3270,10 +3628,16 @@ pub async fn git_remove_worktree_core(
         reparented: 0,
     };
 
-    if let Some(worktree_path) = hosting {
-        let canonical = std::fs::canonicalize(&worktree_path)
-            .unwrap_or_else(|_| PathBuf::from(&worktree_path));
-        if main_path.as_deref() == Some(worktree_path.as_str()) {
+    if let Some(entry) = hosting {
+        let worktree_path = entry.path;
+        if entry.bare {
+            return Err(AppCommandError::invalid_input(
+                "A bare repository cannot be removed as a worktree",
+            ));
+        }
+        let canonical =
+            std::fs::canonicalize(&worktree_path).unwrap_or_else(|_| PathBuf::from(&worktree_path));
+        if entry.is_main {
             return Err(
                 AppCommandError::invalid_input("The main working tree cannot be removed")
                     .with_detail(worktree_path),
@@ -3311,6 +3675,12 @@ pub async fn git_remove_worktree_core(
             }
         }
 
+        if let Some(reason) = entry.locked {
+            return Err(
+                AppCommandError::invalid_input("A locked worktree cannot be removed")
+                    .with_detail(reason),
+            );
+        }
         let mut args = vec!["worktree", "remove"];
         if force {
             args.push("--force");
@@ -3329,7 +3699,7 @@ pub async fn git_remove_worktree_core(
             // The directory was deleted behind git's back — drop the stale
             // registration so it can't block the branch delete below.
             let pruned = crate::process::tokio_command("git")
-                .args(["worktree", "prune"])
+                .args(["worktree", "prune", "--expire", "now"])
                 .current_dir(&repo_path)
                 .output()
                 .await
@@ -3338,15 +3708,29 @@ pub async fn git_remove_worktree_core(
                 return Err(git_command_error("worktree prune", &pruned.stderr));
             }
         }
+        // Neither a successful prune nor a successful remove is proof that
+        // this registration disappeared. Preserve all Codeg state until Git
+        // confirms removal, including when a missing checkout was retained.
+        if git_worktree_inventory(&repo_path)
+            .await?
+            .iter()
+            .any(|entry| normalized_worktree_path(&repo_path, &entry.path) == canonical)
+        {
+            return Err(AppCommandError::external_command(
+                "Git worktree registration remains after removal",
+                if removed.status.success() {
+                    worktree_path.clone()
+                } else {
+                    String::from_utf8_lossy(&removed.stderr).into_owned()
+                },
+            ));
+        }
         removal.worktree_path = Some(worktree_path.clone());
 
-        // Only the "delete everything" variant drops the folder: removing just
-        // the checkout is how you free a branch while keeping the workspace
-        // entry (and its sessions) for a worktree you intend to recreate. For
-        // the same reason that variant leaves a settled task's `worktree_folder_id`
-        // pointing here — recreating the directory makes the link whole again,
-        // and detaching it now would cost the task its merge path.
-        if delete_branch {
+        // Path removal closes the removed workspace, including detached trees.
+        // The legacy branch-only variant preserves its folder and task linkage
+        // when keeping the branch, so recreating that checkout still works.
+        if delete_branch || cleanup_folder {
             if let Some(wt_folder) = wt_folder {
                 if let Some(project_folder_id) =
                     reparent_target(db, wt_folder.id, source_folder_id).await
@@ -3370,7 +3754,7 @@ pub async fn git_remove_worktree_core(
         }
     }
 
-    if delete_branch {
+    if let Some(branch_name) = branch_name.filter(|_| delete_branch) {
         let flag = if force { "-D" } else { "-d" };
         let deleted = crate::process::tokio_command("git")
             .args(["branch", flag, &branch_name])
@@ -3394,6 +3778,29 @@ pub async fn git_remove_worktree_core(
     Ok(removal)
 }
 
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn git_remove_worktree_path(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    path: String,
+    worktree_path: String,
+    source_folder_id: i32,
+    delete_branch: bool,
+    force: bool,
+) -> Result<GitWorktreeRemoval, AppCommandError> {
+    git_remove_worktree_path_core(
+        &EventEmitter::Tauri(app),
+        &db,
+        path,
+        worktree_path,
+        source_folder_id,
+        delete_branch,
+        force,
+    )
+    .await
+}
+
 /// Where a removed worktree folder's conversations belong: the root repo folder
 /// it was created from, falling back to the caller's own root when the row has
 /// no recorded parent. `None` means there is nowhere safe to move them, and the
@@ -3410,11 +3817,13 @@ async fn reparent_target(
         .and_then(|f| f.parent_id);
     let target = match recorded {
         Some(parent_id) => Some(parent_id),
-        None if source_folder_id > 0 => folder_service::get_folder_by_id(&db.conn, source_folder_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|source| source.parent_id.unwrap_or(source.id)),
+        None if source_folder_id > 0 => {
+            folder_service::get_folder_by_id(&db.conn, source_folder_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|source| source.parent_id.unwrap_or(source.id))
+        }
         None => None,
     };
     target.filter(|id| *id != worktree_folder_id)
@@ -3475,7 +3884,9 @@ async fn converge_removed_worktree_folder(
     let folder_gone = match folder_service::soft_delete_folder(&db.conn, worktree_folder_id).await {
         Ok(()) => true,
         Err(e) => {
-            tracing::warn!("[folders] worktree folder {worktree_folder_id} soft-delete failed: {e}");
+            tracing::warn!(
+                "[folders] worktree folder {worktree_folder_id} soft-delete failed: {e}"
+            );
             false
         }
     };
@@ -3985,10 +4396,7 @@ fn unquote_git_path(path: &str) -> String {
     }
 }
 
-pub(crate) fn resolve_tree_path(
-    root: &Path,
-    rel_path: &str,
-) -> Result<PathBuf, AppCommandError> {
+pub(crate) fn resolve_tree_path(root: &Path, rel_path: &str) -> Result<PathBuf, AppCommandError> {
     let rel = Path::new(rel_path);
     if rel.is_absolute() {
         return Err(AppCommandError::invalid_input("Path must be relative"));
@@ -5194,17 +5602,14 @@ pub async fn read_workspace_file_base64(
         // read race: the original `target` symlink can't be re-resolved (we use
         // the canonical path), a final-component symlink swapped in after the
         // check makes the open fail, and metadata/read never re-look-up the path.
-        let canonical_root =
-            std::fs::canonicalize(&root).map_err(AppCommandError::io)?;
-        let canonical_target =
-            std::fs::canonicalize(&target).map_err(AppCommandError::io)?;
+        let canonical_root = std::fs::canonicalize(&root).map_err(AppCommandError::io)?;
+        let canonical_target = std::fs::canonicalize(&target).map_err(AppCommandError::io)?;
         if !is_within_workspace(&canonical_root, &canonical_target) {
             return Err(AppCommandError::invalid_input(
                 "Path is outside workspace root",
             ));
         }
-        let mut file =
-            open_no_follow(&canonical_target).map_err(AppCommandError::io)?;
+        let mut file = open_no_follow(&canonical_target).map_err(AppCommandError::io)?;
         let metadata = file.metadata().map_err(AppCommandError::io)?;
         if !metadata.is_file() {
             return Err(AppCommandError::invalid_input("Path is not a file"));
@@ -6296,10 +6701,7 @@ async fn get_unpushed_hashes(
             .current_dir(path)
             .output()
             .await
-            .map(|o| {
-                o.status.success()
-                    && !String::from_utf8_lossy(&o.stdout).trim().is_empty()
-            })
+            .map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
             .unwrap_or(false);
         let mut rev_args = vec!["rev-list".to_string(), limit_arg.clone()];
         if let Some(a) = author.filter(|a| !a.is_empty()) {
@@ -6537,10 +6939,7 @@ mod tests {
         // BRE metacharacters are backslash-escaped...
         assert_eq!(git_author_match_pattern("a.b*c"), "^a\\.b\\*c <");
         assert_eq!(git_author_match_pattern("na[me]"), "^na\\[me\\] <");
-        assert_eq!(
-            git_author_match_pattern("back\\slash"),
-            "^back\\\\slash <"
-        );
+        assert_eq!(git_author_match_pattern("back\\slash"), "^back\\\\slash <");
         // ...but `|` is literal in BRE, so a name like `程相|cx` is left as-is.
         assert_eq!(git_author_match_pattern("程相|cx"), "^程相|cx <");
     }
@@ -6669,9 +7068,9 @@ mod tests {
         // Intermediate directory entries are emitted alongside files — the
         // `@`-mention picker relies on directories being present.
         assert!(
-            entries.iter().any(
-                |e| e.path == "a" && matches!(e.kind, WorkspaceEntryKind::Dir)
-            ),
+            entries
+                .iter()
+                .any(|e| e.path == "a" && matches!(e.kind, WorkspaceEntryKind::Dir)),
             "directory entries must be present"
         );
     }
@@ -6950,7 +7349,7 @@ mod tests {
 
         let result = git_log(
             p.to_string_lossy().to_string(),
-            Some(5),                   // limit → status window is `-5`
+            Some(5), // limit → status window is `-5`
             None,
             None,
             None,
@@ -6989,7 +7388,14 @@ mod tests {
         // combination that made the literal-HEAD comparison wrong. Remote-tracking
         // refs are faked with update-ref so the test needs no network.
         git_run(p, &["update-ref", "refs/remotes/origin/main", &base]);
-        git_run(p, &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+        git_run(
+            p,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
         git_run(p, &["checkout", "-q", "-b", "feature"]);
         git_run(p, &["commit", "-q", "--allow-empty", "-m", "f1"]);
         let f1 = git_capture(p, &["rev-parse", "HEAD"]);
@@ -7068,7 +7474,14 @@ mod tests {
         git_run(p, &["commit", "-q", "--allow-empty", "-m", "c1"]);
         let c1 = git_capture(p, &["rev-parse", "HEAD"]);
         git_run(p, &["update-ref", "refs/remotes/origin/main", &c1]);
-        git_run(p, &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+        git_run(
+            p,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
         git_run(p, &["commit", "-q", "--allow-empty", "-m", "c2"]);
         git_run(p, &["checkout", "-q", "--detach"]);
 
@@ -7446,7 +7859,10 @@ mod tests {
             .await
             .expect("ensure folder");
 
-        assert_eq!(entry.id, opened.id, "the same row is revived, not a new one");
+        assert_eq!(
+            entry.id, opened.id,
+            "the same row is revived, not a new one"
+        );
         assert!(
             folder_service::get_folder_by_id(&db.conn, opened.id)
                 .await
@@ -7784,7 +8200,8 @@ mod tests {
             .await
             .expect_err("git refuses a branch held by a worktree");
         assert!(
-            format!("{refused:?}").contains("used by worktree"),
+            format!("{refused:?}").contains("used by worktree")
+                || format!("{refused:?}").contains("checked out at"),
             "expected git's worktree refusal, got: {refused:?}"
         );
 
@@ -8069,57 +8486,679 @@ mod tests {
         assert!(branches.local.contains(&"main".to_string()));
     }
 
+    #[tokio::test]
+    async fn worktree_inventory_reports_locked_prunable_and_bare() {
+        let (dir, repo, wt) = repo_with_worktree();
+        git_run(
+            dir.path(),
+            &["worktree", "lock", "--reason", "keep\nspace", &wt],
+        );
+        let entries = git_list_worktrees_core(repo.clone()).await.unwrap();
+        assert_eq!(entries[1].locked.as_deref(), Some("keep\nspace"));
+        git_run(dir.path(), &["worktree", "unlock", &wt]);
+        std::fs::remove_dir_all(&wt).unwrap();
+        let entries = git_list_worktrees_core(repo).await.unwrap();
+        assert!(entries[1].prunable.is_some());
+        let bare = tempfile::tempdir().unwrap();
+        git_run(bare.path(), &["init", "--bare", "-q"]);
+        let entries = git_list_worktrees_core(bare.path().to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].bare);
+        assert!(entries[0].is_main);
+        assert_eq!(entries[0].head, None);
+        let db = fresh_in_memory_db().await;
+        let bare_path = bare.path().to_string_lossy().into_owned();
+        assert!(git_remove_worktree_core(
+            &test_emitter(),
+            &db,
+            bare_path.clone(),
+            "main".into(),
+            0,
+            false,
+            true
+        )
+        .await
+        .is_err());
+        let error = git_remove_worktree_path_core(
+            &test_emitter(),
+            &db,
+            bare_path.clone(),
+            bare_path,
+            0,
+            false,
+            true,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.message.contains("bare repository"));
+    }
+
+    #[tokio::test]
+    async fn remove_worktree_path_protects_current_main_dirty_locked_and_unknown() {
+        let db = fresh_in_memory_db().await;
+        let (dir, repo, wt) = repo_with_worktree();
+        let root = open_folder_core(&db, repo.clone()).await.unwrap();
+        for (from, target, message) in [
+            (&repo, &repo, "main working tree"),
+            (&wt, &wt, "currently in use"),
+            (&repo, &format!("{repo}/unknown"), "not registered"),
+        ] {
+            let err = git_remove_worktree_path_core(
+                &test_emitter(),
+                &db,
+                from.clone(),
+                target.clone(),
+                root.id,
+                true,
+                true,
+            )
+            .await
+            .unwrap_err();
+            assert!(err.message.contains(message), "{err:?}");
+        }
+        std::fs::write(Path::new(&wt).join("untracked"), "keep").unwrap();
+        assert!(git_remove_worktree_path_core(
+            &test_emitter(),
+            &db,
+            repo.clone(),
+            wt.clone(),
+            root.id,
+            false,
+            false
+        )
+        .await
+        .is_err());
+        assert!(Path::new(&wt).exists());
+        git_run(dir.path(), &["worktree", "lock", &wt]);
+        let err = git_remove_worktree_path_core(
+            &test_emitter(),
+            &db,
+            repo.clone(),
+            wt.clone(),
+            root.id,
+            true,
+            true,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.message.contains("locked"));
+        git_run(dir.path(), &["worktree", "unlock", &wt]);
+        git_remove_worktree_path_core(&test_emitter(), &db, repo, wt.clone(), root.id, false, true)
+            .await
+            .unwrap();
+        assert!(!Path::new(&wt).exists());
+    }
+
+    #[tokio::test]
+    async fn remove_worktree_path_detached_refuses_running_and_merging_tasks() {
+        use crate::db::entities::work_task::{Entity, WorkTaskStatus};
+        use sea_orm::{ActiveModelTrait, EntityTrait, IntoActiveModel, Set};
+        let db = fresh_in_memory_db().await;
+        let (dir, repo, wt) = repo_with_worktree();
+        git_run(Path::new(&wt), &["checkout", "--detach"]);
+        let root = open_folder_core(&db, repo.clone()).await.unwrap();
+        let folder = open_worktree_folder_core(&db, wt.clone(), root.id)
+            .await
+            .unwrap();
+        let task = seed_task_on_worktree(&db, root.id, folder.id).await;
+        for status in [WorkTaskStatus::Running, WorkTaskStatus::Merging] {
+            let mut row = Entity::find_by_id(task)
+                .one(&db.conn)
+                .await
+                .unwrap()
+                .unwrap()
+                .into_active_model();
+            row.status = Set(status);
+            row.update(&db.conn).await.unwrap();
+            let err = git_remove_worktree_path_core(
+                &test_emitter(),
+                &db,
+                repo.clone(),
+                wt.clone(),
+                root.id,
+                true,
+                true,
+            )
+            .await
+            .unwrap_err();
+            assert!(err.message.contains("still working"));
+            assert!(Path::new(&wt).exists());
+        }
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn remove_worktree_path_preserves_unmerged_branch_and_converges_folder() {
+        let db = fresh_in_memory_db().await;
+        let (_dir, repo, wt) = repo_with_worktree();
+        git_run(
+            Path::new(&wt),
+            &["commit", "-q", "--allow-empty", "-m", "unmerged"],
+        );
+        let root = open_folder_core(&db, repo.clone()).await.unwrap();
+        let folder = open_worktree_folder_core(&db, wt.clone(), root.id)
+            .await
+            .unwrap();
+        assert!(git_remove_worktree_path_core(
+            &test_emitter(),
+            &db,
+            repo.clone(),
+            wt.clone(),
+            root.id,
+            true,
+            false
+        )
+        .await
+        .is_err());
+        assert!(!Path::new(&wt).exists());
+        assert!(git_list_all_branches(repo)
+            .await
+            .unwrap()
+            .local
+            .contains(&"wt".into()));
+        assert!(folder_service::get_folder_by_id(&db.conn, folder.id)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn worktree_add_honors_explicit_base() {
+        let (dir, repo, _wt) = repo_with_worktree();
+        let base = String::from_utf8(
+            crate::process::std_command("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(dir.path())
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        git_run(
+            dir.path(),
+            &["commit", "-q", "--allow-empty", "-m", "later"],
+        );
+        let new_path = dir
+            .path()
+            .join("base checkout")
+            .to_string_lossy()
+            .into_owned();
+        git_worktree_add(
+            repo,
+            "explicit-base".into(),
+            new_path.clone(),
+            Some(base.clone()),
+        )
+        .await
+        .unwrap();
+        let entries = git_list_worktrees_core(new_path.clone()).await.unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry.branch.as_deref() == Some("explicit-base"))
+                .unwrap()
+                .head
+                .as_ref(),
+            Some(&base)
+        );
+    }
+
     #[test]
-    fn parse_worktrees_extracts_path_branch_pairs() {
-        // Main tree + a linked worktree + a detached worktree, trailing blank line.
-        let stdout = "\
-worktree /repo/main
+    fn parse_worktrees_legacy_decodes_paths_reasons_and_octal_utf8() {
+        let input = br#"worktree /repo/main
 HEAD aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 branch refs/heads/main
 
-worktree /repo/wt-feature
+worktree "/repo/space\n\t\"\\\344\270\255 "
 HEAD bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-branch refs/heads/feature-x
-
-worktree /repo/wt-detached
-HEAD cccccccccccccccccccccccccccccccccccccccc
 detached
+locked "reason\nwith space "
+prunable gone
+"#;
+        let entries = parse_legacy_worktrees(input).unwrap();
+        assert_eq!(entries[1].path, "/repo/space\n\t\"\\中 ");
+        assert_eq!(entries[1].locked.as_deref(), Some("reason\nwith space "));
+        assert!(entries[1].detached);
+        assert_eq!(entries[1].prunable.as_deref(), Some("gone"));
+        assert!(decode_git_porcelain_value(br#""bad\x""#).is_err());
+        assert!(parse_legacy_worktrees(b"worktree /repo/new\nline\nHEAD abc\n").is_err());
+    }
 
-";
-        let entries = parse_worktrees(stdout);
+    #[test]
+    fn legacy_worktrees_reject_duplicate_out_of_order_and_injected_metadata() {
+        let head = "a".repeat(40);
+        for record in [
+            format!("worktree /repo\nHEAD {head}\nHEAD {head}\nbranch refs/heads/main\n\n"),
+            format!("worktree /repo\nbranch refs/heads/main\nHEAD {head}\n\n"),
+            format!("worktree /repo\nHEAD {head}\nbranch refs/heads/main\ndetached\n\n"),
+            format!("worktree /repo\nHEAD {head}\ndetached\nlocked\nlocked injected\n\n"),
+            format!("worktree /repo\nHEAD {head}\ndetached\nprunable\nlocked\n\n"),
+            format!("worktree /repo\nHEAD {head}\nworktree /new\nHEAD {head}\n\n"),
+            format!("worktree /repo\nHEAD {head}\n\nworktree /repo\nHEAD {head}\n\n"),
+            "worktree /repo\n\n".into(),
+        ] {
+            let error = parse_legacy_worktrees(record.as_bytes()).unwrap_err();
+            assert!(matches!(
+                error.code,
+                crate::app_error::AppErrorCode::DependencyMissing
+            ));
+        }
+    }
+
+    // init -b postdates Git 2.25; these compatibility fixtures deliberately
+    // use commands supported by both old versions of the fallback.
+    fn legacy_worktree_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        git_run(dir.path(), &["init", "-q"]);
+        git_run(dir.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git_run(dir.path(), &["commit", "-q", "--allow-empty", "-m", "base"]);
+        dir
+    }
+
+    async fn checked_legacy_inventory(repo: &str) -> Result<Vec<GitWorktreeInfo>, AppCommandError> {
+        let output = crate::process::tokio_command("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(repo)
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let mut entries = parse_legacy_worktrees(&output.stdout)?;
+        verify_legacy_worktree_paths(repo, &mut entries).await?;
+        Ok(entries)
+    }
+
+    #[tokio::test]
+    async fn legacy_worktrees_verify_ordinary_detached_locked_missing_and_bare_registrations() {
+        let dir = legacy_worktree_repo();
+        let repo = dir.path().to_str().unwrap();
+        let wt = dir.path().join("ordinary space ");
+        git_run(
+            dir.path(),
+            &["worktree", "add", "-q", "--detach", wt.to_str().unwrap()],
+        );
+        git_run(
+            dir.path(),
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                "keep\nreason",
+                wt.to_str().unwrap(),
+            ],
+        );
+        let entries = checked_legacy_inventory(wt.to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries[1].detached);
+        assert_eq!(entries[1].locked.as_deref(), Some("keep\nreason"));
+        let db = fresh_in_memory_db().await;
+        assert!(git_remove_worktree_path_core(
+            &test_emitter(),
+            &db,
+            repo.into(),
+            wt.to_str().unwrap().into(),
+            0,
+            false,
+            true
+        )
+        .await
+        .is_err());
+        assert!(wt.is_dir());
+        git_run(dir.path(), &["worktree", "unlock", wt.to_str().unwrap()]);
+        std::fs::remove_dir_all(&wt).unwrap();
+        let missing = checked_legacy_inventory(repo).await.unwrap();
+        assert_eq!(missing.len(), 2);
+        assert_eq!(Path::new(&missing[1].path), wt);
+        let bare = tempfile::tempdir().unwrap();
+        git_run(bare.path(), &["init", "-q", "--bare"]);
+        assert!(
+            checked_legacy_inventory(bare.path().to_str().unwrap())
+                .await
+                .unwrap()[0]
+                .bare
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_worktrees_missing_locked_refuses_force_before_folder_session_tab_or_task_changes(
+    ) {
+        use crate::db::service::{conversation_service, tab_service, work_task_service};
+        use crate::models::{agent::AgentType, OpenedTab};
+
+        let dir = legacy_worktree_repo();
+        let repo = dir.path().to_str().unwrap().to_string();
+        let wt = dir.path().join("missing locked");
+        let wt_path = wt.to_str().unwrap().to_string();
+        git_run(dir.path(), &["worktree", "add", "-q", "-b", "wt", &wt_path]);
+        let db = fresh_in_memory_db().await;
+        let root = open_folder_core(&db, repo.clone()).await.unwrap();
+        let folder = open_worktree_folder_core(&db, wt_path.clone(), root.id)
+            .await
+            .unwrap();
+        let conv =
+            conversation_service::create(&db.conn, folder.id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        tab_service::save_all_tabs(
+            &db.conn,
+            vec![OpenedTab {
+                id: 1,
+                folder_id: folder.id,
+                conversation_id: Some(conv.id),
+                agent_type: AgentType::ClaudeCode,
+                position: 0,
+                is_active: true,
+                is_pinned: false,
+            }],
+        )
+        .await
+        .unwrap();
+        let tabs_before =
+            serde_json::to_value(tab_service::snapshot_tabs(&db.conn).await.unwrap()).unwrap();
+        let task = seed_task_on_worktree(&db, root.id, folder.id).await;
+        git_run(
+            dir.path(),
+            &["worktree", "lock", "--reason", "keep\nmissing", &wt_path],
+        );
+        std::fs::remove_dir_all(&wt).unwrap();
+
+        let legacy = checked_legacy_inventory(&repo).await.unwrap();
+        assert_eq!(legacy[1].locked.as_deref(), Some("keep\nmissing"));
+        for by_path in [None, Some(false), Some(true)] {
+            for force in [false, true] {
+                let error = if by_path.is_none() {
+                    // Model a lock acquired after the inventory snapshot.
+                    // Git refuses remove and prune exits successfully while
+                    // retaining the registration: the postcondition must
+                    // still stop convergence, independently of hydration.
+                    let mut hosting = git_worktree_inventory(&repo)
+                        .await
+                        .unwrap()
+                        .into_iter()
+                        .find(|entry| entry.path == wt_path)
+                        .unwrap();
+                    hosting.locked = None;
+                    remove_worktree_entry(
+                        &test_emitter(),
+                        &db,
+                        repo.clone(),
+                        Some(hosting),
+                        Some("wt".into()),
+                        root.id,
+                        true,
+                        force,
+                        true,
+                    )
+                    .await
+                } else if by_path == Some(true) {
+                    git_remove_worktree_path_core(
+                        &test_emitter(),
+                        &db,
+                        repo.clone(),
+                        wt_path.clone(),
+                        root.id,
+                        true,
+                        force,
+                    )
+                    .await
+                } else {
+                    git_remove_worktree_core(
+                        &test_emitter(),
+                        &db,
+                        repo.clone(),
+                        "wt".into(),
+                        root.id,
+                        true,
+                        force,
+                    )
+                    .await
+                }
+                .unwrap_err();
+                assert!(
+                    error.message.contains(if by_path.is_none() {
+                        "registration remains"
+                    } else {
+                        "locked"
+                    }),
+                    "{error:?}"
+                );
+                assert!(folder_service::get_folder_by_id(&db.conn, folder.id)
+                    .await
+                    .unwrap()
+                    .is_some());
+                let session = conversation_service::get_by_id(&db.conn, conv.id)
+                    .await
+                    .unwrap();
+                assert_eq!(session.folder_id, folder.id);
+                assert_eq!(session.origin_cwd, conv.origin_cwd);
+                assert_eq!(
+                    serde_json::to_value(tab_service::snapshot_tabs(&db.conn).await.unwrap())
+                        .unwrap(),
+                    tabs_before
+                );
+                assert_eq!(
+                    work_task_service::get_model(&db.conn, task)
+                        .await
+                        .unwrap()
+                        .worktree_folder_id,
+                    Some(folder.id)
+                );
+                assert_eq!(git_worktree_inventory(&repo).await.unwrap().len(), 2);
+                assert!(git_list_all_branches(repo.clone())
+                    .await
+                    .unwrap()
+                    .local
+                    .contains(&"wt".into()));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_worktrees_missing_cleanup_removes_registration_before_folder_convergence() {
+        use crate::db::service::{conversation_service, work_task_service};
+        use crate::models::agent::AgentType;
+
+        for by_path in [false, true] {
+            let dir = legacy_worktree_repo();
+            let repo = dir.path().to_str().unwrap().to_string();
+            let wt = dir.path().join("missing prunable");
+            let wt_path = wt.to_str().unwrap().to_string();
+            git_run(dir.path(), &["worktree", "add", "-q", "-b", "wt", &wt_path]);
+            // Even with a long configured prune expiry, explicit cleanup must
+            // remove this registration or fail before changing Codeg state.
+            git_run(dir.path(), &["config", "gc.worktreePruneExpire", "never"]);
+            let db = fresh_in_memory_db().await;
+            let root = open_folder_core(&db, repo.clone()).await.unwrap();
+            let folder = open_worktree_folder_core(&db, wt_path.clone(), root.id)
+                .await
+                .unwrap();
+            let conv = conversation_service::create(
+                &db.conn,
+                folder.id,
+                AgentType::ClaudeCode,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            let task = seed_task_on_worktree(&db, root.id, folder.id).await;
+            std::fs::remove_dir_all(&wt).unwrap();
+            assert_eq!(git_worktree_inventory(&repo).await.unwrap().len(), 2);
+            let removal = if by_path {
+                git_remove_worktree_path_core(
+                    &test_emitter(),
+                    &db,
+                    repo.clone(),
+                    wt_path.clone(),
+                    root.id,
+                    false,
+                    false,
+                )
+                .await
+            } else {
+                git_remove_worktree_core(
+                    &test_emitter(),
+                    &db,
+                    repo.clone(),
+                    "wt".into(),
+                    root.id,
+                    false,
+                    false,
+                )
+                .await
+            }
+            .unwrap();
+            assert_eq!(removal.worktree_path.as_deref(), Some(wt_path.as_str()));
+            assert_eq!(git_worktree_inventory(&repo).await.unwrap().len(), 1);
+            assert!(git_list_all_branches(repo.clone())
+                .await
+                .unwrap()
+                .local
+                .contains(&"wt".into()));
+            let session = conversation_service::get_by_id(&db.conn, conv.id)
+                .await
+                .unwrap();
+            let task = work_task_service::get_model(&db.conn, task).await.unwrap();
+            if by_path {
+                assert_eq!(removal.folder_id, Some(folder.id));
+                assert_eq!(session.folder_id, root.id);
+                assert_eq!(session.origin_cwd.as_deref(), Some(wt_path.as_str()));
+                assert!(folder_service::get_folder_by_id(&db.conn, folder.id)
+                    .await
+                    .unwrap()
+                    .is_none());
+                assert_eq!(task.worktree_folder_id, None);
+            } else {
+                assert_eq!(removal.folder_id, None);
+                assert_eq!(session.folder_id, folder.id);
+                assert!(folder_service::get_folder_by_id(&db.conn, folder.id)
+                    .await
+                    .unwrap()
+                    .is_some());
+                assert_eq!(task.worktree_folder_id, Some(folder.id));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_worktrees_reject_structurally_valid_forged_blank_records_against_registration()
+    {
+        let dir = legacy_worktree_repo();
+        let repo = dir.path().to_str().unwrap();
+        let head = git_capture(dir.path(), &["rev-parse", "HEAD"]);
+        let alias = dir.path().join("alias");
+        let forged = dir.path().join("forged");
+        let newline = format!(
+            "{}\nHEAD {head}\nbranch refs/heads/injected\n\nworktree {}",
+            alias.display(),
+            forged.display()
+        );
+        git_run(
+            dir.path(),
+            &["worktree", "add", "-q", "-b", "newline", &newline],
+        );
+        let output = crate::process::tokio_command("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(repo)
+            .output()
+            .await
+            .unwrap();
+        let mut entries = parse_legacy_worktrees(&output.stdout).unwrap();
         assert_eq!(
-            entries,
-            vec![
-                ("/repo/main".to_string(), Some("main".to_string())),
-                (
-                    "/repo/wt-feature".to_string(),
-                    Some("feature-x".to_string())
-                ),
-                ("/repo/wt-detached".to_string(), None),
-            ]
+            entries.len(),
+            3,
+            "the injection is structurally indistinguishable"
+        );
+        assert!(verify_legacy_worktree_paths(repo, &mut entries)
+            .await
+            .is_err());
+        assert!(Path::new(&newline).exists());
+        // Even a valid-looking inventory omitting the newline registration
+        // must not become authoritative for branch resolution or removal.
+        let mut main_only = parse_legacy_worktrees(
+            format!("worktree {repo}\nHEAD {head}\nbranch refs/heads/main\n\n").as_bytes(),
+        )
+        .unwrap();
+        assert!(verify_legacy_worktree_paths(repo, &mut main_only)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn legacy_worktrees_newline_head_alias_never_removes_the_prefix_checkout() {
+        let dir = legacy_worktree_repo();
+        let repo = dir.path().to_str().unwrap().to_string();
+        let prefix = dir.path().join("checkout");
+        let newline = format!("{}\nHEAD injected", prefix.display());
+        git_run(
+            dir.path(),
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "prefix",
+                prefix.to_str().unwrap(),
+            ],
+        );
+        git_run(
+            dir.path(),
+            &["worktree", "add", "-q", "-b", "newline", &newline],
+        );
+        std::fs::write(prefix.join("dirty.txt"), "preserve me").unwrap();
+        assert!(checked_legacy_inventory(&repo).await.is_err());
+        let db = fresh_in_memory_db().await;
+        let result = git_remove_worktree_path_core(
+            &test_emitter(),
+            &db,
+            repo,
+            newline.clone(),
+            0,
+            false,
+            true,
+        )
+        .await;
+        if let Err(error) = result {
+            assert!(matches!(
+                error.code,
+                crate::app_error::AppErrorCode::DependencyMissing
+            ));
+            assert!(Path::new(&newline).exists());
+        } else {
+            assert!(
+                !Path::new(&newline).exists(),
+                "NUL-capable Git removes the exact path"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(prefix.join("dirty.txt")).unwrap(),
+            "preserve me"
         );
     }
 
     #[test]
-    fn parse_worktrees_flushes_trailing_block_without_blank_line() {
-        // No terminating blank line on the last block (git omits it at EOF here).
-        let stdout = "\
-worktree /repo/main
-HEAD aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-branch refs/heads/main";
-        let entries = parse_worktrees(stdout);
-        assert_eq!(
-            entries,
-            vec![("/repo/main".to_string(), Some("main".to_string()))]
-        );
-    }
-
-    #[test]
-    fn parse_worktrees_handles_empty_and_bare() {
-        assert!(parse_worktrees("").is_empty());
-        // A bare repo entry carries no branch.
-        let entries = parse_worktrees("worktree /repo/bare\nbare\n\n");
-        assert_eq!(entries, vec![("/repo/bare".to_string(), None)]);
+    fn parse_worktrees_preserves_nul_fields_and_all_flags() {
+        let entries = parse_worktrees(b"worktree /repo/main\0HEAD abc\0branch refs/heads/main\0\0worktree /repo/ space\nline \0HEAD def\0detached\0locked reason\nwith spaces \0prunable\0\0worktree /repo/bare\0bare\0locked\0prunable missing\0unknown future field");
+        assert_eq!(entries.len(), 3);
+        assert!(entries[0].is_main);
+        assert_eq!(entries[0].head.as_deref(), Some("abc"));
+        assert_eq!(entries[0].branch.as_deref(), Some("main"));
+        assert!(!entries[1].is_main);
+        assert_eq!(entries[1].path, "/repo/ space\nline ");
+        assert!(entries[1].detached);
+        assert_eq!(entries[1].branch, None);
+        assert_eq!(entries[1].locked.as_deref(), Some("reason\nwith spaces "));
+        assert_eq!(entries[1].prunable.as_deref(), Some(""));
+        assert!(entries[2].bare);
+        assert_eq!(entries[2].locked.as_deref(), Some(""));
+        assert_eq!(entries[2].prunable.as_deref(), Some("missing"));
+        assert!(parse_worktrees(b"").is_empty());
     }
 
     #[tokio::test]
@@ -8211,9 +9250,7 @@ branch refs/heads/main";
         assert_eq!(cleared.default_agent_type, None);
         // Clearing it changes the inherited value just as much as setting it.
         assert_eq!(
-            rx.try_recv()
-                .expect("clearing should nudge too")
-                .payload["kind"],
+            rx.try_recv().expect("clearing should nudge too").payload["kind"],
             "settings"
         );
     }
@@ -8267,7 +9304,10 @@ branch refs/heads/main";
             "src/inner".to_string(),
         )
         .await;
-        assert!(res.is_err(), "moving a dir into its own descendant must fail");
+        assert!(
+            res.is_err(),
+            "moving a dir into its own descendant must fail"
+        );
         assert!(root.path().join("src/inner").is_dir(), "source untouched");
     }
 
@@ -8346,8 +9386,7 @@ mod workspace_confinement_tests {
         let root = tempfile::tempdir().expect("root");
         let outside = tempfile::tempdir().expect("outside");
         std::fs::write(outside.path().join("secret"), b"top").expect("write");
-        symlink(outside.path().join("secret"), root.path().join("link"))
-            .expect("symlink");
+        symlink(outside.path().join("secret"), root.path().join("link")).expect("symlink");
         // The canonical target resolves outside the root, so the read is denied
         // even though `root/link` is lexically inside the workspace.
         let res = read_workspace_file_base64(
@@ -8356,7 +9395,10 @@ mod workspace_confinement_tests {
             None,
         )
         .await;
-        assert!(res.is_err(), "symlink escaping the workspace must be rejected");
+        assert!(
+            res.is_err(),
+            "symlink escaping the workspace must be rejected"
+        );
     }
 
     /// The strict predicate, applied the way the guarded call sites apply it:
@@ -8402,7 +9444,10 @@ mod workspace_confinement_tests {
             "sub".to_string(),
         )
         .await;
-        assert!(res.is_err(), "must not clobber a dangling destination symlink");
+        assert!(
+            res.is_err(),
+            "must not clobber a dangling destination symlink"
+        );
         assert!(
             std::fs::symlink_metadata(root.path().join("sub/a.txt")).is_ok(),
             "dangling symlink must remain intact",
@@ -8414,11 +9459,7 @@ mod workspace_confinement_tests {
     async fn move_file_tree_entry_moves_a_symlink_entry() {
         let root = tempfile::tempdir().expect("root");
         std::fs::write(root.path().join("target.txt"), b"x").expect("write");
-        symlink(
-            root.path().join("target.txt"),
-            root.path().join("link.txt"),
-        )
-        .expect("symlink");
+        symlink(root.path().join("target.txt"), root.path().join("link.txt")).expect("symlink");
         std::fs::create_dir(root.path().join("sub")).expect("mkdir");
 
         let new_rel = move_file_tree_entry(
@@ -8430,8 +9471,8 @@ mod workspace_confinement_tests {
         .expect("move symlink");
         assert_eq!(new_rel.replace('\\', "/"), "sub/link.txt");
         // The moved entry is still a symlink (the link itself moved, not its target).
-        let meta = std::fs::symlink_metadata(root.path().join("sub/link.txt"))
-            .expect("moved link exists");
+        let meta =
+            std::fs::symlink_metadata(root.path().join("sub/link.txt")).expect("moved link exists");
         assert!(meta.file_type().is_symlink(), "entry stays a symlink");
         assert!(!root.path().join("link.txt").exists(), "old link gone");
     }

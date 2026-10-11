@@ -51,7 +51,8 @@ describe("i18n locale key parity vs en.json", () => {
         !localeKeys.has(k) &&
         !(
           locale !== "zh-CN" &&
-          (k.startsWith("Folder.pdfPreview.") ||
+          (k.startsWith("MultiHost.") ||
+            k.startsWith("Folder.pdfPreview.") ||
             k.startsWith("BarkNotificationSettings.") ||
             k.startsWith("Folder.videoPreview.") ||
             k.startsWith("Machines.ssh.") ||
@@ -65,6 +66,24 @@ describe("i18n locale key parity vs en.json", () => {
     const extra = [...localeKeys].filter((k) => !reference.has(k))
     expect({ missing, extra }).toEqual({ missing: [], extra: [] })
   })
+})
+
+it("provides English multi-host controls in untranslated locales and Chinese controls in zh-CN", async () => {
+  for (const locale of [
+    "ar",
+    "de",
+    "es",
+    "fr",
+    "ja",
+    "ko",
+    "pt",
+    "zh_tw",
+  ] as const) {
+    const messages = await getMessagesForLocale(locale)
+    expect(messages.MultiHost).toEqual(en.MultiHost)
+  }
+  const chinese = await getMessagesForLocale("zh_cn")
+  expect(chinese.MultiHost).toEqual(zhCN.MultiHost)
 })
 
 it("provides English Bark settings in untranslated locales and Chinese settings in zh-CN", async () => {

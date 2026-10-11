@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import {
   createContext,
   useContext,
@@ -12,7 +13,7 @@ import {
 import type { Components } from "streamdown"
 import { ImageOff, Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
-import { readWorkspaceFileBase64 } from "@/lib/api"
+
 import {
   createLocalImageLoader,
   resolveLocalImage,
@@ -37,15 +38,20 @@ export function MarkdownImageProvider({
   rootPath: string | null
   children: ReactNode
 }) {
+  const backendApi = useBackendApi()
+
   const scope = useMemo(
     () =>
       rootPath
         ? {
             root: rootPath,
-            load: createLocalImageLoader(rootPath, readWorkspaceFileBase64),
+            load: createLocalImageLoader(
+              rootPath,
+              backendApi.readWorkspaceFileBase64
+            ),
           }
         : null,
-    [rootPath]
+    [rootPath, backendApi]
   )
   return (
     <LocalImageContext.Provider value={scope}>

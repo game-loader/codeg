@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Plug, RotateCw, Settings2, Unplug } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -12,10 +13,6 @@ import {
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import {
-  getCodegMcpServiceStatus,
-  openSettingsWindow,
-  setCodegMcpToolGroup,
-  startCodegMcpService,
   type CodegMcpServiceState,
   type CodegMcpServiceStatus,
 } from "@/lib/api"
@@ -83,6 +80,8 @@ function Stat({ label, value }: { label: string; value: string }) {
  * a button that rebinds the socket without an app restart.
  */
 export function StatusBarMcp() {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.statusBar.mcp")
   const tools = useTranslations(AGENT_TOOLS_NAMESPACE)
   const [open, setOpen] = useState(false)
@@ -102,7 +101,7 @@ export function StatusBarMcp() {
   const refresh = useCallback(async () => {
     const seq = ++seqRef.current
     try {
-      const next = await getCodegMcpServiceStatus()
+      const next = await backendApi.getCodegMcpServiceStatus()
       if (!aliveRef.current || seq !== seqRef.current) return
       setStatus(next)
       setLoadError(null)
@@ -110,7 +109,7 @@ export function StatusBarMcp() {
       if (!aliveRef.current || seq !== seqRef.current) return
       setLoadError(toErrorMessage(e))
     }
-  }, [])
+  }, [backendApi])
 
   useEffect(() => {
     aliveRef.current = true
@@ -134,7 +133,7 @@ export function StatusBarMcp() {
     setStarting(true)
     setActionError(null)
     try {
-      await startCodegMcpService()
+      await backendApi.startCodegMcpService()
       await refresh()
     } catch (e) {
       if (aliveRef.current) setActionError(toErrorMessage(e))
@@ -147,7 +146,7 @@ export function StatusBarMcp() {
     setPending((prev) => ({ ...prev, [key]: next }))
     setActionError(null)
     try {
-      await setCodegMcpToolGroup(key, next)
+      await backendApi.setCodegMcpToolGroup(key, next)
       // Re-read before releasing the optimistic value, so the switch hands
       // over to a `status` that already reflects the write.
       await refresh()
@@ -353,7 +352,7 @@ export function StatusBarMcp() {
             // The Collaboration page is where these same switches live in
             // full, with the depth limit and the per-agent defaults beside
             // them.
-            openSettingsWindow("collaboration").catch((err) => {
+            backendApi.openSettingsWindow("collaboration").catch((err) => {
               console.error("[StatusBarMcp] failed to open settings:", err)
             })
           }}

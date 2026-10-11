@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useEffect, useState } from "react"
 import { getCurrentPetState } from "@/lib/pet/api"
 import { isDesktop } from "@/lib/transport"
@@ -8,6 +9,8 @@ import type { PetState } from "@/lib/pet/animation"
 const PET_STATE_EVENT = "pet://state"
 
 export function usePetState(initial: PetState = "idle"): PetState {
+  const backendPlatform = useBackendPlatform()
+
   const [state, setState] = useState<PetState>(initial)
 
   useEffect(() => {
@@ -41,13 +44,11 @@ export function usePetState(initial: PetState = "idle"): PetState {
           }
           unlisten = off
         } else {
-          const { getTransport } = await import("@/lib/transport")
-          const off = await getTransport().subscribe<PetState>(
-            PET_STATE_EVENT,
-            (payload) => {
+          const off = await backendPlatform
+            .getTransport()
+            .subscribe<PetState>(PET_STATE_EVENT, (payload) => {
               applyLive(normalize(payload))
-            }
-          )
+            })
           if (cancelled) {
             off()
             return
@@ -61,7 +62,7 @@ export function usePetState(initial: PetState = "idle"): PetState {
         // the snapshot through the same `normalize()` as the live path so
         // callers can't accidentally feed `setState` a non-PetState value.
         try {
-          const snapshot = normalize(await getCurrentPetState())
+          const snapshot = normalize(await getCurrentPetState(backendPlatform))
           if (cancelled || liveEventSeen || !snapshot) return
           setState(snapshot)
         } catch (err) {
@@ -81,7 +82,7 @@ export function usePetState(initial: PetState = "idle"): PetState {
         unlisten()
       }
     }
-  }, [])
+  }, [backendPlatform])
 
   return state
 }

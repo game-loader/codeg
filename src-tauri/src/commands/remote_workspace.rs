@@ -147,9 +147,15 @@ pub async fn update_remote_workspace_connection(
     input: RemoteWorkspaceConnectionInput,
 ) -> Result<RemoteWorkspaceConnectionInfo, AppCommandError> {
     validate_remote_health(&input.base_url, &input.token, &input.headers).await?;
+    let proxy = app.state::<std::sync::Arc<crate::commands::remote_proxy::RemoteProxyState>>();
+    let transfers =
+        app.state::<std::sync::Arc<crate::workspace_transfer::WorkspaceTransferManager>>();
+    let gate = proxy.bindings.gate(id).await;
+    let guard = gate.write().await;
     let before = remote_workspace_connection_service::get(&db.conn, id)
         .await
-        .map_err(AppCommandError::db)?;
+        .map_err(AppCommandError::db)?
+        .ok_or_else(|| AppCommandError::not_found(format!("Remote connection {id} not found")))?;
     let updated = remote_workspace_connection_service::update(
         &db.conn,
         id,
@@ -163,14 +169,14 @@ pub async fn update_remote_workspace_connection(
     // points, rather than staying on the old address until it drops. A
     // rename leaves it be: closing it would cut every live stream of the
     // connection's tabs (a dev server's reload socket among them).
-    let moved = before.is_none_or(|before| {
-        before.base_url != updated.base_url
-            || before.token != updated.token
-            || before.headers != updated.headers
-    });
+    let moved = before.config_revision != updated.config_revision;
+    proxy
+        .connection_updated(&app, &transfers, &before, &updated)
+        .await;
     if moved {
         crate::browser::remote::connection_changed(&app, id).await;
     }
+    drop(guard);
     Ok(updated)
 }
 
@@ -181,12 +187,32 @@ pub async fn delete_remote_workspace_connection(
     db: tauri::State<'_, AppDatabase>,
     id: i32,
 ) -> Result<(), AppCommandError> {
+    let proxy = app.state::<std::sync::Arc<crate::commands::remote_proxy::RemoteProxyState>>();
+    let transfers =
+        app.state::<std::sync::Arc<crate::workspace_transfer::WorkspaceTransferManager>>();
+    let gate = proxy.bindings.gate(id).await;
+    let guard = gate.write().await;
+    let before = remote_workspace_connection_service::get(&db.conn, id)
+        .await
+        .map_err(AppCommandError::db)?;
     remote_workspace_connection_service::delete(&db.conn, id)
         .await
         .map_err(AppCommandError::db)?;
+    transfers.cancel_connection(id).await;
+    proxy
+        .connection_changed(
+            &app,
+            id,
+            true,
+            before
+                .as_ref()
+                .map_or("", |before| before.config_revision.as_str()),
+        )
+        .await;
     // What the remote host's pages stored in the built-in browser goes with
     // the connection they were opened through.
     crate::browser::remote::forget_connection(&app, id).await;
+    drop(guard);
     Ok(())
 }
 
@@ -253,8 +279,9 @@ pub(crate) fn build_remote_workspace_window(
     // h-10 title bar, so they get the workspace traffic-light position (not the
     // shorter auxiliary-window default).
     #[cfg(target_os = "macos")]
-    let builder = builder
-        .traffic_light_position(crate::commands::windows::workspace_window_traffic_light_position());
+    let builder = builder.traffic_light_position(
+        crate::commands::windows::workspace_window_traffic_light_position(),
+    );
     let built = builder
         .build()
         .map_err(|e| AppCommandError::window("Failed to open remote workspace", e.to_string()))?;

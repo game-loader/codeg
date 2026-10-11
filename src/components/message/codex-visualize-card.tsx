@@ -1,5 +1,8 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
+import type { BackendApi } from "@/lib/backend/types"
+import * as legacyBackendApi from "@/lib/api"
 import { memo, useCallback, useEffect, useRef, useState } from "react"
 import {
   AlertCircle,
@@ -15,12 +18,7 @@ import { useTranslations } from "next-intl"
 import { useTheme } from "next-themes"
 import { FilePathLink } from "@/components/ai-elements/link-safety"
 import { useTranscriptRoot } from "@/components/ai-elements/markdown-local-image"
-import {
-  getHomeDirectory,
-  listDirectoryEntries,
-  readFileBase64,
-  readWorkspaceFileBase64,
-} from "@/lib/api"
+
 import {
   expandHomePath,
   isHomeRelativePath,
@@ -272,7 +270,7 @@ const FALLBACK_ASSETS: VisualizeAssets = {
   calendar: null,
 }
 
-let assetsPromise: Promise<VisualizeAssets> | null = null
+let assetsPromises = new WeakMap<BackendApi, Promise<VisualizeAssets>>()
 
 function decodeBase64Utf8(b64: string): string {
   const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
@@ -289,9 +287,14 @@ function compareVersionsDesc(a: string, b: string): number {
   return 0
 }
 
-async function readOptionalText(path: string): Promise<string | null> {
+async function readOptionalText(
+  path: string,
+  backendApi: BackendApi = legacyBackendApi
+): Promise<string | null> {
   try {
-    return decodeBase64Utf8(await readFileBase64(path, MAX_FRAGMENT_BYTES))
+    return decodeBase64Utf8(
+      await backendApi.readFileBase64(path, MAX_FRAGMENT_BYTES)
+    )
   } catch {
     return null
   }
@@ -302,21 +305,23 @@ async function readOptionalText(path: string): Promise<string | null> {
  * its stylesheet and inner kit. Resolved once per page; a miss falls back to
  * the built-in stylesheet rather than failing the card.
  */
-async function loadVisualizeAssets(): Promise<VisualizeAssets> {
+async function loadVisualizeAssets(
+  backendApi: BackendApi = legacyBackendApi
+): Promise<VisualizeAssets> {
   try {
-    const home = (await getHomeDirectory()).replace(/[\\/]+$/, "")
+    const home = (await backendApi.getHomeDirectory()).replace(/[\\/]+$/, "")
     const pluginDir = `${home}/${CODEX_PLUGIN_VISUALIZE_DIR}`
-    const versions = (await listDirectoryEntries(pluginDir))
+    const versions = (await backendApi.listDirectoryEntries(pluginDir))
       .map((e) => e.name)
       .filter((name) => /^\d+(\.\d+)*$/.test(name))
       .sort(compareVersionsDesc)
     for (const version of versions) {
       const assets = `${pluginDir}/${version}/skills/visualize/assets`
-      const css = await readOptionalText(`${assets}/visualize.css`)
+      const css = await readOptionalText(`${assets}/visualize.css`, backendApi)
       if (css === null) continue
       const [kit, calendar] = await Promise.all([
-        readOptionalText(`${assets}/visualize.html`),
-        readOptionalText(`${assets}/calendar.js`),
+        readOptionalText(`${assets}/visualize.html`, backendApi),
+        readOptionalText(`${assets}/calendar.js`, backendApi),
       ])
       return { css, kit, calendar }
     }
@@ -326,14 +331,20 @@ async function loadVisualizeAssets(): Promise<VisualizeAssets> {
   return FALLBACK_ASSETS
 }
 
-function getVisualizeAssets(): Promise<VisualizeAssets> {
-  if (assetsPromise === null) assetsPromise = loadVisualizeAssets()
-  return assetsPromise
+function getVisualizeAssets(
+  backendApi: BackendApi = legacyBackendApi
+): Promise<VisualizeAssets> {
+  let promise = assetsPromises.get(backendApi)
+  if (!promise) {
+    promise = loadVisualizeAssets(backendApi)
+    assetsPromises.set(backendApi, promise)
+  }
+  return promise
 }
 
 /** Tests only. */
 export function resetCodexVisualizeAssetsForTests(): void {
-  assetsPromise = null
+  assetsPromises = new WeakMap()
 }
 
 /** Copy codeg's current theme tokens into the frame's variable contract. */
@@ -370,10 +381,11 @@ function isRelativePath(path: string): boolean {
  */
 async function resolvePreviewPath(
   path: string,
-  baseDir: string | null
+  baseDir: string | null,
+  backendApi: BackendApi = legacyBackendApi
 ): Promise<string | null> {
   if (!isRelativePath(path)) {
-    return isHomeRelativePath(path) ? expandHomePath(path) : path
+    return isHomeRelativePath(path) ? expandHomePath(path, backendApi) : path
   }
   return baseDir ? joinRootRel(baseDir, path) : null
 }
@@ -388,7 +400,8 @@ async function resolvePreviewPath(
 export async function buildCompleteDocument(
   html: string,
   absPath: string,
-  scripts: boolean
+  scripts: boolean,
+  backendApi: BackendApi = legacyBackendApi
 ): Promise<string> {
   const fileDir = absPath.replace(/[\\/][^\\/]*$/, "") || "/"
   const inlined = await inlineHtmlResources(html, {
@@ -400,7 +413,7 @@ export async function buildCompleteDocument(
       const root = fileDir.replace(/\\/g, "/").replace(/\/+$/, "")
       const abs = resource.replace(/\\/g, "/")
       const rel = abs.startsWith(root + "/") ? abs.slice(root.length + 1) : abs
-      return readWorkspaceFileBase64(fileDir, rel)
+      return backendApi.readWorkspaceFileBase64(fileDir, rel)
     },
   })
   const withCsp = withSandboxCsp(inlined, { trusted: scripts })
@@ -500,6 +513,8 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
   className,
   onCollapse,
 }: CodexVisualizeCardProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.chat.contentParts")
   const tFiles = useTranslations("Folder.fileWorkspacePanel")
   const tLinks = useTranslations("Folder.chat.linkSafety")
@@ -538,9 +553,9 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
   useEffect(() => {
     let cancelled = false
     ;(async (): Promise<Omit<LoadResult, "key" | "error">> => {
-      const absPath = await resolvePreviewPath(path, baseDir)
+      const absPath = await resolvePreviewPath(path, baseDir, backendApi)
       if (absPath === null) throw new Error(noFolderMessage)
-      const b64 = await readFileBase64(absPath, MAX_FRAGMENT_BYTES)
+      const b64 = await backendApi.readFileBase64(absPath, MAX_FRAGMENT_BYTES)
       const html = decodeBase64Utf8(b64)
       if (isCompleteHtmlDocument(html)) {
         // An arbitrary page, not a Codex fragment: as in codeg's file preview,
@@ -548,13 +563,18 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
         // enables them for it.
         const scripts = choice ?? false
         return {
-          srcDoc: await buildCompleteDocument(html, absPath, scripts),
+          srcDoc: await buildCompleteDocument(
+            html,
+            absPath,
+            scripts,
+            backendApi
+          ),
           title: extractHtmlTitle(html) || null,
           complete: true,
           scripts,
         }
       }
-      const assets = await getVisualizeAssets()
+      const assets = await getVisualizeAssets(backendApi)
       return {
         srcDoc: buildVisualizeDocument({
           fragment: html,
@@ -587,7 +607,16 @@ export const CodexVisualizeCard = memo(function CodexVisualizeCard({
     return () => {
       cancelled = true
     }
-  }, [path, baseDir, dark, pathTitle, choice, noFolderMessage, loadKey])
+  }, [
+    path,
+    baseDir,
+    dark,
+    pathTitle,
+    choice,
+    noFolderMessage,
+    loadKey,
+    backendApi,
+  ])
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {

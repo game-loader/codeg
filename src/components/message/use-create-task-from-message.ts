@@ -1,9 +1,13 @@
 "use client"
 
+import { useTabStore as legacyTabs } from "@/stores/tab-store"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useOptionalBackendClient } from "@/contexts/backend-client-context"
+import { useBackendEventScope } from "@/hooks/use-runtime-event-scope"
 import { useCallback } from "react"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabStore } from "@/stores/tab-store"
+
 import { requestCreateTaskFromText } from "@/lib/task-compose-events"
 
 /**
@@ -14,6 +18,15 @@ import { requestCreateTaskFromText } from "@/lib/task-compose-events"
  * the board's own default.
  */
 export function useCreateTaskFromMessage(getText: () => string) {
+  const backendKey = useOptionalBackendClient()?.key
+  const backendScope = useBackendEventScope()
+  const backendStores = useBackendStores({
+    tabs: legacyTabs,
+    workspace: legacyWorkspace,
+  })
+  const useTabStore = backendStores.tabs
+  const useAppWorkspaceStore = backendStores.workspace
+
   const { setRoute } = useWorkbenchRoute()
   const tabFolderId = useTabStore((s) => {
     const tab = s.rawTabs.find((t) => t.id === s.activeTabId)
@@ -35,7 +48,14 @@ export function useCreateTaskFromMessage(getText: () => string) {
       folder != null && folder.parent_id == null && folder.kind === "regular"
         ? folder.id
         : null
-    requestCreateTaskFromText({ text, folderId })
+    requestCreateTaskFromText({ text, folderId, backendKey, backendScope })
     setRoute("tasks")
-  }, [getText, tabFolderId, setRoute])
+  }, [
+    getText,
+    tabFolderId,
+    setRoute,
+    useAppWorkspaceStore,
+    backendKey,
+    backendScope,
+  ])
 }

@@ -1,16 +1,15 @@
-import { create } from "zustand"
-import {
-  academicLibrary,
-  academicPaperGet,
-  academicSelect,
-  academicSettingsGet,
-  type AcademicLibrary,
-  type AcademicPaper,
-  type AcademicSettings,
-} from "@/lib/academic"
-import { registerBackendScopedStoreReset } from "./backend-scoped-store-reset"
+import type { AcademicLibrary } from "@/lib/academic"
+import type { AcademicPaper } from "@/lib/academic"
+import type { AcademicSettings } from "@/lib/academic"
 
-interface AcademicState {
+import { registerBackendScopedStoreReset } from "./backend-scoped-store-reset"
+import * as defaultApi from "@/lib/academic"
+import {
+  createStoreScope,
+  isStaleStoreRequest,
+} from "@/stores/backend-store-scope"
+
+export interface AcademicState {
   library: AcademicLibrary | null
   settings: AcademicSettings | null
   selectedCollectionKey: string | null
@@ -27,114 +26,157 @@ interface AcademicState {
   reset: () => void
 }
 
-const initialState = {
-  library: null,
-  settings: null,
-  selectedCollectionKey: null,
-  selectedItemKey: null,
-  selectedPaper: null,
-  loadingLibrary: false,
-  loadingPaper: false,
-  error: null,
+/** Create an independently owned backend store and its bound helper namespace. */
+export function createAcademicStore(
+  api: Pick<
+    typeof defaultApi,
+    | "academicLibrary"
+    | "academicPaperGet"
+    | "academicSelect"
+    | "academicSettingsGet"
+  >
+) {
+  const scope = createStoreScope()
+  const {
+    academicLibrary,
+    academicPaperGet,
+    academicSelect,
+    academicSettingsGet,
+  } = scope.bindApi(api, api !== defaultApi)
+
+  const initialState = {
+    library: null,
+    settings: null,
+    selectedCollectionKey: null,
+    selectedItemKey: null,
+    selectedPaper: null,
+    loadingLibrary: false,
+    loadingPaper: false,
+    error: null,
+  }
+
+  let selectionVersion = 0
+
+  let libraryVersion = 0
+
+  let paperVersion = 0
+
+  let epoch = 0
+
+  const errorMessage = (error: unknown) =>
+    error instanceof Error ? error.message : String(error)
+
+  const useAcademicStore = scope.create<AcademicState>((set, get) => ({
+    ...initialState,
+    async refreshLibrary() {
+      const version = ++libraryVersion
+      set({ loadingLibrary: true, error: null })
+      try {
+        const library = await academicLibrary()
+        if (version === libraryVersion) {
+          set({ library })
+        }
+      } catch (error) {
+        if (isStaleStoreRequest(error)) return
+        if (version === libraryVersion) set({ error: errorMessage(error) })
+      } finally {
+        if (version === libraryVersion) {
+          set({ loadingLibrary: false })
+          const selected = get().selectedPaper
+          if (selected) await get().refreshPaper(selected.id)
+        }
+      }
+    },
+    async loadSettings() {
+      const requestedEpoch = epoch
+      try {
+        const settings = await academicSettingsGet()
+        if (requestedEpoch === epoch) set({ settings })
+      } catch (error) {
+        if (isStaleStoreRequest(error)) return
+        if (requestedEpoch === epoch) set({ error: errorMessage(error) })
+      }
+    },
+    async selectItem(itemKey) {
+      if (get().selectedItemKey === itemKey && get().loadingPaper) return
+      const version = ++selectionVersion
+      ++paperVersion
+      set({
+        selectedItemKey: itemKey,
+        selectedPaper: null,
+        loadingPaper: true,
+        error: null,
+      })
+      try {
+        const paper = await academicSelect(itemKey)
+        if (version === selectionVersion) {
+          set({ selectedPaper: paper })
+          // Preparation may finish before the select response reaches the UI;
+          // that event had no selected paper to refresh. Reconcile once after
+          // establishing its identity, then rely on normal change events.
+          await get().refreshPaper(paper.id)
+        }
+      } catch (error) {
+        if (isStaleStoreRequest(error)) return
+        if (version === selectionVersion) set({ error: errorMessage(error) })
+      } finally {
+        if (version === selectionVersion) set({ loadingPaper: false })
+      }
+    },
+    showPaper(paper) {
+      ++selectionVersion
+      ++paperVersion
+      set({
+        selectedItemKey: paper.item_key,
+        selectedPaper: paper,
+        loadingPaper: false,
+        error: null,
+      })
+    },
+    async refreshPaper(paperId) {
+      if (get().selectedPaper?.id !== paperId) return
+      const version = ++paperVersion
+      const selection = selectionVersion
+      try {
+        const paper = await academicPaperGet(paperId)
+        if (
+          version === paperVersion &&
+          selection === selectionVersion &&
+          get().selectedPaper?.id === paperId
+        ) {
+          set({ selectedPaper: paper })
+        }
+      } catch (error) {
+        if (isStaleStoreRequest(error)) return
+        if (version === paperVersion && selection === selectionVersion) {
+          set({ error: errorMessage(error) })
+        }
+      }
+    },
+    reset() {
+      ++epoch
+      ++selectionVersion
+      ++libraryVersion
+      ++paperVersion
+      set(initialState)
+    },
+  }))
+
+  scope.onDispose(() => {
+    useAcademicStore.getState().reset()
+  })
+  return Object.assign(useAcademicStore, {
+    useAcademicStore,
+
+    dispose: scope.dispose,
+    isDisposed: () => scope.disposed,
+  })
 }
 
-let selectionVersion = 0
-let libraryVersion = 0
-let paperVersion = 0
-let epoch = 0
-const errorMessage = (error: unknown) =>
-  error instanceof Error ? error.message : String(error)
+export type AcademicStore = ReturnType<typeof createAcademicStore>
 
-export const useAcademicStore = create<AcademicState>((set, get) => ({
-  ...initialState,
-  async refreshLibrary() {
-    const version = ++libraryVersion
-    set({ loadingLibrary: true, error: null })
-    try {
-      const library = await academicLibrary()
-      if (version === libraryVersion) {
-        set({ library })
-      }
-    } catch (error) {
-      if (version === libraryVersion) set({ error: errorMessage(error) })
-    } finally {
-      if (version === libraryVersion) {
-        set({ loadingLibrary: false })
-        const selected = get().selectedPaper
-        if (selected) await get().refreshPaper(selected.id)
-      }
-    }
-  },
-  async loadSettings() {
-    const requestedEpoch = epoch
-    try {
-      const settings = await academicSettingsGet()
-      if (requestedEpoch === epoch) set({ settings })
-    } catch (error) {
-      if (requestedEpoch === epoch) set({ error: errorMessage(error) })
-    }
-  },
-  async selectItem(itemKey) {
-    if (get().selectedItemKey === itemKey && get().loadingPaper) return
-    const version = ++selectionVersion
-    ++paperVersion
-    set({
-      selectedItemKey: itemKey,
-      selectedPaper: null,
-      loadingPaper: true,
-      error: null,
-    })
-    try {
-      const paper = await academicSelect(itemKey)
-      if (version === selectionVersion) {
-        set({ selectedPaper: paper })
-        // Preparation may finish before the select response reaches the UI;
-        // that event had no selected paper to refresh. Reconcile once after
-        // establishing its identity, then rely on normal change events.
-        await get().refreshPaper(paper.id)
-      }
-    } catch (error) {
-      if (version === selectionVersion) set({ error: errorMessage(error) })
-    } finally {
-      if (version === selectionVersion) set({ loadingPaper: false })
-    }
-  },
-  showPaper(paper) {
-    ++selectionVersion
-    ++paperVersion
-    set({
-      selectedItemKey: paper.item_key,
-      selectedPaper: paper,
-      loadingPaper: false,
-      error: null,
-    })
-  },
-  async refreshPaper(paperId) {
-    if (get().selectedPaper?.id !== paperId) return
-    const version = ++paperVersion
-    const selection = selectionVersion
-    try {
-      const paper = await academicPaperGet(paperId)
-      if (
-        version === paperVersion &&
-        selection === selectionVersion &&
-        get().selectedPaper?.id === paperId
-      ) {
-        set({ selectedPaper: paper })
-      }
-    } catch (error) {
-      if (version === paperVersion && selection === selectionVersion) {
-        set({ error: errorMessage(error) })
-      }
-    }
-  },
-  reset() {
-    ++epoch
-    ++selectionVersion
-    ++libraryVersion
-    ++paperVersion
-    set(initialState)
-  },
-}))
+export const useAcademicStore = createAcademicStore(defaultApi)
 
-registerBackendScopedStoreReset(() => useAcademicStore.getState().reset())
+registerBackendScopedStoreReset(() => {
+  useAcademicStore.getState().reset()
+})

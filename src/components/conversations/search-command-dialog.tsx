@@ -1,5 +1,12 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { formatDistanceToNow } from "date-fns"
 import { enUS, zhCN, zhTW } from "date-fns/locale"
@@ -7,11 +14,10 @@ import { File, Folder } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useActiveFolder } from "@/contexts/active-folder-context"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabActions } from "@/contexts/tab-context"
+
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useWorkspaceActions } from "@/contexts/workspace-context"
-import { listAllConversations } from "@/lib/api"
+
 import type {
   AgentType,
   ConversationStatus,
@@ -20,7 +26,7 @@ import type {
 import { useFileTree, type FlatFileEntry } from "@/hooks/use-file-tree"
 import { rankFileMatches } from "@/lib/file-search-match"
 import { compareAgentType } from "@/lib/types"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import { AgentIcon } from "@/components/agent-icon"
 import { ConversationStatusDot } from "@/components/conversations/conversation-status-dot"
 import {
@@ -45,6 +51,18 @@ export function SearchCommandDialog({
   open,
   onOpenChange,
 }: SearchCommandDialogProps) {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.search")
   const locale = useLocale()
   const dateFnsLocale =
@@ -112,7 +130,7 @@ export function SearchCommandDialog({
       }
       setSearching(true)
       try {
-        const data = await listAllConversations({
+        const data = await backendApi.listAllConversations({
           folder_ids: folderId > 0 ? [folderId] : null,
           search: q.trim() || null,
           agent_type: agent,
@@ -124,7 +142,7 @@ export function SearchCommandDialog({
         setSearching(false)
       }
     },
-    [folderId]
+    [folderId, backendApi]
   )
 
   // Debounced search on query change (conversations tab only)

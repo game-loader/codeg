@@ -1,5 +1,11 @@
 "use client"
 
+import { useAcademicStore as legacyAcademic } from "@/stores/academic-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import {
+  useBackendAcademicApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useEffect, useRef, useState } from "react"
 import {
   GraduationCap,
@@ -12,9 +18,7 @@ import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { WorkbenchPageTitle } from "@/components/workbench/workbench-page-title"
-import { academicImport } from "@/lib/academic"
-import { getTransport } from "@/lib/transport"
-import { useAcademicStore } from "@/stores/academic-store"
+
 import { AcademicLibraryList } from "./academic-library-list"
 import { AcademicPaperDetail } from "./academic-paper-detail"
 import { AcademicSettings } from "./academic-settings"
@@ -26,6 +30,12 @@ export function AcademicPageTitle() {
 }
 
 export function AcademicPage() {
+  const backendStores = useBackendStores({ academic: legacyAcademic })
+  const useAcademicStore = backendStores.academic
+
+  const backendAcademic = useBackendAcademicApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Academic")
   const settings = useAcademicStore((s) => s.settings)
   const library = useAcademicStore((s) => s.library)
@@ -49,7 +59,7 @@ export function AcademicPage() {
     return () => {
       mounted.current = false
     }
-  }, [])
+  }, [useAcademicStore])
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -117,13 +127,14 @@ export function AcademicPage() {
               onSubmit={async (event) => {
                 event.preventDefault()
                 if (!selectedCollection || !identifier.trim()) return
-                const transport = getTransport()
+                const transport = backendPlatform.getTransport()
                 const isCurrent = () =>
-                  mounted.current && transport === getTransport()
+                  mounted.current &&
+                  transport === backendPlatform.getTransport()
                 setImporting(true)
                 useAcademicStore.setState({ error: null })
                 try {
-                  const imported = await academicImport(
+                  const imported = await backendAcademic.academicImport(
                     identifier.trim(),
                     selectedCollection
                   )

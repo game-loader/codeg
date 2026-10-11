@@ -1,7 +1,9 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useShallow } from "zustand/react/shallow"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import type { FolderDetail } from "@/lib/types"
 
 interface ActiveFolderValue {
@@ -16,6 +18,9 @@ interface ActiveFolderValue {
  * object itself changes — not on unrelated folder-list churn.
  */
 export function useActiveFolder(): ActiveFolderValue {
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
   return useAppWorkspaceStore(
     useShallow((s) => ({
       activeFolderId: s.activeFolderId,

@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Reorder } from "motion/react"
 import {
@@ -35,8 +36,8 @@ import { useLongPressDrag } from "@/hooks/use-long-press-drag"
 import { normalizeAbsPath } from "@/lib/file-open-target"
 import { extractHtmlTitle } from "@/lib/html-preview-inline"
 import { isHtmlPreviewable } from "@/lib/language-detect"
-import { openFileDialog } from "@/lib/platform"
-import { isDesktop, isRemoteDesktopMode } from "@/lib/transport"
+
+import { isDesktop } from "@/lib/transport"
 import { cn, handleMiddleClickClose } from "@/lib/utils"
 import {
   ContextMenu,
@@ -254,6 +255,8 @@ export function FileWorkspaceTabBar() {
  * window driving a remote backend.
  */
 function FileTabAddMenu() {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Folder.fileWorkspace")
   const { openFilePreview, openBrowserTab } = useWorkspaceActions()
   const capabilities = useBrowserCapabilities()
@@ -262,20 +265,20 @@ function FileTabAddMenu() {
   // A native dialog picks a path on THIS machine; a desktop window driving a
   // remote backend would hand the server a path it cannot read, and the web
   // fallback only ever learns a bare file name (same test as add-node-menu).
-  const canOpenFile = isDesktop() && !isRemoteDesktopMode()
+  const canOpenFile = isDesktop() && !backendPlatform.isRemoteDesktopMode()
   // Web mode answers "unavailable" without a round trip, so this is false
   // there from the first render rather than after a flash.
   const canOpenBrowser = capabilities?.available ?? false
 
   const handleOpenFile = useCallback(async () => {
-    const picked = await openFileDialog({ title: t("openFileTitle") }).catch(
-      () => null
-    )
+    const picked = await backendPlatform
+      .openFileDialog({ title: t("openFileTitle") })
+      .catch(() => null)
     const path = Array.isArray(picked) ? picked[0] : picked
     // `openFilePreview` reports a failed read on the tab itself, so a
     // rejection here is only ever the dialog being dismissed.
     if (path) void openFilePreview(normalizeAbsPath(path))
-  }, [openFilePreview, t])
+  }, [openFilePreview, t, backendPlatform])
 
   // Asked on every open, not held: a server that has stopped must not be
   // offered, and the backend's answer already excludes those. The previous
@@ -287,12 +290,13 @@ function FileTabAddMenu() {
       // The servers this computer's terminals started. A window bound to a
       // remote codeg-server runs its terminals there, so none of these is
       // one of its own — and `localhost` in its list would be ambiguous.
-      if (!open || !canOpenBrowser || isRemoteDesktopMode()) return
+      if (!open || !canOpenBrowser || backendPlatform.isRemoteDesktopMode())
+        return
       void browserListServices()
         .then(setServices)
         .catch(() => setServices([]))
     },
-    [canOpenBrowser]
+    [canOpenBrowser, backendPlatform]
   )
 
   if (!canOpenFile && !canOpenBrowser) return null

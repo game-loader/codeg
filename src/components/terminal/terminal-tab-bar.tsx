@@ -1,10 +1,12 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useMemo, useRef, useState } from "react"
 import { Keyboard, Minus, Plus, X } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useActiveFolder } from "@/contexts/active-folder-context"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import { useTerminalContext } from "@/contexts/terminal-context"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { useIsMac } from "@/hooks/use-is-mac"
@@ -40,6 +42,9 @@ export function TerminalTabBar({
   keybarCollapsed = false,
   onToggleKeybar,
 }: TerminalTabBarProps) {
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
   const t = useTranslations("Folder.terminal")
   const ime = useImeGuard()
   const { shortcuts } = useShortcutSettings()

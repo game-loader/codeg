@@ -1,5 +1,7 @@
 "use client"
 
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -21,7 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { updateModelProvider } from "@/lib/api"
+
 import { CodexModelListEditor } from "@/components/settings/codex-model-list-editor"
 import {
   MODEL_PROVIDER_AGENT_TYPES,
@@ -34,7 +36,6 @@ import {
   type CodexModelConfig,
   type ModelProviderInfo,
 } from "@/lib/types"
-import { getAgentLabel } from "@/lib/custom-agents"
 
 interface EditModelProviderDialogProps {
   provider: ModelProviderInfo | null
@@ -47,6 +48,10 @@ export function EditModelProviderDialog({
   onOpenChange,
   onProviderUpdated,
 }: EditModelProviderDialogProps) {
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("ModelProviderSettings")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -132,7 +137,7 @@ export function EditModelProviderDialog({
     setLoading(true)
     setError(null)
     try {
-      const { affectedRunningSessions } = await updateModelProvider({
+      const { affectedRunningSessions } = await backendApi.updateModelProvider({
         id: provider.id,
         name: name.trim() !== provider.name ? name.trim() : undefined,
         apiUrl: apiUrl.trim() !== provider.api_url ? apiUrl.trim() : undefined,
@@ -174,6 +179,7 @@ export function EditModelProviderDialog({
     handleOpenChange,
     onProviderUpdated,
     t,
+    backendApi,
   ])
 
   return (

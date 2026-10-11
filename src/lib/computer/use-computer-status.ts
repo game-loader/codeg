@@ -20,6 +20,7 @@
 // has once turned the switch off there; after that it says nothing, and
 // `request` opens the pane itself. Never both at once.
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 
 import { toErrorMessage } from "@/lib/app-error"
@@ -38,6 +39,8 @@ import {
 import type { ComputerStatus, OsPermission } from "./types"
 
 export function useComputerStatus(live: boolean) {
+  const backendPlatform = useBackendPlatform()
+
   const [status, setStatus] = useState<ComputerStatus | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -64,7 +67,7 @@ export function useComputerStatus(live: boolean) {
     const mark = computerStoreMark()
     setLoading(true)
     try {
-      const next = await computerStatus()
+      const next = await computerStatus(backendPlatform)
       if (!aliveRef.current || seq !== seqRef.current) return
       setStatus(next)
       setComputerSharedSince(next.shared, mark)
@@ -77,7 +80,7 @@ export function useComputerStatus(live: boolean) {
     } finally {
       if (aliveRef.current && seq === seqRef.current) setLoading(false)
     }
-  }, [])
+  }, [backendPlatform])
 
   useEffect(() => {
     if (!live) return
@@ -101,7 +104,10 @@ export function useComputerStatus(live: boolean) {
       setRequesting(permission)
       setError(null)
       try {
-        const { report, prompted } = await computerRequestPermission(permission)
+        const { report, prompted } = await computerRequestPermission(
+          permission,
+          backendPlatform
+        )
         const granted =
           permission === "accessibility"
             ? report.accessibility
@@ -109,7 +115,7 @@ export function useComputerStatus(live: boolean) {
         // Neither is ever turned on from the request itself: the switch is
         // in System Settings, which the system's own dialog leads to.
         if (report.required && !granted && !prompted) {
-          await computerOpenPermissionSettings(permission)
+          await computerOpenPermissionSettings(permission, backendPlatform)
         }
         if (liveRef.current) await refresh()
       } catch (e) {
@@ -119,18 +125,23 @@ export function useComputerStatus(live: boolean) {
         if (aliveRef.current) setRequesting(null)
       }
     },
-    [refresh]
+    [refresh, backendPlatform]
   )
 
-  const openPermissionSettings = useCallback((permission: OsPermission) => {
-    computerOpenPermissionSettings(permission).catch((e) =>
-      setError(toErrorMessage(e))
-    )
-  }, [])
+  const openPermissionSettings = useCallback(
+    (permission: OsPermission) => {
+      computerOpenPermissionSettings(permission, backendPlatform).catch((e) =>
+        setError(toErrorMessage(e))
+      )
+    },
+    [backendPlatform]
+  )
 
   const revealHelper = useCallback(() => {
-    computerRevealHelper().catch((e) => setError(toErrorMessage(e)))
-  }, [])
+    computerRevealHelper(backendPlatform).catch((e) =>
+      setError(toErrorMessage(e))
+    )
+  }, [backendPlatform])
 
   return {
     status,

@@ -1,5 +1,9 @@
 "use client"
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { History, Loader2, ShieldAlert, X } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -29,28 +33,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { isDesktop } from "@/lib/platform"
-import { getActiveRemoteConnectionId } from "@/lib/transport"
+
 import { relaunchApp, restartApp, waitForServerHealthy } from "@/lib/updater"
 import {
   toLocalizedErrorMessage,
   type AppErrorTranslator,
 } from "@/lib/app-error"
 import {
-  backupActiveAgents,
-  cancelBackup,
-  discardPendingRestore,
-  exportBackupDesktop,
-  exportBackupWeb,
-  listSafetySnapshots,
-  listenBackupProgress,
-  prepareBackupSourceDesktop,
-  prepareBackupSourceWeb,
-  releaseBackupSource,
-  rollbackToSnapshot,
-  scanExternalConflicts,
-  stageRestoreDesktop,
-  stageRestoreWeb,
-  uploadBackupWeb,
   type BackupPreview,
   type BackupProgress,
   type DegradedSqlite,
@@ -116,6 +105,9 @@ export type DataSyncPane = "sync" | "backup" | "restore"
  * a browser (see `data-sync-settings.tsx`).
  */
 export function BackupSettings({ pane }: { pane: DataSyncPane }) {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("BackupSettings")
   // Root-scoped translator so backend errors carrying dotted i18n keys
   // (`backup.restore.error.*`) localize; falls back to the English message when
@@ -130,10 +122,12 @@ export function BackupSettings({ pane }: { pane: DataSyncPane }) {
   // A remote-desktop window is a Tauri shell whose transport points at a remote
   // server: native dialogs + local Tauri commands would not line up with that
   // server's ticket/upload web API, so backup is managed on the server itself.
-  const remote = isDesktop() && getActiveRemoteConnectionId() !== null
+  const remote =
+    isDesktop() && backendPlatform.getActiveRemoteConnectionId() !== null
   // "desktop" path = local Tauri only (native dialogs + Tauri commands). Both
   // standalone web and remote-desktop use the web flow / are gated below.
-  const desktop = isDesktop() && getActiveRemoteConnectionId() === null
+  const desktop =
+    isDesktop() && backendPlatform.getActiveRemoteConnectionId() === null
 
   // ── Export ──
   const [includeExternal, setIncludeExternal] = useState(false)
@@ -172,15 +166,17 @@ export function BackupSettings({ pane }: { pane: DataSyncPane }) {
   useEffect(() => {
     let active = true
     let unsub: (() => void) | undefined
-    void listenBackupProgress((event) => setProgress(event)).then((fn) => {
-      if (active) unsub = fn
-      else fn()
-    })
+    void backendApi
+      .listenBackupProgress((event) => setProgress(event))
+      .then((fn) => {
+        if (active) unsub = fn
+        else fn()
+      })
     return () => {
       active = false
       unsub?.()
     }
-  }, [])
+  }, [backendApi])
 
   // Wrapped rather than `.catch()`-ed: the snapshot list is a nicety, and a
   // transport that throws synchronously must not take the settings page down
@@ -188,12 +184,12 @@ export function BackupSettings({ pane }: { pane: DataSyncPane }) {
   const refreshSnapshots = useCallback(() => {
     void (async () => {
       try {
-        setSnapshots(await listSafetySnapshots())
+        setSnapshots(await backendApi.listSafetySnapshots())
       } catch {
         setSnapshots([])
       }
     })()
-  }, [])
+  }, [backendApi])
   useEffect(refreshSnapshots, [refreshSnapshots])
 
   const passphraseMismatch =
@@ -212,9 +208,12 @@ export function BackupSettings({ pane }: { pane: DataSyncPane }) {
    * Skipping this is safe (idle reaping and the startup sweep both cover it),
    * but leaving a plaintext copy around longer than necessary is not the goal.
    */
-  const releasePrepared = useCallback((id: string | null | undefined) => {
-    if (id) void releaseBackupSource(id).catch(() => {})
-  }, [])
+  const releasePrepared = useCallback(
+    (id: string | null | undefined) => {
+      if (id) void backendApi.releaseBackupSource(id).catch(() => {})
+    },
+    [backendApi]
+  )
 
   const handleExport = useCallback(async () => {
     if (passphraseMismatch) {
@@ -230,13 +229,13 @@ export function BackupSettings({ pane }: { pane: DataSyncPane }) {
         passphrase: passphrase || null,
       }
       if (desktop) {
-        const manifest = await exportBackupDesktop(opts)
+        const manifest = await backendApi.exportBackupDesktop(opts)
         if (manifest) {
           setDegraded(manifest.degradedSqlite ?? [])
           toast.success(t("export.success"))
         }
       } else {
-        const result = await exportBackupWeb(opts)
+        const result = await backendApi.exportBackupWeb(opts)
         setDegraded(result.degradedSqlite ?? [])
         toast.success(t("export.started"))
       }
@@ -246,7 +245,15 @@ export function BackupSettings({ pane }: { pane: DataSyncPane }) {
       setExporting(false)
       setProgress(null)
     }
-  }, [desktop, includeExternal, passphrase, passphraseMismatch, t, localize])
+  }, [
+    desktop,
+    includeExternal,
+    passphrase,
+    passphraseMismatch,
+    t,
+    localize,
+    backendApi,
+  ])
 
   /** Decrypt once and keep the handle for the conflict scan and for staging. */
   const runPrepare = useCallback(
@@ -256,8 +263,14 @@ export function BackupSettings({ pane }: { pane: DataSyncPane }) {
       try {
         const prepared =
           source.origin.kind === "desktop"
-            ? await prepareBackupSourceDesktop(source.origin.path, pass)
-            : await prepareBackupSourceWeb(source.origin.uploadId, pass)
+            ? await backendApi.prepareBackupSourceDesktop(
+                source.origin.path,
+                pass
+              )
+            : await backendApi.prepareBackupSourceWeb(
+                source.origin.uploadId,
+                pass
+              )
         setPreview(prepared.preview)
         setRestoreSource({ ...source, sourceId: prepared.sourceId ?? null })
       } catch (err) {
@@ -268,7 +281,7 @@ export function BackupSettings({ pane }: { pane: DataSyncPane }) {
         setInspecting(false)
       }
     },
-    [localize, releasePrepared]
+    [localize, releasePrepared, backendApi]
   )
 
   const handlePickDesktop = useCallback(async () => {
@@ -303,7 +316,7 @@ export function BackupSettings({ pane }: { pane: DataSyncPane }) {
       resetExternalState()
       setUploading(true)
       try {
-        const uploadId = await uploadBackupWeb(file)
+        const uploadId = await backendApi.uploadBackupWeb(file)
         const source: RestoreSource = {
           origin: { kind: "web", uploadId },
           name: file.name,
@@ -317,7 +330,14 @@ export function BackupSettings({ pane }: { pane: DataSyncPane }) {
         setUploading(false)
       }
     },
-    [runPrepare, resetExternalState, localize, releasePrepared, restoreSource]
+    [
+      runPrepare,
+      resetExternalState,
+      localize,
+      releasePrepared,
+      restoreSource,
+      backendApi,
+    ]
   )
 
   const handleUnlock = useCallback(async () => {
@@ -354,11 +374,11 @@ export function BackupSettings({ pane }: { pane: DataSyncPane }) {
       setScanningConflicts(true)
       try {
         const [found, agents] = await Promise.all([
-          scanExternalConflicts(restoreSource.sourceId),
+          backendApi.scanExternalConflicts(restoreSource.sourceId),
           // Advisory only: the backend takes a lock before it writes and
           // downgrades to the side location if anything is running. This just
           // means the user rarely gets there by surprise.
-          backupActiveAgents().catch(() => [] as string[]),
+          backendApi.backupActiveAgents().catch(() => [] as string[]),
         ])
         setConflicts(found)
         setRunningAgents(agents)
@@ -368,18 +388,18 @@ export function BackupSettings({ pane }: { pane: DataSyncPane }) {
         setScanningConflicts(false)
       }
     },
-    [restoreSource, localize]
+    [restoreSource, localize, backendApi]
   )
 
   const handleDiscardPending = useCallback(async () => {
     try {
-      await discardPendingRestore()
+      await backendApi.discardPendingRestore()
       setPendingBlocked(false)
       toast.success(t("restore.discarded"))
     } catch (err) {
       toast.error(localize(err))
     }
-  }, [t, localize])
+  }, [t, localize, backendApi])
 
   /** Restart after the user has read the result panel. */
   const finishRestore = useCallback(async () => {
@@ -394,23 +414,26 @@ export function BackupSettings({ pane }: { pane: DataSyncPane }) {
     // and look like success while the restore never applied. Tell the user to
     // restart manually instead.
     try {
-      await restartApp()
+      await restartApp(backendPlatform)
     } catch {
       toast.error(t("restore.restartFailed"))
       setRestoring(false)
       return
     }
     toast.success(t("restore.restarting"))
-    const healthy = await waitForServerHealthy({
-      timeoutMs: 120_000,
-      initialDelayMs: 1500,
-    })
+    const healthy = await waitForServerHealthy(
+      {
+        timeoutMs: 120_000,
+        initialDelayMs: 1500,
+      },
+      backendPlatform
+    )
     if (healthy) window.location.reload()
     else {
       toast.error(t("restore.restartTimeout"))
       setRestoring(false)
     }
-  }, [desktop, t])
+  }, [desktop, t, backendPlatform])
 
   const performRestore = useCallback(async () => {
     if (!restoreSource?.sourceId) return
@@ -421,12 +444,12 @@ export function BackupSettings({ pane }: { pane: DataSyncPane }) {
       const externalMode = buildExternalMode()
       const result =
         restoreSource.origin.kind === "desktop"
-          ? await stageRestoreDesktop({
+          ? await backendApi.stageRestoreDesktop({
               sourceId: restoreSource.sourceId,
               externalMode,
             })
           : (
-              await stageRestoreWeb({
+              await backendApi.stageRestoreWeb({
                 sourceId: restoreSource.sourceId,
                 externalMode,
               })
@@ -441,30 +464,30 @@ export function BackupSettings({ pane }: { pane: DataSyncPane }) {
       toast.error(localize(err))
       setRestoring(false)
     }
-  }, [restoreSource, buildExternalMode, t, localize])
+  }, [restoreSource, buildExternalMode, t, localize, backendApi])
 
   const handleRollback = useCallback(async () => {
     const target = rollbackTarget
     setRollbackTarget(null)
     if (!target) return
     try {
-      await rollbackToSnapshot(target.id)
+      await backendApi.rollbackToSnapshot(target.id)
       toast.success(t("restore.staged"))
       await finishRestore()
     } catch (err) {
       if (isAlreadyPending(err)) setPendingBlocked(true)
       toast.error(localize(err))
     }
-  }, [rollbackTarget, finishRestore, t, localize])
+  }, [rollbackTarget, finishRestore, t, localize, backendApi])
 
   const handleCancelOp = useCallback(async () => {
     if (!progress?.opId) return
     try {
-      await cancelBackup(progress.opId)
+      await backendApi.cancelBackup(progress.opId)
     } catch (err) {
       toast.error(localize(err))
     }
-  }, [progress, localize])
+  }, [progress, localize, backendApi])
 
   const showProgress = progress && ACTIVE_PHASES.includes(progress.phase)
 

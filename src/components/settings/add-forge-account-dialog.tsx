@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useState } from "react"
 import { ExternalLink, Eye, EyeOff, Loader2 } from "lucide-react"
 import { openUrl } from "@/lib/platform"
@@ -15,12 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import {
-  validateGitHubToken,
-  validateGitLabToken,
-  validateGiteaToken,
-  saveAccountToken,
-} from "@/lib/api"
+import type { BackendApi } from "@/lib/backend/types"
 import type { ForgeProviderId, GitHubAccount } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
 
@@ -74,10 +70,12 @@ function defaultServerUrl(provider: ForgeProviderId): string {
 
 /** Which "who am I" endpoint checks the token. Keyed by provider rather than
  *  branched on one, so a forge added later has exactly one place to appear. */
-const VALIDATORS: Record<ForgeProviderId, typeof validateGitHubToken> = {
-  github: validateGitHubToken,
-  gitlab: validateGitLabToken,
-  gitea: validateGiteaToken,
+function validatorsFor(api: BackendApi) {
+  return {
+    github: api.validateGitHubToken,
+    gitlab: api.validateGitLabToken,
+    gitea: api.validateGiteaToken,
+  }
 }
 
 /** The dialog's own copy, per forge. Same keys, same order, one lookup — which
@@ -112,6 +110,8 @@ export function AddForgeAccountDialog({
   provider,
   existing,
 }: AddForgeAccountDialogProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("VersionControlSettings")
   const copy = COPY[provider]
   const rotating = existing != null
@@ -161,7 +161,10 @@ export function AddForgeAccountDialog({
     setError(null)
 
     try {
-      const result = await VALIDATORS[provider](serverUrl.trim(), trimmedToken)
+      const result = await validatorsFor(backendApi)[provider](
+        serverUrl.trim(),
+        trimmedToken
+      )
 
       if (!result.success) {
         setError(
@@ -183,7 +186,7 @@ export function AddForgeAccountDialog({
         provider,
       }
 
-      await saveAccountToken(account.id, trimmedToken)
+      await backendApi.saveAccountToken(account.id, trimmedToken)
       onAccountAdded(account)
       handleOpenChange(false)
     } catch (err) {
@@ -201,6 +204,7 @@ export function AddForgeAccountDialog({
     onAccountAdded,
     handleOpenChange,
     t,
+    backendApi,
   ])
 
   return (

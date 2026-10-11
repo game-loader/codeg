@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useState } from "react"
 import { Eye, EyeOff } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -15,7 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { saveAccountToken } from "@/lib/api"
+
 import type { GitHubAccount } from "@/lib/types"
 
 interface AddGitAccountDialogProps {
@@ -31,6 +32,8 @@ export function AddGitAccountDialog({
   onAccountAdded,
   isFirstAccount,
 }: AddGitAccountDialogProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("VersionControlSettings")
   const ime = useImeGuard()
 
@@ -85,7 +88,7 @@ export function AddGitAccountDialog({
     }
 
     try {
-      await saveAccountToken(account.id, trimmedPass)
+      await backendApi.saveAccountToken(account.id, trimmedPass)
     } catch {
       setError(t("gitAccount.passwordRequired"))
       return
@@ -101,6 +104,7 @@ export function AddGitAccountDialog({
     onAccountAdded,
     handleOpenChange,
     t,
+    backendApi,
   ])
 
   const canSubmit =

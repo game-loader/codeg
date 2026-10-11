@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useState } from "react"
 import { Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -17,7 +18,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { useImeGuard } from "@/hooks/use-ime-guard"
-import { gitStashPush } from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 
 interface StashDialogProps {
@@ -33,6 +34,8 @@ export function StashDialog({
   onClose,
   onStashed,
 }: StashDialogProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.branchDropdown.stashDialog")
   const ime = useImeGuard()
   const [message, setMessage] = useState("")
@@ -49,7 +52,11 @@ export function StashDialog({
   async function handleStash() {
     setLoading(true)
     try {
-      await gitStashPush(folderPath, message.trim() || undefined, keepIndex)
+      await backendApi.gitStashPush(
+        folderPath,
+        message.trim() || undefined,
+        keepIndex
+      )
       toast.success(t("success"))
       setMessage("")
       setKeepIndex(false)

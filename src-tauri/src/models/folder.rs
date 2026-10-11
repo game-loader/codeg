@@ -118,3 +118,17 @@ pub struct FolderCommandInfo {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+/// Git's authoritative worktree inventory. Absent reasons and empty reasons
+/// differ: `Some("")` represents a locked/prunable flag without a reason.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitWorktreeInfo {
+    pub path: String,
+    pub head: Option<String>,
+    pub branch: Option<String>,
+    pub is_main: bool,
+    pub detached: bool,
+    pub bare: bool,
+    pub locked: Option<String>,
+    pub prunable: Option<String>,
+}

@@ -1,5 +1,7 @@
 "use client"
 
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useMemo, useState } from "react"
 import { Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -21,7 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { createModelProvider } from "@/lib/api"
+
 import { CodexModelListEditor } from "@/components/settings/codex-model-list-editor"
 import {
   MODEL_PROVIDER_AGENT_TYPES,
@@ -31,7 +33,6 @@ import {
   type ClaudeProviderModel,
   type CodexModelConfig,
 } from "@/lib/types"
-import { getAgentLabel } from "@/lib/custom-agents"
 
 interface AddModelProviderDialogProps {
   open: boolean
@@ -44,6 +45,10 @@ export function AddModelProviderDialog({
   onOpenChange,
   onProviderAdded,
 }: AddModelProviderDialogProps) {
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("ModelProviderSettings")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -122,7 +127,7 @@ export function AddModelProviderDialog({
     setLoading(true)
     setError(null)
     try {
-      await createModelProvider({
+      await backendApi.createModelProvider({
         name: name.trim(),
         apiUrl: apiUrl.trim(),
         apiKey: apiKey.trim(),
@@ -155,6 +160,7 @@ export function AddModelProviderDialog({
     handleOpenChange,
     onProviderAdded,
     t,
+    backendApi,
   ])
 
   return (

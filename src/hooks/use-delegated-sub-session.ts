@@ -16,9 +16,10 @@
  * the hook (e.g. user expands the sub-thread again).
  */
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useEffect, useReducer } from "react"
 import type { DbConversationDetail } from "@/lib/types"
-import { getFolderConversation } from "@/lib/api"
+
 import {
   useDelegation,
   type DelegationBinding,
@@ -73,6 +74,8 @@ export function useDelegatedSubSession(
     fallbackTaskId?: string | null
   }
 ): UseDelegatedSubSessionResult {
+  const backendApi = useBackendApi()
+
   const enabled = options?.enabled ?? true
   const fallbackChildConversationId =
     options?.fallbackChildConversationId ?? null
@@ -95,7 +98,8 @@ export function useDelegatedSubSession(
     if (!shouldFetch) return
     let cancelled = false
     dispatch({ kind: "start" })
-    void getFolderConversation(childId)
+    void backendApi
+      .getFolderConversation(childId)
       .then((d) => {
         if (cancelled) return
         dispatch({ kind: "ok", detail: d })
@@ -111,7 +115,7 @@ export function useDelegatedSubSession(
     return () => {
       cancelled = true
     }
-  }, [shouldFetch, childId])
+  }, [shouldFetch, childId, backendApi])
 
   if (!shouldFetch) {
     return { binding, detail: null, loading: false, error: null }

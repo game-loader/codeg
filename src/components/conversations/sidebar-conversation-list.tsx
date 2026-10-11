@@ -1,5 +1,15 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useTabStore as legacyTabs } from "@/contexts/tab-context"
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import {
   memo,
   useCallback,
@@ -42,28 +52,15 @@ import {
   XCircle,
 } from "lucide-react"
 import { useActiveFolder } from "@/contexts/active-folder-context"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabActions, useTabStore } from "@/contexts/tab-context"
+
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
 import { useThemeColor, useZoomLevel } from "@/hooks/use-appearance"
 import { useSortedAvailableAgents } from "@/hooks/use-sorted-available-agents"
 import { useImeGuard } from "@/hooks/use-ime-guard"
 import { OpenInSubContent } from "@/components/layout/open-in-menu"
-import {
-  openImportSessionsWindow,
-  openInCode,
-  openProjectBootWindow,
-  updateConversationTitle,
-  updateConversationStatus,
-  updateConversationPinned,
-  updateFolderColor,
-  updateFolderAlias,
-  updateFolderDefaultAgent,
-  deleteConversation,
-  listChildConversations,
-} from "@/lib/api"
-import { isDesktop, revealItemInDir } from "@/lib/platform"
+
+import { isDesktop } from "@/lib/platform"
 import type {
   AgentType,
   ConversationStatus,
@@ -71,7 +68,7 @@ import type {
   FolderDetail,
   FolderGroupDetail,
 } from "@/lib/types"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import {
   loadFolderExpanded,
   saveFolderExpanded,
@@ -331,6 +328,8 @@ const FolderHeader = memo(function FolderHeader({
    */
   rootBranch?: string | null
 }) {
+  const { getAgentLabel } = useAgentDisplay()
+
   // Own the translations here rather than receiving `t` as a prop: next-intl
   // returns a fresh `t` on every parent render, so passing it down would defeat
   // this component's memo and re-render every header on each status event.
@@ -887,6 +886,21 @@ export function SidebarConversationList({
 }: SidebarConversationListProps & {
   ref?: Ref<SidebarConversationListHandle>
 }) {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({
+    workspace: legacyWorkspace,
+    tabs: legacyTabs,
+  })
+  const useAppWorkspaceStore = backendStores.workspace
+  const useTabStore = backendStores.tabs
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Folder.sidebar")
   const tCommon = useTranslations("Folder.common")
   const tFolderDropdown = useTranslations("Folder.folderNameDropdown")
@@ -1178,16 +1192,19 @@ export function SidebarConversationList({
 
   /** Drive every folder group at once, for expand/collapse-all. Reads the group
    *  list imperatively so the callback stays stable across group changes. */
-  const setAllGroupsCollapsed = useCallback((collapsed: boolean) => {
-    setFolderGroupExpanded(() => {
-      const next: Record<number, boolean> = {}
-      for (const group of useAppWorkspaceStore.getState().folderGroups) {
-        next[group.id] = !collapsed
-      }
-      saveFolderGroupExpanded(next)
-      return next
-    })
-  }, [])
+  const setAllGroupsCollapsed = useCallback(
+    (collapsed: boolean) => {
+      setFolderGroupExpanded(() => {
+        const next: Record<number, boolean> = {}
+        for (const group of useAppWorkspaceStore.getState().folderGroups) {
+          next[group.id] = !collapsed
+        }
+        saveFolderGroupExpanded(next)
+        return next
+      })
+    },
+    [useAppWorkspaceStore]
+  )
 
   /** Drive every top-level section header at once, for expand/collapse-all.
    *  Bails out (same object → no re-render, no write) when they already all
@@ -1206,33 +1223,33 @@ export function SidebarConversationList({
   const handleChangeFolderColor = useCallback(
     async (folderId: number, color: FolderThemeColor) => {
       try {
-        await updateFolderColor(folderId, color)
+        await backendApi.updateFolderColor(folderId, color)
         await refreshFolder(folderId)
       } catch (err) {
         const msg = toErrorMessage(err)
         toast.error(t("toasts.changeFolderColorFailed", { message: msg }))
       }
     },
-    [refreshFolder, t]
+    [refreshFolder, t, backendApi]
   )
 
   const handleSetFolderAlias = useCallback(
     async (folderId: number, alias: string | null) => {
       try {
-        await updateFolderAlias(folderId, alias)
+        await backendApi.updateFolderAlias(folderId, alias)
         await refreshFolder(folderId)
       } catch (err) {
         const msg = toErrorMessage(err)
         toast.error(t("toasts.setFolderAliasFailed", { message: msg }))
       }
     },
-    [refreshFolder, t]
+    [refreshFolder, t, backendApi]
   )
 
   const handleChangeFolderDefaultAgent = useCallback(
     async (folderId: number, agentType: AgentType | null) => {
       try {
-        await updateFolderDefaultAgent(folderId, agentType)
+        await backendApi.updateFolderDefaultAgent(folderId, agentType)
         await refreshFolder(folderId)
       } catch (err) {
         const msg = toErrorMessage(err)
@@ -1241,18 +1258,18 @@ export function SidebarConversationList({
         )
       }
     },
-    [refreshFolder, t]
+    [refreshFolder, t, backendApi]
   )
 
   const handleOpenFolderInSystemExplorer = useCallback(
     (folderId: number) => {
       const folder = folderIndex.get(folderId)
       if (!folder) return
-      void revealItemInDir(folder.path).catch(() => {
+      void backendPlatform.revealItemInDir(folder.path).catch(() => {
         toast.error(tFileTree("toasts.openDirectoryFailed"))
       })
     },
-    [folderIndex, tFileTree]
+    [folderIndex, tFileTree, backendPlatform]
   )
 
   const handleOpenFolderInTerminal = useCallback(
@@ -1272,13 +1289,13 @@ export function SidebarConversationList({
     (folderId: number) => {
       const folder = folderIndex.get(folderId)
       if (!folder) return
-      void openInCode(folder.path).catch((error) => {
+      void backendApi.openInCode(folder.path).catch((error) => {
         toast.error(tFileTree("toasts.openInCodeFailed"), {
           description: toErrorMessage(error),
         })
       })
     },
-    [folderIndex, tFileTree]
+    [folderIndex, tFileTree, backendApi]
   )
 
   // virtua binds to the real OverlayScrollbars viewport element (surfaced via
@@ -1792,66 +1809,69 @@ export function SidebarConversationList({
   // Lazily fetch a conversation's direct delegation children into the cache.
   // Deduped against both the cache and in-flight requests so a re-toggle or the
   // restore-time guard below can call it freely (idempotent, StrictMode-safe).
-  const ensureChildrenLoaded = useCallback(async (id: number) => {
-    if (childrenByParentRef.current.has(id)) return
-    if (childrenInFlightRef.current.has(id)) return
-    childrenInFlightRef.current.add(id)
-    // Placeholder BEFORE the fetch: `childrenByParent` is the only routing
-    // surface for live child upserts, so a concurrent upsert buffers into this
-    // entry instead of being dropped, and the fetch merges them — closing the
-    // lost-update race. `childrenLoading` keeps the spinner up while empty.
-    setChildrenByParent((prev) => {
-      if (prev.has(id)) return prev
-      const next = new Map(prev)
-      next.set(id, [])
-      return next
-    })
-    setChildrenLoading((prev) => {
-      if (prev.has(id)) return prev
-      const next = new Set(prev)
-      next.add(id)
-      return next
-    })
-    try {
-      const fetched = await listChildConversations(id)
+  const ensureChildrenLoaded = useCallback(
+    async (id: number) => {
+      if (childrenByParentRef.current.has(id)) return
+      if (childrenInFlightRef.current.has(id)) return
+      childrenInFlightRef.current.add(id)
+      // Placeholder BEFORE the fetch: `childrenByParent` is the only routing
+      // surface for live child upserts, so a concurrent upsert buffers into this
+      // entry instead of being dropped, and the fetch merges them — closing the
+      // lost-update race. `childrenLoading` keeps the spinner up while empty.
       setChildrenByParent((prev) => {
-        // Drop any child tombstoned while the fetch was in flight — a stale
-        // snapshot can still contain a since-deleted child (list_children
-        // queried before the soft-delete committed) — then merge the snapshot
-        // with live events buffered mid-flight (events win by id) so a child
-        // created after the query isn't lost.
-        const tomb = deletedChildIdsRef.current
-        const liveFetched =
-          tomb.size > 0 ? fetched.filter((c) => !tomb.has(c.id)) : fetched
-        const buffered = prev.get(id)
-        const merged =
-          buffered && buffered.length > 0
-            ? mergeChildrenById(liveFetched, buffered)
-            : liveFetched
+        if (prev.has(id)) return prev
         const next = new Map(prev)
-        next.set(id, merged)
+        next.set(id, [])
         return next
       })
-    } catch {
-      // Roll back the placeholder so a later toggle retries — unless live events
-      // already populated it, in which case keep them.
-      setChildrenByParent((prev) => {
-        const cur = prev.get(id)
-        if (cur && cur.length > 0) return prev
-        const next = new Map(prev)
-        next.delete(id)
-        return next
-      })
-    } finally {
-      childrenInFlightRef.current.delete(id)
       setChildrenLoading((prev) => {
-        if (!prev.has(id)) return prev
+        if (prev.has(id)) return prev
         const next = new Set(prev)
-        next.delete(id)
+        next.add(id)
         return next
       })
-    }
-  }, [])
+      try {
+        const fetched = await backendApi.listChildConversations(id)
+        setChildrenByParent((prev) => {
+          // Drop any child tombstoned while the fetch was in flight — a stale
+          // snapshot can still contain a since-deleted child (list_children
+          // queried before the soft-delete committed) — then merge the snapshot
+          // with live events buffered mid-flight (events win by id) so a child
+          // created after the query isn't lost.
+          const tomb = deletedChildIdsRef.current
+          const liveFetched =
+            tomb.size > 0 ? fetched.filter((c) => !tomb.has(c.id)) : fetched
+          const buffered = prev.get(id)
+          const merged =
+            buffered && buffered.length > 0
+              ? mergeChildrenById(liveFetched, buffered)
+              : liveFetched
+          const next = new Map(prev)
+          next.set(id, merged)
+          return next
+        })
+      } catch {
+        // Roll back the placeholder so a later toggle retries — unless live events
+        // already populated it, in which case keep them.
+        setChildrenByParent((prev) => {
+          const cur = prev.get(id)
+          if (cur && cur.length > 0) return prev
+          const next = new Map(prev)
+          next.delete(id)
+          return next
+        })
+      } finally {
+        childrenInFlightRef.current.delete(id)
+        setChildrenLoading((prev) => {
+          if (!prev.has(id)) return prev
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+      }
+    },
+    [backendApi]
+  )
 
   // Toggle a conversation's sub-session subtree. Expanding kicks off a lazy
   // fetch; the Set identity changes so `rows` rebuilds, but the per-card
@@ -2057,15 +2077,15 @@ export function SidebarConversationList({
 
   const handleRename = useCallback(
     async (id: number, newTitle: string) => {
-      await updateConversationTitle(id, newTitle)
+      await backendApi.updateConversationTitle(id, newTitle)
       refreshConversations()
     },
-    [refreshConversations]
+    [refreshConversations, backendApi]
   )
 
   const handleDelete = useCallback(
     async (id: number, agentType: string, folderId: number) => {
-      await deleteConversation(id)
+      await backendApi.deleteConversation(id)
       // No-op if no matching tab is open (the context guards on its tab ref).
       closeConversationTab(
         folderId,
@@ -2074,15 +2094,15 @@ export function SidebarConversationList({
       )
       refreshConversations()
     },
-    [closeConversationTab, refreshConversations]
+    [closeConversationTab, refreshConversations, backendApi]
   )
 
   const handleStatusChange = useCallback(
     async (id: number, status: ConversationStatus) => {
       updateConversationLocal(id, { status })
-      await updateConversationStatus(id, status)
+      await backendApi.updateConversationStatus(id, status)
     },
-    [updateConversationLocal]
+    [updateConversationLocal, backendApi]
   )
 
   const handleTogglePin = useCallback(
@@ -2095,9 +2115,9 @@ export function SidebarConversationList({
       updateConversationLocal(id, {
         pinned_at: nextPinned ? new Date().toISOString() : null,
       })
-      await updateConversationPinned(id, nextPinned)
+      await backendApi.updateConversationPinned(id, nextPinned)
     },
-    [updateConversationLocal]
+    [updateConversationLocal, backendApi]
   )
 
   const handleNewConversation = useCallback(() => {
@@ -2135,14 +2155,16 @@ export function SidebarConversationList({
   const handleImportForFolder = useCallback(
     (folderId: number) => {
       const folder = folderIndex.get(folderId)
-      void openImportSessionsWindow({ focusPath: folder?.path ?? null })
+      void backendApi.openImportSessionsWindow({
+        focusPath: folder?.path ?? null,
+      })
     },
-    [folderIndex]
+    [folderIndex, backendApi]
   )
 
   const handleOpenImportWindow = useCallback(() => {
-    void openImportSessionsWindow()
-  }, [])
+    void backendApi.openImportSessionsWindow()
+  }, [backendApi])
 
   // ── Folder groups ─────────────────────────────────────────────────────────
   // Creating a group opens a small naming dialog rather than dropping an
@@ -2256,7 +2278,7 @@ export function SidebarConversationList({
       }
       setDeleteGroupConfirm({ groupId, name: group.name, count })
     },
-    [deleteFolderGroupAction, t]
+    [deleteFolderGroupAction, t, useAppWorkspaceStore]
   )
 
   const confirmDeleteGroup = useCallback(async () => {
@@ -2569,13 +2591,13 @@ export function SidebarConversationList({
   const handleOpenCloneDialog = useCallback(() => setCloneOpen(true), [])
 
   const handleProjectBoot = useCallback(() => {
-    openProjectBootWindow().catch((err) => {
+    backendApi.openProjectBootWindow().catch((err) => {
       console.error(
         "[SidebarConversationList] failed to open project boot:",
         err
       )
     })
-  }, [])
+  }, [backendApi])
 
   const showEmptyWorkspaceActions =
     folders.length === 0 && conversations.length === 0

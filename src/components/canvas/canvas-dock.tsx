@@ -1,5 +1,7 @@
 "use client"
 
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { defaultBackendStoreStorage as legacyStorage } from "@/stores/backend-store-storage"
 import {
   useEffect,
   useLayoutEffect,
@@ -44,10 +46,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import type { CreateCanvasNodeInput } from "@/lib/api"
-import {
-  loadCanvasMinimapVisible,
-  saveCanvasMinimapVisible,
-} from "@/lib/canvas-view-storage"
+import { getCanvasViewStorage } from "@/lib/canvas-view-storage"
 import { cn } from "@/lib/utils"
 import { AddNodeMenu } from "./add-node-menu"
 import type { CanvasNode } from "@/lib/types"
@@ -181,6 +180,10 @@ const ZOOM_EPSILON = 0.001
  * only when the zoom actually moves.
  */
 export function CanvasViewportPanel() {
+  const backendStores = useBackendStores({ storage: legacyStorage })
+  const { loadCanvasMinimapVisible, saveCanvasMinimapVisible } =
+    getCanvasViewStorage(backendStores.storage)
+
   const t = useTranslations("Canvas")
   const { zoomIn, zoomOut, zoomTo } = useReactFlow()
   const zoom = useStore((s) => s.transform[2])

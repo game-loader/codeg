@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useState } from "react"
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
@@ -23,6 +24,8 @@ export function MachineRemoveDialog({
   onClose: () => void
   onRemoved: (id: string) => void
 }) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Machines")
   const [removing, setRemoving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -31,7 +34,7 @@ export function MachineRemoveDialog({
     setRemoving(true)
     setError(null)
     try {
-      await deleteManualMachine(machine.id)
+      await deleteManualMachine(machine.id, backendPlatform)
       onRemoved(machine.id)
     } catch (err) {
       setError(machineError(err))

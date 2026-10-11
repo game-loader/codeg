@@ -1,13 +1,15 @@
 "use client"
 
+import { useCanvasStore as legacyCanvas } from "@/stores/canvas-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useEffect } from "react"
-import { subscribe, onTransportReconnect } from "@/lib/platform"
+
 import {
   CANVAS_CHANGED_EVENT,
   type CanvasChange,
   type CanvasNode,
 } from "@/lib/types"
-import { useCanvasStore } from "@/stores/canvas-store"
 
 /**
  * Wires the canvas store to the backend while a board is on screen: point the
@@ -23,12 +25,17 @@ import { useCanvasStore } from "@/stores/canvas-store"
  * failed fetch from retrying behind a view that is gone.
  */
 export function useCanvasData(boardId: number): void {
+  const backendStores = useBackendStores({ canvas: legacyCanvas })
+  const useCanvasStore = backendStores.canvas
+
+  const backendPlatform = useBackendPlatform()
+
   useEffect(() => {
     useCanvasStore.getState().openBoard(boardId)
     let disposed = false
     let unlisten: (() => void) | undefined
     void (async () => {
-      const dispose = await subscribe<CanvasChange>(
+      const dispose = await backendPlatform.subscribe<CanvasChange>(
         CANVAS_CHANGED_EVENT,
         (change) => useCanvasStore.getState().handleCanvasChanged(change)
       )
@@ -39,7 +46,7 @@ export function useCanvasData(boardId: number): void {
       unlisten = dispose
       void useCanvasStore.getState().refetch()
     })()
-    const offReconnect = onTransportReconnect(() =>
+    const offReconnect = backendPlatform.onTransportReconnect(() =>
       useCanvasStore.getState().refetch()
     )
     return () => {
@@ -53,7 +60,7 @@ export function useCanvasData(boardId: number): void {
         useCanvasStore.getState().closeBoard()
       }
     }
-  }, [boardId])
+  }, [boardId, backendPlatform, useCanvasStore])
 }
 
 const NO_NODES: ReadonlyMap<number, CanvasNode> = new Map()
@@ -73,6 +80,9 @@ export function useBoardNodes(boardId: number): {
   hydrated: boolean
   missing: boolean
 } {
+  const backendStores = useBackendStores({ canvas: legacyCanvas })
+  const useCanvasStore = backendStores.canvas
+
   const nodes = useCanvasStore((s) =>
     s.boardId === boardId ? s.nodes : NO_NODES
   )

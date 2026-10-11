@@ -1,4 +1,4 @@
-import { create } from "zustand"
+import { createStoreScope } from "@/stores/backend-store-scope"
 
 /**
  * The forge page's reload button sits in the WINDOW CHROME — the top-right
@@ -23,13 +23,34 @@ interface ForgeRefreshState {
   withdraw: () => void
 }
 
-export const useForgeRefreshStore = create<ForgeRefreshState>((set) => ({
-  refresh: null,
-  busy: false,
-  publish: (next) =>
-    set((s) => (s.refresh === next.refresh && s.busy === next.busy ? s : next)),
-  withdraw: () =>
-    set((s) =>
-      s.refresh == null && !s.busy ? s : { refresh: null, busy: false }
-    ),
-}))
+/** Create an independently owned backend store and its bound helper namespace. */
+export function createForgeRefreshStore() {
+  const scope = createStoreScope()
+
+  const useForgeRefreshStore = scope.create<ForgeRefreshState>((set) => ({
+    refresh: null,
+    busy: false,
+    publish: (next) =>
+      set((s) =>
+        s.refresh === next.refresh && s.busy === next.busy ? s : next
+      ),
+    withdraw: () =>
+      set((s) =>
+        s.refresh == null && !s.busy ? s : { refresh: null, busy: false }
+      ),
+  }))
+
+  scope.onDispose(() => {
+    useForgeRefreshStore.getState().withdraw()
+  })
+  return Object.assign(useForgeRefreshStore, {
+    useForgeRefreshStore,
+
+    dispose: scope.dispose,
+    isDisposed: () => scope.disposed,
+  })
+}
+
+export type ForgeRefreshStore = ReturnType<typeof createForgeRefreshStore>
+
+export const useForgeRefreshStore = createForgeRefreshStore()

@@ -6,6 +6,12 @@ import {
   waitFor,
 } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import {
+  BackendClientProvider,
+  useOptionalBackendClient,
+} from "@/contexts/backend-client-context"
+import { WorkspaceRuntimeVisibilityProvider } from "@/contexts/workspace-runtime-visibility-context"
+import type { BackendClient } from "@/lib/backend/types"
 
 import { DEFAULT_SHORTCUTS } from "@/lib/keyboard-shortcuts"
 import {
@@ -67,11 +73,17 @@ vi.mock("@/contexts/tab-context", () => ({
   }),
   useTabStore: <T,>(
     selector: (s: { tabs: { id: string }[]; activeTabId: string | null }) => T
-  ) =>
-    selector({
-      tabs: state.activeTabId ? [{ id: state.activeTabId }] : [],
-      activeTabId: state.activeTabId,
-    }),
+  ) => {
+    const client = useOptionalBackendClient()
+    const activeTabId =
+      state.activeTabId && client
+        ? `${client.key}:${state.activeTabId}`
+        : state.activeTabId
+    return selector({
+      tabs: activeTabId ? [{ id: activeTabId }] : [],
+      activeTabId,
+    })
+  },
 }))
 vi.mock("@/contexts/workspace-context", () => ({
   useWorkspaceView: () => ({
@@ -79,10 +91,17 @@ vi.mock("@/contexts/workspace-context", () => ({
     activePane: state.activePane,
     filesMaximized: state.filesMaximized,
   }),
-  useWorkspaceFileTabs: () => ({
-    activeFileTabId: state.activeFileTabId,
-    fileTabs: state.activeFileTabId ? [{ id: state.activeFileTabId }] : [],
-  }),
+  useWorkspaceFileTabs: () => {
+    const client = useOptionalBackendClient()
+    const activeFileTabId =
+      state.activeFileTabId && client
+        ? `${client.key}:${state.activeFileTabId}`
+        : state.activeFileTabId
+    return {
+      activeFileTabId,
+      fileTabs: activeFileTabId ? [{ id: activeFileTabId }] : [],
+    }
+  },
   useWorkspaceActions: () => ({
     closeFileTab: spies.closeFileTab,
     closeAllFileTabs: vi.fn(),
@@ -334,4 +353,141 @@ describe("WorkspaceChromeController — reopen draft shortcut", () => {
       expect(popClosedTab()).toBeNull()
     }
   )
+})
+
+const clientA = { key: "remote:1" } as unknown as BackendClient
+const clientB = { key: "remote:2" } as unknown as BackendClient
+
+function PairedControllers({
+  aVisible = true,
+  aFocused = true,
+  bFocused = false,
+}: {
+  aVisible?: boolean
+  aFocused?: boolean
+  bFocused?: boolean
+}) {
+  return (
+    <>
+      {[
+        { client: clientA, visible: aVisible, focused: aFocused },
+        { client: clientB, visible: true, focused: bFocused },
+      ].map(({ client, visible, focused }) => (
+        <BackendClientProvider key={client.key} client={client}>
+          <WorkspaceRuntimeVisibilityProvider
+            value={{ managed: true, visible, focused }}
+          >
+            <div data-backend-key={client.key}>
+              <div data-workspace-pane="files">
+                <div data-browser-surface={`native-${client.key}`} />
+              </div>
+              <div data-workspace-pane="conversation">
+                <iframe title={client.key} id={`iframe-${client.key}`} />
+              </div>
+              <WorkspaceChromeController />
+            </div>
+          </WorkspaceRuntimeVisibilityProvider>
+        </BackendClientProvider>
+      ))}
+    </>
+  )
+}
+
+async function renderPair(props: Parameters<typeof PairedControllers>[0] = {}) {
+  const handlers = new Set<(payload: CloseShortcutPayload) => void>()
+  spies.subscribe.mockImplementation(
+    async (event: string, handler: (payload: CloseShortcutPayload) => void) => {
+      expect(event).toBe(CLOSE_SHORTCUT_EVENT)
+      handlers.add(handler)
+      return () => handlers.delete(handler)
+    }
+  )
+  const view = render(<PairedControllers {...props} />)
+  await waitFor(() => expect(handlers.size).toBe(2))
+  return {
+    ...view,
+    press: (surfaceTabId: string | null) => {
+      act(() => {
+        for (const handler of handlers)
+          handler({ window: "main", surfaceTabId })
+      })
+    },
+  }
+}
+
+describe("retained WorkspaceChromeController ownership", () => {
+  it.each([
+    { aVisible: false, aFocused: true, bFocused: true },
+    { aVisible: true, aFocused: false, bFocused: true },
+  ])(
+    "routes untargeted chords once in hidden/split panes: %j",
+    async (props) => {
+      await renderPair(props)
+      fireEvent.keyDown(document, { key: "w", metaKey: true })
+      expect(spies.closeTab.mock.calls).toEqual([["remote:2:conv-1"]])
+    }
+  )
+
+  it("routes explicit DOM chords to the owner despite stale React focus", async () => {
+    await renderPair()
+    const owner = document.querySelector('[data-backend-key="remote:2"]')!
+    fireEvent.keyDown(owner, { key: "w", metaKey: true })
+    expect(spies.closeTab.mock.calls).toEqual([["remote:2:conv-1"]])
+  })
+
+  it("uses the native surface owner before changing panes or closing tabs", async () => {
+    const { press } = await renderPair()
+    press("native-remote:2")
+    expect(spies.closeFileTab.mock.calls).toEqual([["remote:2:browser:tab-1"]])
+    expect(spies.setActivePane.mock.calls).toEqual([["files"]])
+    expect(spies.closeTab).not.toHaveBeenCalled()
+    expect(spies.closeCurrentWindow).not.toHaveBeenCalled()
+  })
+
+  it("uses a focused iframe's owner even when React still focuses the other pane", async () => {
+    const { press } = await renderPair()
+    focusIframe("iframe-remote:2")
+    press(null)
+    expect(spies.closeTab.mock.calls).toEqual([["remote:2:conv-1"]])
+    expect(spies.setActivePane.mock.calls).toEqual([["conversation"]])
+  })
+
+  it("rejects a hidden native owner and refreshes ownership when visibility changes", async () => {
+    const { press, rerender } = await renderPair({
+      aVisible: false,
+      bFocused: true,
+    })
+    press("native-remote:1")
+    expect(spies.closeFileTab).not.toHaveBeenCalled()
+    expect(spies.setActivePane).not.toHaveBeenCalled()
+    expect(spies.closeCurrentWindow).not.toHaveBeenCalled()
+    rerender(<PairedControllers aFocused={false} bFocused />)
+    press("native-remote:1")
+    expect(spies.closeFileTab.mock.calls).toEqual([["remote:1:browser:tab-1"]])
+  })
+
+  it.each([false, true])(
+    "checks native ownership before the window-close fallback (remapped=%s)",
+    async (remapped) => {
+      if (remapped) state.shortcuts.close_current_tab = "mod+shift+x"
+      else state.activeFileTabId = null
+      const { press } = await renderPair()
+      press("native-remote:2")
+      expect(spies.closeCurrentWindow).toHaveBeenCalledTimes(1)
+      expect(spies.closeTab).not.toHaveBeenCalled()
+      expect(spies.closeFileTab).not.toHaveBeenCalled()
+    }
+  )
+
+  it("closes the window once for an untargeted menu event and ignores unknown surfaces", async () => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(false)
+    state.activeTabId = null
+    const { press } = await renderPair()
+    press(null)
+    expect(spies.closeCurrentWindow).toHaveBeenCalledTimes(1)
+    spies.closeCurrentWindow.mockClear()
+    state.shortcuts.close_current_tab = "mod+shift+x"
+    press("missing-surface")
+    expect(spies.closeCurrentWindow).not.toHaveBeenCalled()
+  })
 })

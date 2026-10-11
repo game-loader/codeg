@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Check, ChevronDown, ChevronRight, Loader2, Upload } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -33,16 +34,7 @@ import {
   FileTreeFile,
   FileTreeFolder,
 } from "@/components/ai-elements/file-tree"
-import {
-  gitAddFiles,
-  gitCommit,
-  gitPush,
-  gitRollbackFile,
-  gitShowFile,
-  gitStatus,
-  deleteFileTreeEntry,
-  readFilePreview,
-} from "@/lib/api"
+
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -227,6 +219,8 @@ export function CommitWorkspace({
   onCommitted,
   onCancel,
 }: CommitWorkspaceProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.commitDialog")
   const tCommon = useTranslations("Folder.common")
   const { withCredentialRetry } = useGitCredential()
@@ -331,7 +325,8 @@ export function CommitWorkspace({
             folderPath,
             file,
             { kind: "ref", ref: "HEAD", missingRefIsAbsent: true },
-            { kind: "worktree" }
+            { kind: "worktree" },
+            backendApi
           )
           if (diffRequestRef.current !== requestId) return
           setDiffImage({ file, sides })
@@ -341,8 +336,9 @@ export function CommitWorkspace({
         const [originalContent, modifiedContent] = await Promise.all([
           isUntracked
             ? Promise.resolve("")
-            : gitShowFile(folderPath, file).catch(() => ""),
-          readFilePreview(folderPath, file)
+            : backendApi.gitShowFile(folderPath, file).catch(() => ""),
+          backendApi
+            .readFilePreview(folderPath, file)
             .then((r) => r.content)
             .catch(() => ""),
         ])
@@ -358,7 +354,7 @@ export function CommitWorkspace({
         if (diffRequestRef.current === requestId) setLoadingDiff(false)
       }
     },
-    [folderPath]
+    [folderPath, backendApi]
   )
 
   const loadStatus = useCallback(async () => {
@@ -366,7 +362,7 @@ export function CommitWorkspace({
     setLoadingStatus(true)
     setError(null)
     try {
-      const result = await gitStatus(folderPath, true)
+      const result = await backendApi.gitStatus(folderPath, true)
       setEntries(result)
       const tracked = result.filter(
         (entry) => entry.status !== UNTRACKED_STATUS
@@ -397,7 +393,7 @@ export function CommitWorkspace({
     } finally {
       setLoadingStatus(false)
     }
-  }, [folderPath, folderName, loadDiff])
+  }, [folderPath, folderName, loadDiff, backendApi])
 
   useEffect(() => {
     if (!folderPath) return
@@ -470,7 +466,7 @@ export function CommitWorkspace({
       setCommitting(true)
       setError(null)
       try {
-        const result = await gitCommit(
+        const result = await backendApi.gitCommit(
           folderPath,
           commitMessage,
           Array.from(selected),
@@ -486,7 +482,7 @@ export function CommitWorkspace({
           try {
             const hint: GitRemoteHint = { folderPath }
             await withCredentialRetry(
-              (creds) => gitPush(folderPath, null, creds, folderId),
+              (creds) => backendApi.gitPush(folderPath, null, creds, folderId),
               hint
             )
           } catch (pushErr) {
@@ -504,7 +500,15 @@ export function CommitWorkspace({
         setCommitting(false)
       }
     },
-    [folderId, folderPath, onCommitted, selected, t, withCredentialRetry]
+    [
+      folderId,
+      folderPath,
+      onCommitted,
+      selected,
+      t,
+      withCredentialRetry,
+      backendApi,
+    ]
   )
 
   // --- Context menu actions ---
@@ -513,7 +517,7 @@ export function CommitWorkspace({
     async (file: string) => {
       if (!folderPath) return
       try {
-        await gitAddFiles(folderPath, [file])
+        await backendApi.gitAddFiles(folderPath, [file])
         toast.success(t("toasts.addedToVcs"), { description: file })
         void loadStatus()
       } catch (err) {
@@ -522,7 +526,7 @@ export function CommitWorkspace({
         })
       }
     },
-    [folderPath, loadStatus, t]
+    [folderPath, loadStatus, t, backendApi]
   )
 
   const handleDeleteFile = useCallback(
@@ -536,7 +540,7 @@ export function CommitWorkspace({
           void (async () => {
             if (!folderPath) return
             try {
-              await deleteFileTreeEntry(folderPath, file)
+              await backendApi.deleteFileTreeEntry(folderPath, file)
               toast.success(t("toasts.fileDeleted"), { description: file })
               // If deleted file was being viewed, clear the diff
               if (diffFileRef.current === file) {
@@ -560,7 +564,7 @@ export function CommitWorkspace({
         },
       })
     },
-    [folderPath, loadStatus, t]
+    [folderPath, loadStatus, t, backendApi]
   )
 
   const handleRollbackFile = useCallback(
@@ -574,7 +578,7 @@ export function CommitWorkspace({
           void (async () => {
             if (!folderPath) return
             try {
-              await gitRollbackFile(folderPath, file)
+              await backendApi.gitRollbackFile(folderPath, file)
               toast.success(t("toasts.fileRolledBack"), { description: file })
               if (diffFileRef.current === file) {
                 setDiffFile(null)
@@ -597,7 +601,7 @@ export function CommitWorkspace({
         },
       })
     },
-    [folderPath, loadStatus, t]
+    [folderPath, loadStatus, t, backendApi]
   )
 
   const handleRollbackDir = useCallback(
@@ -612,7 +616,7 @@ export function CommitWorkspace({
           void (async () => {
             if (!folderPath) return
             try {
-              await gitRollbackFile(folderPath, dirPath)
+              await backendApi.gitRollbackFile(folderPath, dirPath)
               toast.success(t("toasts.dirRolledBack"), {
                 description: label,
               })
@@ -636,7 +640,7 @@ export function CommitWorkspace({
         },
       })
     },
-    [folderPath, loadStatus, t]
+    [folderPath, loadStatus, t, backendApi]
   )
 
   const handleDeleteDir = useCallback(
@@ -651,7 +655,7 @@ export function CommitWorkspace({
           void (async () => {
             if (!folderPath) return
             try {
-              await deleteFileTreeEntry(folderPath, dirPath)
+              await backendApi.deleteFileTreeEntry(folderPath, dirPath)
               toast.success(t("toasts.dirDeleted"), {
                 description: label,
               })
@@ -675,7 +679,7 @@ export function CommitWorkspace({
         },
       })
     },
-    [folderPath, loadStatus, t]
+    [folderPath, loadStatus, t, backendApi]
   )
 
   const handleAddDirToVcs = useCallback(
@@ -683,7 +687,7 @@ export function CommitWorkspace({
       if (!folderPath) return
       const label = displayName ?? dirPath
       try {
-        await gitAddFiles(folderPath, files)
+        await backendApi.gitAddFiles(folderPath, files)
         toast.success(t("toasts.addedToVcs"), { description: label })
         void loadStatus()
       } catch (err) {
@@ -692,7 +696,7 @@ export function CommitWorkspace({
         })
       }
     },
-    [folderPath, loadStatus, t]
+    [folderPath, loadStatus, t, backendApi]
   )
 
   const closeConfirm = useCallback(() => {

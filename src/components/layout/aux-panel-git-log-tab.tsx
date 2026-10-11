@@ -1,5 +1,11 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import {
   type ReactElement,
   useCallback,
@@ -99,8 +105,7 @@ import { GitLogCommitMessage } from "@/components/layout/git-log-commit-message"
 import { GitLogBranchFilterList } from "@/components/layout/git-log-branch-filter-list"
 import { GIT_TOOLBAR_ICON_BUTTON_CLASS } from "@/components/layout/git-toolbar-controls"
 import { RemoteManageDialog } from "@/components/layout/remote-manage-dialog"
-import { subscribe } from "@/lib/platform"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useWorkspaceActions } from "@/contexts/workspace-context"
 import { useWorkspaceStateStore } from "@/hooks/use-workspace-state-store"
@@ -110,18 +115,7 @@ import {
   useGitQuickActions,
   type GitQuickActions,
 } from "@/hooks/use-git-quick-actions"
-import {
-  getGitBranch,
-  gitCommitBranches,
-  gitCommitFiles,
-  gitCurrentUser,
-  gitListAllBranches,
-  gitLog,
-  gitNewBranch,
-  gitReset,
-  gitSearchAuthors,
-  openPushWindow,
-} from "@/lib/api"
+
 import type {
   GitBranchList,
   GitLogEntry,
@@ -947,6 +941,8 @@ function AuthorFilter({
   onAuthorChange: (author: string | null) => void
   onRemoveRecent: (name: string) => void
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.gitLogTab.authorFilter")
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
@@ -975,7 +971,8 @@ function AuthorFilter({
     if (!trimmed || !folderPath) return
     let cancelled = false
     const handle = setTimeout(() => {
-      gitSearchAuthors(folderPath, trimmed, 20)
+      backendApi
+        .gitSearchAuthors(folderPath, trimmed, 20)
         .then((names) => {
           if (!cancelled)
             setResults({ folder: folderPath, query: trimmed, names })
@@ -989,7 +986,7 @@ function AuthorFilter({
       cancelled = true
       clearTimeout(handle)
     }
-  }, [folderPath, trimmed])
+  }, [folderPath, trimmed, backendApi])
 
   // Results apply to the current query only once their tag matches BOTH the query
   // and the folder (so a popover surviving a repo switch never shows the previous
@@ -1293,6 +1290,12 @@ function LogHeader({
 }
 
 export function GitLogTab() {
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const ime = useImeGuard()
   const t = useTranslations("Folder.gitLogTab")
   const tCommon = useTranslations("Folder.common")
@@ -1525,14 +1528,14 @@ export function GitLogTab() {
     const path = folder?.path
     if (!path) return
     try {
-      const me = await gitCurrentUser(path)
+      const me = await backendApi.gitCurrentUser(path)
       if (folderPathRef.current !== path) return
       setMeName(me)
     } catch {
       if (folderPathRef.current !== path) return
       setMeName(null)
     }
-  }, [folder?.path])
+  }, [folder?.path, backendApi])
 
   const refreshBranches = useCallback(async () => {
     const path = folder?.path
@@ -1540,8 +1543,8 @@ export function GitLogTab() {
     const seq = ++branchRefreshSeqRef.current
     try {
       const [allBranches, current] = await Promise.all([
-        gitListAllBranches(path),
-        getGitBranch(path),
+        backendApi.gitListAllBranches(path),
+        backendApi.getGitBranch(path),
       ])
       // A later refresh for this path, or a folder switch, supersedes this
       // response. In particular, an old branch list must not invalidate a
@@ -1577,7 +1580,7 @@ export function GitLogTab() {
       // Keep the last successful metadata for this path. The sequence above
       // still invalidates older in-flight requests when the latest one fails.
     }
-  }, [folder?.path])
+  }, [folder?.path, backendApi])
 
   // Fetch branches on mount and when git presence flips — the preflight
   // check in `git_list_all_branches` would short-circuit on non-git folders
@@ -1616,7 +1619,10 @@ export function GitLogTab() {
       })
 
       try {
-        const branches = await gitCommitBranches(folder.path, fullHash)
+        const branches = await backendApi.gitCommitBranches(
+          folder.path,
+          fullHash
+        )
         setBranchesByCommit((prev) => ({ ...prev, [fullHash]: branches }))
       } catch (e) {
         setBranchesError((prev) => ({
@@ -1627,7 +1633,7 @@ export function GitLogTab() {
         setBranchesLoading((prev) => ({ ...prev, [fullHash]: false }))
       }
     },
-    [branchesByCommit, branchesLoading, folder?.path]
+    [branchesByCommit, branchesLoading, folder?.path, backendApi]
   )
 
   // Lazy-load a commit's file changes on expand (git_log runs with
@@ -1653,7 +1659,7 @@ export function GitLogTab() {
       setFilesError(clearError)
 
       try {
-        const files = await gitCommitFiles(folder.path, fullHash)
+        const files = await backendApi.gitCommitFiles(folder.path, fullHash)
         if (gen !== filesGenRef.current) return
         setFilesByCommit((prev) => ({ ...prev, [fullHash]: files }))
         // Clear any prior error so a stale error can't mask loaded files.
@@ -1667,7 +1673,7 @@ export function GitLogTab() {
         }
       }
     },
-    [filesByCommit, filesLoading, folder?.path]
+    [filesByCommit, filesLoading, folder?.path, backendApi]
   )
 
   const fetchLog = useCallback(
@@ -1703,7 +1709,7 @@ export function GitLogTab() {
         // selectedBranch === null → the explicit "all branches" view. Always
         // skip file stats (withFiles=false) for speed; a commit's files load
         // lazily on expand.
-        const result = await gitLog(
+        const result = await backendApi.gitLog(
           folder.path,
           PAGE_SIZE,
           branch ?? undefined,
@@ -1769,7 +1775,7 @@ export function GitLogTab() {
         }
       }
     },
-    [folder?.path, selectedBranch, selectedAuthor]
+    [folder?.path, selectedBranch, selectedAuthor, backendApi]
   )
 
   useEffect(() => {
@@ -1798,7 +1804,7 @@ export function GitLogTab() {
     const gen = logGenRef.current
     const skip = entriesRef.current.length
     try {
-      const result = await gitLog(
+      const result = await backendApi.gitLog(
         folder.path,
         PAGE_SIZE,
         selectedBranch ?? undefined,
@@ -1825,7 +1831,7 @@ export function GitLogTab() {
       loadingMoreRef.current = false
       setLoadingMore(false)
     }
-  }, [folder?.path, selectedBranch, selectedAuthor])
+  }, [folder?.path, selectedBranch, selectedAuthor, backendApi])
 
   // virtua reports the scroll offset each frame; fetch the next page once the
   // window nears the estimated end.
@@ -1861,7 +1867,7 @@ export function GitLogTab() {
 
     setCreatingBranch(true)
     try {
-      await gitNewBranch(folder.path, name, newBranchTarget.fullHash)
+      await backendApi.gitNewBranch(folder.path, name, newBranchTarget.fullHash)
       setNewBranchTarget(null)
       setNewBranchName("")
       // `checkout -b` also switched to the new branch: refresh branch metadata
@@ -1897,6 +1903,7 @@ export function GitLogTab() {
     refreshBranches,
     selectedBranch,
     t,
+    backendApi,
   ])
 
   // Reset always targets the CURRENT branch — allowed from the all-branches
@@ -1929,7 +1936,7 @@ export function GitLogTab() {
 
     setResetting(true)
     try {
-      await gitReset(folder.path, resetTarget.fullHash, resetMode)
+      await backendApi.gitReset(folder.path, resetTarget.fullHash, resetMode)
       await refreshBranches()
       await fetchLog({ inline: true })
       if (folder.id) {
@@ -1964,6 +1971,7 @@ export function GitLogTab() {
     resetTarget,
     resetting,
     t,
+    backendApi,
   ])
 
   useEffect(() => {
@@ -2081,10 +2089,11 @@ export function GitLogTab() {
     ] as const
 
     events.forEach((eventName) => {
-      subscribe<{ folder_id: number }>(eventName, (payload) => {
-        if (cancelled || payload.folder_id !== folderId) return
-        onGitEventRef.current()
-      })
+      backendPlatform
+        .subscribe<{ folder_id: number }>(eventName, (payload) => {
+          if (cancelled || payload.folder_id !== folderId) return
+          onGitEventRef.current()
+        })
         .then((fn) => {
           if (cancelled) {
             fn()
@@ -2101,7 +2110,7 @@ export function GitLogTab() {
       cancelled = true
       unlistens.forEach((fn) => fn())
     }
-  }, [folderId])
+  }, [folderId, backendPlatform])
 
   if (!folder) {
     return <AuxPanelNoFolderEmpty />
@@ -2562,15 +2571,17 @@ export function GitLogTab() {
                             <ContextMenuItem
                               onSelect={() => {
                                 if (!folder) return
-                                openPushWindow(folder.id).catch((err) => {
-                                  const msg = toErrorMessage(err)
-                                  toast.error(
-                                    t("toasts.openPushWindowFailed"),
-                                    {
-                                      description: msg,
-                                    }
-                                  )
-                                })
+                                backendApi
+                                  .openPushWindow(folder.id)
+                                  .catch((err) => {
+                                    const msg = toErrorMessage(err)
+                                    toast.error(
+                                      t("toasts.openPushWindowFailed"),
+                                      {
+                                        description: msg,
+                                      }
+                                    )
+                                  })
                               }}
                             >
                               <Upload className="size-3.5" />
@@ -2605,7 +2616,7 @@ export function GitLogTab() {
             <ContextMenuItem
               onSelect={() => {
                 if (!folder) return
-                openPushWindow(folder.id).catch((err) => {
+                backendApi.openPushWindow(folder.id).catch((err) => {
                   const msg = toErrorMessage(err)
                   toast.error(t("toasts.openPushWindowFailed"), {
                     description: msg,

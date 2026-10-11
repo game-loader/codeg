@@ -1,5 +1,9 @@
 "use client"
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useEffect, useRef, useState } from "react"
 import {
   ChevronLeft,
@@ -28,6 +32,9 @@ const PAGE_PADDING = 32
 const MAX_CANVAS_PIXELS = 16_000_000
 
 export function PdfPreview({ tab }: { tab: FileWorkspaceTab }) {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Folder.pdfPreview")
   const [loaded, setLoaded] = useState<{
     source: string
@@ -107,7 +114,13 @@ export function PdfPreview({ tab }: { tab: FileWorkspaceTab }) {
     if (!tab.path || !validData || downloading) return
     setDownloading(true)
     try {
-      await downloadPdf(tab.path, content, tab.title)
+      await downloadPdf(
+        tab.path,
+        content,
+        tab.title,
+        backendApi,
+        backendPlatform
+      )
     } catch (error) {
       toast.error(t("downloadFailed"), { description: toErrorMessage(error) })
     } finally {

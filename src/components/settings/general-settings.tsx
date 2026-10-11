@@ -1,5 +1,9 @@
 "use client"
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useState } from "react"
 import {
   Cpu,
@@ -28,16 +32,9 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import {
-  getAvailableTerminalShells,
-  getSystemRenderingSettings,
-  getSystemTerminalSettings,
-  probeTerminalShellPath,
-  updateSystemRenderingSettings,
-  updateSystemTerminalSettings,
-} from "@/lib/api"
+
 import { isDesktop } from "@/lib/platform"
-import { getActiveRemoteConnectionId } from "@/lib/transport"
+
 import type { AvailableTerminalShells, TerminalShellOption } from "@/lib/types"
 import { usePlatform } from "@/hooks/use-platform"
 import { relaunchApp } from "@/lib/updater"
@@ -72,6 +69,9 @@ function resolveSelectedShellId(
 let processStartDisableHwAccel: boolean | null = null
 
 export function GeneralSettings() {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("GeneralSettings")
   // Backend-driven shell label keys are dynamic strings, so widen `t`
   // for that single call site rather than casting at every use.
@@ -83,7 +83,7 @@ export function GeneralSettings() {
   // remote workspace windows route every API call to a remote web server,
   // which deliberately does not expose this endpoint.
   const renderingSettingsLoadable =
-    isDesktop() && getActiveRemoteConnectionId() === null
+    isDesktop() && backendPlatform.getActiveRemoteConnectionId() === null
   // Windows (WebView2) and Linux (WebKitGTK) each expose an env knob the
   // backend can flip at startup. macOS (WKWebView) exposes none, so showing a
   // switch that cannot do anything there would be a lie.
@@ -131,10 +131,10 @@ export function GeneralSettings() {
     try {
       const [terminalSettings, terminalShells, renderingSettings] =
         await Promise.all([
-          getSystemTerminalSettings(),
-          getAvailableTerminalShells(),
+          backendApi.getSystemTerminalSettings(),
+          backendApi.getAvailableTerminalShells(),
           renderingSettingsLoadable
-            ? getSystemRenderingSettings()
+            ? backendApi.getSystemRenderingSettings()
             : Promise.resolve(null),
         ])
 
@@ -150,7 +150,9 @@ export function GeneralSettings() {
         setCustomShellPath(terminalSettings.default_shell ?? "")
         setCustomPathExists(
           terminalSettings.default_shell
-            ? await probeTerminalShellPath(terminalSettings.default_shell)
+            ? await backendApi.probeTerminalShellPath(
+                terminalSettings.default_shell
+              )
             : null
         )
       } else {
@@ -174,7 +176,7 @@ export function GeneralSettings() {
     } finally {
       setLoading(false)
     }
-  }, [renderingSettingsLoadable])
+  }, [renderingSettingsLoadable, backendApi])
 
   useEffect(() => {
     loadSettings().catch((err) => {
@@ -188,7 +190,7 @@ export function GeneralSettings() {
     async (defaultShell: string | null): Promise<boolean> => {
       setSavingTerminal(true)
       try {
-        const result = await updateSystemTerminalSettings({
+        const result = await backendApi.updateSystemTerminalSettings({
           default_shell: defaultShell,
           // Sent back unchanged — the save replaces the whole stored row, so
           // omitting it would silently reset the color opt-in.
@@ -208,7 +210,7 @@ export function GeneralSettings() {
           // Re-fetch options to refresh `exists` flags (e.g. user just
           // installed pwsh, or backend filter dropped a cross-platform stale
           // value) and the shell the new selection resolves to.
-          const refreshedShells = await getAvailableTerminalShells()
+          const refreshedShells = await backendApi.getAvailableTerminalShells()
           setAvailableShells(refreshedShells)
           const nextSelectedId = resolveSelectedShellId(
             result.default_shell,
@@ -219,7 +221,7 @@ export function GeneralSettings() {
             setCustomShellPath(result.default_shell ?? "")
             setCustomPathExists(
               result.default_shell
-                ? await probeTerminalShellPath(result.default_shell)
+                ? await backendApi.probeTerminalShellPath(result.default_shell)
                 : null
             )
           } else {
@@ -240,7 +242,7 @@ export function GeneralSettings() {
         setSavingTerminal(false)
       }
     },
-    [colorizeCommandOutput, t]
+    [colorizeCommandOutput, t, backendApi]
   )
 
   // Persist the command-color opt-in, sending the current shell back
@@ -257,7 +259,7 @@ export function GeneralSettings() {
       }
       setSavingTerminal(true)
       try {
-        const result = await updateSystemTerminalSettings({
+        const result = await backendApi.updateSystemTerminalSettings({
           default_shell: storedDefaultShell,
           colorize_command_output: next,
         })
@@ -270,7 +272,7 @@ export function GeneralSettings() {
         setSavingTerminal(false)
       }
     },
-    [storedDefaultShell, t]
+    [storedDefaultShell, t, backendApi]
   )
 
   const onShellSelectChange = useCallback(
@@ -305,7 +307,7 @@ export function GeneralSettings() {
     async (next: boolean, prev: boolean) => {
       setSavingRendering(true)
       try {
-        const result = await updateSystemRenderingSettings({
+        const result = await backendApi.updateSystemRenderingSettings({
           disable_hardware_acceleration: next,
         })
         setDisableHwAccel(result.disable_hardware_acceleration)
@@ -318,7 +320,7 @@ export function GeneralSettings() {
         setSavingRendering(false)
       }
     },
-    [t]
+    [t, backendApi]
   )
 
   const restartNow = useCallback(async () => {

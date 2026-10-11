@@ -35,6 +35,7 @@ export interface ExportLabels {
 }
 
 export interface ExportConversationData {
+  agentLabel?: string
   summary: DbConversationSummary
   turns: MessageTurn[]
   sessionStats?: SessionStats | null
@@ -276,7 +277,8 @@ function blocksToHtml(blocks: ContentBlock[], labels: ExportLabels): string {
 function metadataMarkdown(
   summary: DbConversationSummary,
   labels: ExportLabels,
-  stats?: SessionStats | null
+  stats?: SessionStats | null,
+  agentLabel?: string
 ): string {
   const lines: string[] = []
   lines.push(`# ${summary.title ?? labels.untitledConversation}`)
@@ -284,7 +286,7 @@ function metadataMarkdown(
   lines.push(`| | |`)
   lines.push(`|---|---|`)
   lines.push(
-    `| **${labels.agent}** | ${getAgentLabel(summary.agent_type) ?? summary.agent_type} |`
+    `| **${labels.agent}** | ${agentLabel ?? getAgentLabel(summary.agent_type) ?? summary.agent_type} |`
   )
   if (summary.model) lines.push(`| **${labels.model}** | ${summary.model} |`)
   lines.push(
@@ -311,11 +313,12 @@ function metadataMarkdown(
 function metadataHtml(
   summary: DbConversationSummary,
   labels: ExportLabels,
-  stats?: SessionStats | null
+  stats?: SessionStats | null,
+  agentLabel?: string
 ): string {
   const rows: string[] = []
   rows.push(
-    `<tr><td>${escapeHtml(labels.agent)}</td><td>${escapeHtml(getAgentLabel(summary.agent_type) ?? summary.agent_type)}</td></tr>`
+    `<tr><td>${escapeHtml(labels.agent)}</td><td>${escapeHtml(agentLabel ?? getAgentLabel(summary.agent_type) ?? summary.agent_type)}</td></tr>`
   )
   if (summary.model)
     rows.push(
@@ -381,7 +384,7 @@ pre{margin:0;white-space:pre-wrap;word-break:break-word;font-size:0.8125rem}
 
 function buildHtmlDocument(data: ExportConversationData): string {
   const { summary, turns, sessionStats, labels } = data
-  const header = metadataHtml(summary, labels, sessionStats)
+  const header = metadataHtml(summary, labels, sessionStats, data.agentLabel)
   const messages = turns
     .map((turn) => {
       const turnMeta: string[] = []
@@ -426,7 +429,7 @@ export async function exportAsMarkdown(
   const { summary, turns, sessionStats, labels } = data
   const parts: string[] = []
 
-  parts.push(metadataMarkdown(summary, labels, sessionStats))
+  parts.push(metadataMarkdown(summary, labels, sessionStats, data.agentLabel))
   parts.push("\n\n---\n")
 
   for (const turn of turns) {

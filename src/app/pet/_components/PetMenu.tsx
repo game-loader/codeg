@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useEffect, useRef } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -28,6 +29,8 @@ type MenuAction =
  * both problems and gives us free Escape/click-outside dismiss.
  */
 export function PetMenu({ onScaleChange, onOpenSettings }: PetMenuProps) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Pet")
 
   // Stash the latest callbacks in a ref so the menu-action listener (set up
@@ -63,7 +66,8 @@ export function PetMenu({ onScaleChange, onOpenSettings }: PetMenuProps) {
           close: tNow("menu.close"),
         },
         x,
-        y
+        y,
+        backendPlatform
       ).catch((err) => {
         console.warn("[Pet] failed to show context menu:", err)
       })
@@ -72,7 +76,7 @@ export function PetMenu({ onScaleChange, onOpenSettings }: PetMenuProps) {
     return () => {
       document.removeEventListener("contextmenu", onContextMenu)
     }
-  }, [])
+  }, [backendPlatform])
 
   // 2) Listen for actions emitted by the native menu's event handler.
   //    Mount-once subscription — see callbacksRef rationale above.
@@ -89,7 +93,7 @@ export function PetMenu({ onScaleChange, onOpenSettings }: PetMenuProps) {
           const { onScaleChange, onOpenSettings } = callbacksRef.current
           if (action.type === "scale") {
             const next = action.value
-            void savePetWindowState({ scale: next })
+            void savePetWindowState({ scale: next }, backendPlatform)
               .then(() => onScaleChange(next))
               .catch((err) => {
                 console.warn("[Pet] scale change failed:", err)
@@ -97,7 +101,7 @@ export function PetMenu({ onScaleChange, onOpenSettings }: PetMenuProps) {
           } else if (action.type === "open_manager") {
             onOpenSettings()
           } else if (action.type === "close") {
-            void closePetWindow().catch((err) => {
+            void closePetWindow(backendPlatform).catch((err) => {
               console.warn("[Pet] close failed:", err)
             })
           }
@@ -115,7 +119,7 @@ export function PetMenu({ onScaleChange, onOpenSettings }: PetMenuProps) {
       cancelled = true
       disposeTauriListener(unlisten, "Pet")
     }
-  }, [])
+  }, [backendPlatform])
 
   return null
 }

@@ -26,6 +26,7 @@
  * drawer.
  */
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Loader2 } from "lucide-react"
@@ -43,7 +44,7 @@ import {
   adaptMessageTurns,
   type AdaptedMessage,
 } from "@/lib/adapters/ai-elements-adapter"
-import { getConversation } from "@/lib/api"
+
 import { usePageHandoffName } from "@/lib/browser/use-page-handoff-name"
 import { toolStatusUnsettled } from "@/lib/tool-call-lifecycle"
 import type { AgentType, MessageTurn } from "@/lib/types"
@@ -114,6 +115,8 @@ export function SubagentSessionDialog({
   description,
   live = false,
 }: Props) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.chat.contentParts")
   const sharedT = useTranslations("Folder.chat.shared")
   const pageHandoffName = usePageHandoffName()
@@ -146,7 +149,7 @@ export function SubagentSessionDialog({
       inFlightRef.current = true
       if (initial) setLoading(true)
       try {
-        const detail = await getConversation(agentType, sessionId)
+        const detail = await backendApi.getConversation(agentType, sessionId)
         if (!mountedRef.current || seq !== seqRef.current) return
         setMessages(
           adaptMessageTurns(
@@ -174,7 +177,7 @@ export function SubagentSessionDialog({
         if (mountedRef.current && initial) setLoading(false)
       }
     },
-    [agentType, sessionId, sharedT, pageHandoffName, live]
+    [agentType, sessionId, sharedT, pageHandoffName, live, backendApi]
   )
 
   useEffect(() => {

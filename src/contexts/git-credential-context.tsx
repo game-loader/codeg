@@ -1,5 +1,8 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
+import type { BackendApi } from "@/lib/backend/types"
+import * as legacyBackendApi from "@/lib/api"
 import {
   createContext,
   useCallback,
@@ -33,13 +36,6 @@ import {
 } from "@/components/ui/dialog"
 import { extractAppCommandError, toErrorMessage } from "@/lib/app-error"
 import type { GitCredentials } from "@/lib/types"
-import {
-  gitListRemotes,
-  validateGitHubToken,
-  getGitHubAccounts,
-  updateGitHubAccounts,
-  saveAccountToken,
-} from "@/lib/api"
 
 // ---------------------------------------------------------------------------
 // Context
@@ -113,12 +109,15 @@ function isGitHubHost(host: string | null): boolean {
   return host === "github.com"
 }
 
-async function resolveRemoteHost(hint: GitRemoteHint): Promise<string | null> {
+async function resolveRemoteHost(
+  hint: GitRemoteHint,
+  backendApi: BackendApi = legacyBackendApi
+): Promise<string | null> {
   if ("remoteUrl" in hint) {
     return extractHost(hint.remoteUrl)
   }
   try {
-    const remotes = await gitListRemotes(hint.folderPath)
+    const remotes = await backendApi.gitListRemotes(hint.folderPath)
     const origin = remotes.find((r) => r.name === "origin") ?? remotes[0]
     if (!origin) return null
     return extractHost(origin.url)
@@ -140,18 +139,19 @@ interface PendingRequest {
 /** Save generic credentials as a git account for future operations. */
 async function saveGenericAccount(
   host: string | null,
-  creds: GitCredentials
+  creds: GitCredentials,
+  backendApi: BackendApi = legacyBackendApi
 ): Promise<void> {
   const serverUrl = host ? `https://${host}` : "https://unknown"
   try {
-    const existing = await getGitHubAccounts()
+    const existing = await backendApi.getGitHubAccounts()
     const isDuplicate = existing.accounts.some(
       (a) => a.username === creds.username && extractHost(a.server_url) === host
     )
     if (!isDuplicate) {
       const newId = randomUUID()
-      await saveAccountToken(newId, creds.password)
-      await updateGitHubAccounts({
+      await backendApi.saveAccountToken(newId, creds.password)
+      await backendApi.updateGitHubAccounts({
         accounts: [
           ...existing.accounts,
           {
@@ -172,6 +172,8 @@ async function saveGenericAccount(
 }
 
 export function GitCredentialProvider({ children }: { children: ReactNode }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("GitCredentialDialog")
   const ime = useImeGuard()
 
@@ -269,7 +271,10 @@ export function GitCredentialProvider({ children }: { children: ReactNode }) {
         ? `https://${remoteHost}`
         : "https://github.com"
 
-      const result = await validateGitHubToken(serverUrl, trimmedToken)
+      const result = await backendApi.validateGitHubToken(
+        serverUrl,
+        trimmedToken
+      )
       if (!result.success) {
         setError(result.message ?? t("invalidCredentials"))
         setSubmitting(false)
@@ -278,7 +283,7 @@ export function GitCredentialProvider({ children }: { children: ReactNode }) {
 
       // Save as GitHub account
       try {
-        const existing = await getGitHubAccounts()
+        const existing = await backendApi.getGitHubAccounts()
         const isDuplicate = existing.accounts.some(
           (a) =>
             a.username === result.username &&
@@ -294,8 +299,8 @@ export function GitCredentialProvider({ children }: { children: ReactNode }) {
             is_default: existing.accounts.length === 0,
             created_at: new Date().toISOString(),
           }
-          await saveAccountToken(newAccount.id, trimmedToken)
-          await updateGitHubAccounts({
+          await backendApi.saveAccountToken(newAccount.id, trimmedToken)
+          await backendApi.updateGitHubAccounts({
             accounts: [...existing.accounts, newAccount],
           })
         }
@@ -314,7 +319,7 @@ export function GitCredentialProvider({ children }: { children: ReactNode }) {
       setError(msg)
       setSubmitting(false)
     }
-  }, [token, remoteHost, t])
+  }, [token, remoteHost, t, backendApi])
 
   // Generic mode: return username + password directly
   const handleGenericSubmit = useCallback(() => {
@@ -348,13 +353,13 @@ export function GitCredentialProvider({ children }: { children: ReactNode }) {
         if (!isAuthError(firstError)) throw firstError
 
         // Detect remote host to decide dialog mode
-        const host = await resolveRemoteHost(hint)
+        const host = await resolveRemoteHost(hint, backendApi)
         const dialogMode: DialogMode = isGitHubHost(host) ? "github" : "generic"
 
         // Helper: save credentials after successful operation
         const maybeSave = async (c: GitCredentials) => {
           if (modeRef.current === "generic" && saveCredentialsRef.current) {
-            await saveGenericAccount(remoteHostRef.current, c)
+            await saveGenericAccount(remoteHostRef.current, c, backendApi)
           }
           // GitHub mode saves during handleGitHubSubmit, no extra work needed
         }
@@ -399,7 +404,7 @@ export function GitCredentialProvider({ children }: { children: ReactNode }) {
         }
       }
     },
-    [requestCredentials, t]
+    [requestCredentials, t, backendApi]
   )
 
   const canSubmitGitHub = token.trim().length > 0

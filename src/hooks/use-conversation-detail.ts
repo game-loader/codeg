@@ -1,11 +1,12 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useConversationRuntimeActions as standaloneUseConversationRuntimeActions } from "@/stores/conversation-runtime-store"
+import { useConversationRuntimeStore as legacyConversationRuntime } from "@/stores/conversation-runtime-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useEffect } from "react"
 import { useShallow } from "zustand/react/shallow"
-import {
-  useConversationRuntimeActions,
-  useConversationRuntimeStore,
-} from "@/stores/conversation-runtime-store"
+
 import type { DbConversationDetail } from "@/lib/types"
 
 function isVirtualConversationId(conversationId: number): boolean {
@@ -31,6 +32,16 @@ export function useConversationDetail(
   error: string | null
   acpLoadError: string | null
 } {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({
+    conversationRuntime: legacyConversationRuntime,
+  })
+  const useConversationRuntimeStore = backendStores.conversationRuntime
+  const useConversationRuntimeActions = backendStoreSelection
+    ? backendStores.conversationRuntime.useConversationRuntimeActions
+    : standaloneUseConversationRuntimeActions
+
   const enabled = options?.enabled ?? true
   // Subscribe to ONLY the detail-related fields this hook exposes, not the whole
   // session object. The live-message sink replaces the session object on every

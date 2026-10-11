@@ -1,12 +1,16 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+import { useTabStore as legacyTabs } from "@/contexts/tab-context"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { memo, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { Check, ChevronDown, Folder, MessageSquare } from "lucide-react"
 import type { OverlayScrollbarsComponentRef } from "overlayscrollbars-react"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabActions, useTabStore } from "@/contexts/tab-context"
+
 import { Button } from "@/components/ui/button"
 import {
   Popover,
@@ -116,6 +120,18 @@ export const ConversationHeaderFolderPicker = memo(
   function ConversationHeaderFolderPicker({
     tabId,
   }: ConversationHeaderFolderPickerProps) {
+    const backendStoreSelection = useBackendStoreSelection()
+
+    const backendStores = useBackendStores({
+      tabs: legacyTabs,
+      workspace: legacyWorkspace,
+    })
+    const useTabStore = backendStores.tabs
+    const useTabActions = backendStoreSelection
+      ? backendStores.tabs.useTabActions
+      : standaloneUseTabActions
+    const useAppWorkspaceStore = backendStores.workspace
+
     const t = useTranslations("Folder.conversationContextBar")
     const tabs = useTabStore((s) => s.tabs)
     const activeTabId = useTabStore((s) => s.activeTabId)
@@ -262,6 +278,18 @@ export const ConversationFolderBranchPicker = memo(
     tabId,
     override,
   }: ConversationFolderBranchPickerProps) {
+    const backendStoreSelection = useBackendStoreSelection()
+
+    const backendStores = useBackendStores({
+      tabs: legacyTabs,
+      workspace: legacyWorkspace,
+    })
+    const useTabStore = backendStores.tabs
+    const useTabActions = backendStoreSelection
+      ? backendStores.tabs.useTabActions
+      : standaloneUseTabActions
+    const useAppWorkspaceStore = backendStores.workspace
+
     const t = useTranslations("Folder.conversationContextBar")
     const tabs = useTabStore((s) => s.tabs)
     const activeTabId = useTabStore((s) => s.activeTabId)
@@ -407,6 +435,13 @@ export function useConversationFolderBranchPickerVisible(
   tabId?: string | null,
   override?: ConversationFolderPickerOverride
 ): boolean {
+  const backendStores = useBackendStores({
+    tabs: legacyTabs,
+    workspace: legacyWorkspace,
+  })
+  const useTabStore = backendStores.tabs
+  const useAppWorkspaceStore = backendStores.workspace
+
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)

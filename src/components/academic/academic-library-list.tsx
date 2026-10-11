@@ -1,5 +1,7 @@
 "use client"
 
+import { useAcademicStore as legacyAcademic } from "@/stores/academic-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useMemo, useState } from "react"
 import {
   BookOpen,
@@ -9,7 +11,7 @@ import {
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { Input } from "@/components/ui/input"
-import { useAcademicStore } from "@/stores/academic-store"
+
 import type { AcademicCollection, AcademicItem } from "@/lib/academic"
 import { cn } from "@/lib/utils"
 
@@ -20,6 +22,9 @@ export function AcademicLibraryList({
   onSelect?: () => void
   compact?: boolean
 }) {
+  const backendStores = useBackendStores({ academic: legacyAcademic })
+  const useAcademicStore = backendStores.academic
+
   const t = useTranslations("Academic")
   const library = useAcademicStore((s) => s.library)
   const loading = useAcademicStore((s) => s.loadingLibrary)

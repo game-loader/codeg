@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useState, useEffect } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -13,13 +14,6 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Plus, Trash2 } from "lucide-react"
-import {
-  gitListRemotes,
-  gitFetchRemote,
-  gitAddRemote,
-  gitRemoveRemote,
-  gitSetRemoteUrl,
-} from "@/lib/api"
 
 interface RemoteDraft {
   originalName: string | null
@@ -42,6 +36,8 @@ export function RemoteManageDialog({
   folderPath,
   onSaved,
 }: RemoteManageDialogProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.branchDropdown.dialogs")
   const tCommon = useTranslations("Folder.common")
   const [drafts, setDrafts] = useState<RemoteDraft[]>([])
@@ -53,7 +49,8 @@ export function RemoteManageDialog({
     if (open) {
       setErrors({})
       setLoadingRemotes(true)
-      gitListRemotes(folderPath)
+      backendApi
+        .gitListRemotes(folderPath)
         .then((remotes) => {
           setDrafts(
             remotes.map((r) => ({
@@ -71,7 +68,7 @@ export function RemoteManageDialog({
         })
         .finally(() => setLoadingRemotes(false))
     }
-  }, [open, folderPath])
+  }, [open, folderPath, backendApi])
 
   const addDraft = () => {
     setDrafts((prev) => [
@@ -115,7 +112,7 @@ export function RemoteManageDialog({
       // Process deletions first
       for (const draft of drafts) {
         if (draft.deleted && draft.originalName != null) {
-          await gitRemoveRemote(folderPath, draft.originalName)
+          await backendApi.gitRemoveRemote(folderPath, draft.originalName)
         }
       }
       // Process additions
@@ -124,7 +121,7 @@ export function RemoteManageDialog({
         if (draft.deleted) continue
         if (draft.originalName == null && draft.name && draft.url) {
           try {
-            await gitAddRemote(folderPath, draft.name, draft.url)
+            await backendApi.gitAddRemote(folderPath, draft.name, draft.url)
           } catch (err) {
             newErrors[i] = extractError(err)
           }
@@ -136,7 +133,11 @@ export function RemoteManageDialog({
         if (draft.deleted || draft.originalName == null) continue
         if (draft.url !== draft.originalUrl) {
           try {
-            await gitSetRemoteUrl(folderPath, draft.originalName, draft.url)
+            await backendApi.gitSetRemoteUrl(
+              folderPath,
+              draft.originalName,
+              draft.url
+            )
           } catch (err) {
             newErrors[i] = extractError(err)
           }
@@ -149,7 +150,7 @@ export function RemoteManageDialog({
         const remoteName = draft.originalName ?? draft.name
         if (!remoteName) continue
         try {
-          await gitFetchRemote(folderPath, remoteName)
+          await backendApi.gitFetchRemote(folderPath, remoteName)
         } catch (err) {
           newErrors[i] = extractError(err)
         }

@@ -16,8 +16,9 @@
  * which `DelegationCardSource` to hand it).
  */
 
+import { useAgentDisplay } from "@/hooks/use-agent-display"
 import type { ReactNode } from "react"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import { Eye } from "lucide-react"
 import { useTranslations } from "next-intl"
 
@@ -49,6 +50,8 @@ export function DelegationCardRow({
   avatarBadge,
   onOpenSession,
 }: Props) {
+  const { getAgentLabel } = useAgentDisplay()
+
   const t = useTranslations("Folder.chat.delegation")
 
   return (

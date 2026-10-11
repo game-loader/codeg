@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import {
   useCallback,
   useEffect,
@@ -34,13 +35,7 @@ import {
 } from "@/components/ui/resizable"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
-import {
-  quickMessagesCreate,
-  quickMessagesDelete,
-  quickMessagesList,
-  quickMessagesReorder,
-  quickMessagesUpdate,
-} from "@/lib/api"
+
 import type { QuickMessage } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
 
@@ -119,6 +114,8 @@ function QuickMessageReorderItem({
 }
 
 export function QuickMessagesSettings() {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("QuickMessagesSettings")
 
   const [messages, setMessages] = useState<QuickMessage[]>([])
@@ -145,7 +142,7 @@ export function QuickMessagesSettings() {
     setLoading(true)
     setLoadError(null)
     try {
-      const list = await quickMessagesList()
+      const list = await backendApi.quickMessagesList()
       setMessages(list)
     } catch (err) {
       const message = toErrorMessage(err)
@@ -154,7 +151,7 @@ export function QuickMessagesSettings() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [backendApi])
 
   useEffect(() => {
     refresh().catch((err) => {
@@ -225,7 +222,7 @@ export function QuickMessagesSettings() {
       if (ids.length === 0) return
       setReordering(true)
       try {
-        await quickMessagesReorder(ids)
+        await backendApi.quickMessagesReorder(ids)
       } catch (err) {
         const message = toErrorMessage(err)
         toast.error(t("toasts.saveOrderFailed"), { description: message })
@@ -234,7 +231,7 @@ export function QuickMessagesSettings() {
         setReordering(false)
       }
     },
-    [refresh, t]
+    [refresh, t, backendApi]
   )
 
   const handleReorder = useCallback((next: QuickMessage[]) => {
@@ -246,7 +243,10 @@ export function QuickMessagesSettings() {
   const handleCreate = useCallback(async () => {
     setCreating(true)
     try {
-      const created = await quickMessagesCreate({ title: "", content: "" })
+      const created = await backendApi.quickMessagesCreate({
+        title: "",
+        content: "",
+      })
       setMessages((prev) => [...prev, created])
       setSelectedId(created.id)
       toast.success(t("toasts.created"))
@@ -259,13 +259,13 @@ export function QuickMessagesSettings() {
     } finally {
       setCreating(false)
     }
-  }, [t])
+  }, [t, backendApi])
 
   const handleSave = useCallback(async () => {
     if (!selectedMessage) return
     setSaving(true)
     try {
-      const updated = await quickMessagesUpdate({
+      const updated = await backendApi.quickMessagesUpdate({
         id: selectedMessage.id,
         title: draftTitle,
         content: draftContent,
@@ -280,14 +280,14 @@ export function QuickMessagesSettings() {
     } finally {
       setSaving(false)
     }
-  }, [selectedMessage, draftTitle, draftContent, t])
+  }, [selectedMessage, draftTitle, draftContent, t, backendApi])
 
   const handleDelete = useCallback(async () => {
     if (deleteTargetId === null) return
     const target = deleteTargetId
     setDeleting(true)
     try {
-      await quickMessagesDelete(target)
+      await backendApi.quickMessagesDelete(target)
       setMessages((prev) => {
         const next = prev.filter((m) => m.id !== target)
         if (selectedId === target) {
@@ -303,7 +303,7 @@ export function QuickMessagesSettings() {
     } finally {
       setDeleting(false)
     }
-  }, [deleteTargetId, selectedId, t])
+  }, [deleteTargetId, selectedId, t, backendApi])
 
   const safeContainerWidth =
     panelContainerWidth > 0 ? panelContainerWidth : 1200

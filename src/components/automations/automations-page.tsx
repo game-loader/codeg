@@ -1,5 +1,14 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import {
   Fragment,
   useCallback,
@@ -35,8 +44,7 @@ import {
 } from "lucide-react"
 import { useAutomationsView } from "@/contexts/automations-view-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
-import { useTabActions } from "@/contexts/tab-context"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import { AutomationEditor } from "./automation-editor"
 import {
   templateToDraft,
@@ -90,17 +98,7 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable"
-import {
-  automationCancelRun,
-  automationCreate,
-  automationDelete,
-  automationMarkSeen,
-  automationRunNow,
-  automationRuns,
-  automationSetEnabled,
-  automationUpdate,
-} from "@/lib/api"
-import { onTransportReconnect, subscribe } from "@/lib/platform"
+
 import { cn } from "@/lib/utils"
 import type { Automation, AutomationDraft, AutomationRun } from "@/lib/types"
 import { useAgentVocabulary } from "@/hooks/use-agent-vocabulary"
@@ -217,6 +215,11 @@ export function AutomationsPageTitle() {
 }
 
 export function AutomationsPage() {
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Automations")
   const { automations, unseenFailures, refetch } = useAutomationsView()
   const folders = useAppWorkspaceStore((s) => s.folders)
@@ -232,10 +235,11 @@ export function AutomationsPage() {
   // returns. refetch is stable.
   useEffect(() => {
     if (unseenFailures === 0) return
-    void automationMarkSeen()
+    void backendApi
+      .automationMarkSeen()
       .then(() => refetch())
       .catch(() => {})
-  }, [unseenFailures, refetch])
+  }, [unseenFailures, refetch, backendApi])
 
   const hasAutomations = automations.length > 0
   // The shown automation: the explicit selection, else the first row, so the
@@ -355,8 +359,8 @@ export function AutomationsPage() {
   const handleSubmit = async (draft: AutomationDraft) => {
     const saved =
       editing?.kind === "edit"
-        ? await automationUpdate(editing.automation.id, draft)
-        : await automationCreate(draft)
+        ? await backendApi.automationUpdate(editing.automation.id, draft)
+        : await backendApi.automationCreate(draft)
     await refetch()
     setSelectedId(saved.id)
     closeToDetail()
@@ -480,16 +484,23 @@ export function AutomationsPage() {
                               }
                               onSelect={() => selectAutomation(a)}
                               onRunNow={() =>
-                                runAction(() => automationRunNow(a.id))
+                                runAction(() =>
+                                  backendApi.automationRunNow(a.id)
+                                )
                               }
                               onToggleEnabled={() =>
                                 runAction(() =>
-                                  automationSetEnabled(a.id, !a.enabled)
+                                  backendApi.automationSetEnabled(
+                                    a.id,
+                                    !a.enabled
+                                  )
                                 )
                               }
                               onEdit={() => startEdit(a)}
                               onDelete={() =>
-                                runAction(() => automationDelete(a.id))
+                                runAction(() =>
+                                  backendApi.automationDelete(a.id)
+                                )
                               }
                             />
                           ))}
@@ -997,6 +1008,11 @@ function AutomationDetail({
   refetch: () => Promise<void>
   onEdit: () => void
 }) {
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Automations")
   const folders = useAppWorkspaceStore((s) => s.folders)
   const [busy, setBusy] = useState(false)
@@ -1051,7 +1067,7 @@ function AutomationDetail({
                 checked={automation.enabled}
                 disabled={busy}
                 onCheckedChange={(v) =>
-                  run(() => automationSetEnabled(automation.id, v))
+                  run(() => backendApi.automationSetEnabled(automation.id, v))
                 }
                 aria-label={t("enabled")}
               />
@@ -1061,7 +1077,9 @@ function AutomationDetail({
             <Button
               size="sm"
               className="h-8 gap-1.5 rounded-full px-3.5 text-[0.8125rem]"
-              onClick={() => run(() => automationRunNow(automation.id))}
+              onClick={() =>
+                run(() => backendApi.automationRunNow(automation.id))
+              }
               disabled={busy}
             >
               <Play className="size-3.5" aria-hidden="true" />
@@ -1195,6 +1213,16 @@ function RunHistory({
   automation: Automation
   onChanged: () => Promise<void>
 }) {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Automations")
   const { openTab } = useTabActions()
   const { openConversations } = useWorkbenchRoute()
@@ -1205,7 +1233,7 @@ function RunHistory({
   const load = useCallback(async () => {
     const id = ++reqRef.current
     try {
-      const list = await automationRuns(automation.id)
+      const list = await backendApi.automationRuns(automation.id)
       if (id === reqRef.current) {
         setRuns(list)
       }
@@ -1214,23 +1242,25 @@ function RunHistory({
     } finally {
       if (id === reqRef.current) setLoading(false)
     }
-  }, [automation.id])
+  }, [automation.id, backendApi])
 
   useEffect(() => {
     setLoading(true)
     void load()
     let unsub: (() => void) | undefined
     let cancelled = false
-    void subscribe(AUTOMATION_CHANGED_EVENT, () => {
-      void load()
-    }).then((u: () => void) => {
-      if (cancelled) u()
-      else unsub = u
-    })
+    void backendPlatform
+      .subscribe(AUTOMATION_CHANGED_EVENT, () => {
+        void load()
+      })
+      .then((u: () => void) => {
+        if (cancelled) u()
+        else unsub = u
+      })
     // A run that settled while the WS was disconnected drops its event (the
     // broadcaster skips when receiver_count == 0), so re-load on reconnect to
     // clear a stale "running" row. No-op on desktop IPC.
-    const offReconnect = onTransportReconnect(() => {
+    const offReconnect = backendPlatform.onTransportReconnect(() => {
       void load()
     })
     return () => {
@@ -1238,7 +1268,7 @@ function RunHistory({
       unsub?.()
       offReconnect?.()
     }
-  }, [load])
+  }, [load, backendPlatform])
 
   const viewConversation = (r: AutomationRun) => {
     // Worktree runs live in their own folder; shared runs in the automation's
@@ -1253,7 +1283,7 @@ function RunHistory({
 
   const cancel = async (r: AutomationRun) => {
     try {
-      await automationCancelRun(r.id)
+      await backendApi.automationCancelRun(r.id)
       await load()
       await onChanged()
     } catch (e) {

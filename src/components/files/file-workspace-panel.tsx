@@ -1,5 +1,12 @@
 "use client"
 
+import { useTabStore as legacyTabs } from "@/contexts/tab-context"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { defaultBackendStoreStorage as legacyStorage } from "@/stores/backend-store-storage"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useOptionalBackendClient } from "@/contexts/backend-client-context"
+import { useRuntimeEventScope } from "@/hooks/use-runtime-event-scope"
+import { getBackendEventScope } from "@/lib/backend/resource-identity"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import dynamic from "next/dynamic"
 import { ChevronDown, ChevronRight, FileCode2, FileIcon } from "lucide-react"
@@ -11,8 +18,7 @@ import type {
 import type { Monaco, OnChange, OnMount } from "@monaco-editor/react"
 import { toast } from "sonner"
 import { useTranslations } from "next-intl"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabStore } from "@/contexts/tab-context"
+
 import { emitAttachFileToSession } from "@/lib/session-attachment-events"
 import { formatFileRangeLabel } from "@/lib/reference-link"
 import { findOwningFolder, splitAbsPath } from "@/lib/file-open-target"
@@ -763,6 +769,16 @@ function DiffFileList({
 }
 
 export function FileWorkspacePanel() {
+  const ownsEvent = useRuntimeEventScope()
+  const modelScope = getBackendEventScope(useOptionalBackendClient())
+  const backendStores = useBackendStores({
+    tabs: legacyTabs,
+    workspace: legacyWorkspace,
+    storage: legacyStorage,
+  })
+  const useTabStore = backendStores.tabs
+  const useAppWorkspaceStore = backendStores.workspace
+
   const t = useTranslations("Folder.fileWorkspacePanel")
   const { activeFileTab, fileTabs, pendingFileReveal, previewFileTabIds } =
     useWorkspaceFileTabs()
@@ -800,7 +816,8 @@ export function FileWorkspacePanel() {
   const activeScope = activeFileTab?.id ?? "__default__"
   const editorModelPath = buildMonacoModelPath(
     activeFileTab?.path ?? null,
-    activeScope
+    activeScope,
+    modelScope
   )
   const editorRef = useRef<MonacoEditorNs.IStandaloneCodeEditor | null>(null)
   const cursorListenerRef = useRef<{ dispose: () => void } | null>(null)
@@ -852,8 +869,8 @@ export function FileWorkspacePanel() {
   // membership changes — fileTabs itself churns per keystroke. URI segments
   // are %-encoded, so "\n" cannot occur inside an entry.
   const liveModelUrisKey = useMemo(
-    () => collectLiveModelPaths(fileTabs).join("\n"),
-    [fileTabs]
+    () => collectLiveModelPaths(fileTabs, modelScope).join("\n"),
+    [fileTabs, modelScope]
   )
   useEffect(() => {
     const monaco = editorMonaco
@@ -970,6 +987,7 @@ export function FileWorkspacePanel() {
     if (end < start) end = start
     const range = { start, end }
     emitAttachFileToSession({
+      backendKey: backendStores.storage.backendKey,
       tabId: sessionTabId,
       path: attachPath,
       range,
@@ -979,7 +997,7 @@ export function FileWorkspacePanel() {
         label: formatFileRangeLabel(ctx.fileName, range),
       })
     )
-  }, [])
+  }, [backendStores])
 
   // Attach the whole active file (no line range) — the context-menu sibling of
   // "add selection to chat". Reads only refs so it stays stable for the
@@ -991,11 +1009,12 @@ export function FileWorkspacePanel() {
     const sessionTabId = ctx.sessionTabId
     if (!sessionTabId || !attachPath) return
     emitAttachFileToSession({
+      backendKey: backendStores.storage.backendKey,
       tabId: sessionTabId,
       path: attachPath,
     })
     toast(tRef.current("addFileToChatDone", { label: ctx.fileName }))
-  }, [])
+  }, [backendStores])
 
   // Register (or re-register) the two context-menu actions (+ ⌘L for the
   // selection one). Re-registerable so the labels can follow an in-app locale
@@ -1679,6 +1698,7 @@ export function FileWorkspacePanel() {
     if (!isFileTab) return
 
     const onKeyDown = (event: KeyboardEvent) => {
+      if (!ownsEvent(event.target)) return
       const isSaveShortcut =
         (event.metaKey || event.ctrlKey) && event.key === "s"
       if (!isSaveShortcut) return
@@ -1691,7 +1711,7 @@ export function FileWorkspacePanel() {
     return () => {
       window.removeEventListener("keydown", onKeyDown)
     }
-  }, [canEdit, isFileTab, saveActiveFile])
+  }, [canEdit, isFileTab, ownsEvent, saveActiveFile])
 
   useEffect(
     () => () => {

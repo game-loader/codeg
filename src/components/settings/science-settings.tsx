@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Loader2 } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
@@ -8,13 +9,7 @@ import {
   SkillAgentMatrix,
   type MatrixSkill,
 } from "@/components/settings/skill-agent-matrix"
-import {
-  acpListAgents,
-  scienceApplyLinks,
-  scienceList,
-  scienceListAllInstallStatuses,
-  scienceReadContent,
-} from "@/lib/api"
+
 import { invalidateAgentSkillsCache } from "@/hooks/use-agent-skills"
 import { piUsesCustomAgentDir } from "@/lib/pi-config"
 import type {
@@ -40,6 +35,8 @@ export function ScienceBody({
 }: {
   onRegisterRefresh?: (refresh: () => void) => void
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("ScienceSettings")
   const locale = useLocale()
 
@@ -54,8 +51,8 @@ export function ScienceBody({
     setLoadError(null)
     try {
       const [skillList, agentList] = await Promise.all([
-        scienceList(),
-        acpListAgents(),
+        backendApi.scienceList(),
+        backendApi.acpListAgents(),
       ])
       setSkills(skillList)
       // A pi pointed at a custom PI_CODING_AGENT_DIR isn't managed by the
@@ -73,7 +70,7 @@ export function ScienceBody({
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [backendApi])
 
   useEffect(() => {
     refresh().catch((err) => {
@@ -189,11 +186,11 @@ export function ScienceBody({
             categoryOrder={CATEGORY_SORT}
             translateCategory={translatedCategory}
             translateState={translatedState}
-            loadAllStatuses={scienceListAllInstallStatuses}
-            applyLinks={scienceApplyLinks}
-            loadContent={scienceReadContent}
+            loadAllStatuses={backendApi.scienceListAllInstallStatuses}
+            applyLinks={backendApi.scienceApplyLinks}
+            loadContent={backendApi.scienceReadContent}
             onApplied={(touched) =>
-              touched.forEach((a) => invalidateAgentSkillsCache(a))
+              touched.forEach((a) => invalidateAgentSkillsCache(a, backendApi))
             }
             searchPlaceholder={t("searchPlaceholder")}
           />

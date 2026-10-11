@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
   Check,
@@ -131,6 +132,8 @@ function formatTimestamp(value: string | null): string | null {
  * the tab that selects this panel supply both.
  */
 export function ConfigSyncSettings() {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("ConfigSyncSettings")
   // Root translator so backend errors carrying `configSync.error.*` keys
   // localize; falls back to the English message when the key is unknown.
@@ -209,7 +212,7 @@ export function ConfigSyncSettings() {
    *  snapshot of the panel's first paint. */
   const refreshRollbacks = useCallback(async () => {
     try {
-      const listed = await listConfigRollbacks()
+      const listed = await listConfigRollbacks(backendPlatform)
       if (!mounted.current) return
       setRollbacks(listed)
       // The entry that owns the popover is rendered off this list, so an empty
@@ -221,15 +224,15 @@ export function ConfigSyncSettings() {
       // section simply does not appear.
       console.error("[config-sync] failed to list rollback snapshots", err)
     }
-  }, [])
+  }, [backendPlatform])
 
   useEffect(() => {
     let cancelled = false
     void (async () => {
       try {
         const [settings, state] = await Promise.all([
-          getConfigSyncSettings(),
-          getConfigSyncState(),
+          getConfigSyncSettings(backendPlatform),
+          getConfigSyncState(backendPlatform),
           refreshRollbacks(),
         ])
         if (cancelled) return
@@ -259,7 +262,7 @@ export function ConfigSyncSettings() {
     return () => {
       cancelled = true
     }
-  }, [refreshRollbacks])
+  }, [refreshRollbacks, backendPlatform])
 
   // The background uploader reports here; without this the panel would show a
   // stale "last synced" until the page is reopened.
@@ -269,7 +272,7 @@ export function ConfigSyncSettings() {
     void listenConfigSyncStatus((event) => {
       setLastSyncAt(event.lastSyncAt)
       setLastError(event.lastError)
-    }).then((fn) => {
+    }, backendPlatform).then((fn) => {
       if (disposed) fn()
       else unlisten = fn
     })
@@ -277,7 +280,7 @@ export function ConfigSyncSettings() {
       disposed = true
       unlisten?.()
     }
-  }, [])
+  }, [backendPlatform])
 
   const currentInput = useCallback(
     (
@@ -312,7 +315,10 @@ export function ConfigSyncSettings() {
   const handleSave = useCallback(async () => {
     setBusy("save")
     try {
-      const saved = await updateConfigSyncSettings(currentInput())
+      const saved = await updateConfigSyncSettings(
+        currentInput(),
+        backendPlatform
+      )
       if (!mounted.current) return
       setHasPassword(saved.hasPassword)
       setHasPassphrase(saved.hasPassphrase)
@@ -333,7 +339,7 @@ export function ConfigSyncSettings() {
     } finally {
       if (mounted.current) setBusy(null)
     }
-  }, [currentInput, localize, t])
+  }, [currentInput, localize, t, backendPlatform])
 
   /**
    * Turning encryption off drops anything typed into the passphrase field but
@@ -369,7 +375,8 @@ export function ConfigSyncSettings() {
         // find that password stored. The fields keep their text, so an
         // explicit Save is still one click away.
         const saved = await updateConfigSyncSettings(
-          currentInput({ enabled: next, password: null, passphrase: null })
+          currentInput({ enabled: next, password: null, passphrase: null }),
+          backendPlatform
         )
         if (!mounted.current) return
         setHasPassword(saved.hasPassword)
@@ -385,25 +392,25 @@ export function ConfigSyncSettings() {
         if (mounted.current) setBusy(null)
       }
     },
-    [currentInput, enabled, localize]
+    [currentInput, enabled, localize, backendPlatform]
   )
 
   const handleTest = useCallback(async () => {
     setBusy("test")
     try {
-      await testConfigSyncConnection(currentInput())
+      await testConfigSyncConnection(currentInput(), backendPlatform)
       if (mounted.current) toast.success(t("testSucceeded"))
     } catch (err) {
       toast.error(localize(err))
     } finally {
       if (mounted.current) setBusy(null)
     }
-  }, [currentInput, localize, t])
+  }, [currentInput, localize, t, backendPlatform])
 
   const handleUpload = useCallback(async () => {
     setBusy("upload")
     try {
-      const outcome = await uploadConfigNow()
+      const outcome = await uploadConfigNow(backendPlatform)
       if (!mounted.current) return
       setLastSyncAt(outcome.syncedAt)
       setLastError(null)
@@ -415,14 +422,14 @@ export function ConfigSyncSettings() {
     } finally {
       if (mounted.current) setBusy(null)
     }
-  }, [localize, t])
+  }, [localize, t, backendPlatform])
 
   /** Look before overwriting: the confirmation names the machine and time the
    *  remote snapshot came from. */
   const handleOpenRestore = useCallback(async () => {
     setBusy("download")
     try {
-      const manifest = await peekRemoteConfig()
+      const manifest = await peekRemoteConfig(backendPlatform)
       if (!mounted.current) return
       if (!manifest) {
         toast.error(t("noRemoteSnapshot"))
@@ -435,13 +442,13 @@ export function ConfigSyncSettings() {
     } finally {
       if (mounted.current) setBusy(null)
     }
-  }, [localize, t])
+  }, [localize, t, backendPlatform])
 
   const handleConfirmRestore = useCallback(async () => {
     setRestoreOpen(false)
     setBusy("download")
     try {
-      const outcome = await downloadAndApplyConfig()
+      const outcome = await downloadAndApplyConfig(backendPlatform)
       if (!mounted.current) return
       // Providers, appearance, and language are read once at launch, so the
       // window the user is looking at keeps showing the old values. Saying so
@@ -456,12 +463,12 @@ export function ConfigSyncSettings() {
     } finally {
       if (mounted.current) setBusy(null)
     }
-  }, [localize, refreshRollbacks, t])
+  }, [localize, refreshRollbacks, t, backendPlatform])
 
   const handleExport = useCallback(async () => {
     setBusy("export")
     try {
-      const summary = await exportConfigToFile()
+      const summary = await exportConfigToFile(backendPlatform)
       // `null` = the user dismissed the save dialog, which is not an error.
       if (summary && mounted.current) toast.success(t("exported"))
     } catch (err) {
@@ -469,7 +476,7 @@ export function ConfigSyncSettings() {
     } finally {
       if (mounted.current) setBusy(null)
     }
-  }, [localize, t])
+  }, [localize, t, backendPlatform])
 
   /**
    * Deliberately outside the `busy` gate, unlike every other action here.
@@ -482,12 +489,12 @@ export function ConfigSyncSettings() {
    */
   const handlePickImport = useCallback(async () => {
     try {
-      const picked = await pickConfigFileToImport()
+      const picked = await pickConfigFileToImport(backendPlatform)
       if (picked && mounted.current) setPendingImport(picked)
     } catch (err) {
       toast.error(localize(err))
     }
-  }, [localize])
+  }, [localize, backendPlatform])
 
   const handleConfirmImport = useCallback(async () => {
     if (!pendingImport) return
@@ -495,7 +502,7 @@ export function ConfigSyncSettings() {
     setPendingImport(null)
     setBusy("import")
     try {
-      const result = await importPickedConfig(source)
+      const result = await importPickedConfig(source, backendPlatform)
       if (mounted.current) {
         toast.success(t("imported", { count: result.applied.total }), {
           description: t("restartHint"),
@@ -507,7 +514,7 @@ export function ConfigSyncSettings() {
     } finally {
       if (mounted.current) setBusy(null)
     }
-  }, [pendingImport, localize, refreshRollbacks, t])
+  }, [pendingImport, localize, refreshRollbacks, t, backendPlatform])
 
   /**
    * Undo an import or a restore. The backend captures the pre-apply state
@@ -520,7 +527,7 @@ export function ConfigSyncSettings() {
     setPendingRollback(null)
     setBusy("rollback")
     try {
-      const result = await applyConfigRollback(id)
+      const result = await applyConfigRollback(id, backendPlatform)
       if (mounted.current) {
         toast.success(t("rolledBack", { count: result.applied.total }), {
           description: t("restartHint"),
@@ -536,7 +543,7 @@ export function ConfigSyncSettings() {
     } finally {
       if (mounted.current) setBusy(null)
     }
-  }, [pendingRollback, localize, refreshRollbacks, t])
+  }, [pendingRollback, localize, refreshRollbacks, t, backendPlatform])
 
   const syncedLabel = formatTimestamp(lastSyncAt)
   // Only the hosted services need a setup note; "custom" has nothing to say.

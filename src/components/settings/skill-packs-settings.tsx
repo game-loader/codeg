@@ -1,5 +1,9 @@
 "use client"
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useCallback, useRef, useState } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { useTranslations } from "next-intl"
@@ -12,9 +16,8 @@ import { ExpertsBody } from "@/components/settings/experts-settings"
 import { ScienceBody } from "@/components/settings/science-settings"
 import { OfficeToolsBody } from "@/components/settings/office-tools-settings"
 import { CustomSkillsBody } from "@/components/settings/custom-skills-settings"
-import { expertsOpenCentralDir, openFolder } from "@/lib/api"
-import { revealItemInDir } from "@/lib/platform"
-import { getActiveRemoteConnectionId, isDesktop } from "@/lib/transport"
+
+import { isDesktop } from "@/lib/transport"
 import { toErrorMessage } from "@/lib/app-error"
 
 type SkillPackTab = "experts" | "science" | "office" | "custom"
@@ -38,6 +41,9 @@ const TRIGGER_ACTIVE =
  * existing per-pack body verbatim.
  */
 export function SkillPacksSettings() {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("SkillPacksSettings")
   const router = useRouter()
   const pathname = usePathname()
@@ -76,21 +82,24 @@ export function SkillPacksSettings() {
   // single, tab-independent "open central folder" is correct for every tab.
   const handleOpenCentralDir = useCallback(async () => {
     try {
-      const path = await expertsOpenCentralDir()
-      if (isDesktop() && getActiveRemoteConnectionId() === null) {
+      const path = await backendApi.expertsOpenCentralDir()
+      if (
+        isDesktop() &&
+        backendPlatform.getActiveRemoteConnectionId() === null
+      ) {
         // Desktop: reveal the folder. `revealItemInDir` (not `openPath`) is
         // deliberate — the opener plugin's scope rejects `openPath` for the
         // hidden `~/.codeg/...` path.
-        await revealItemInDir(path)
+        await backendPlatform.revealItemInDir(path)
       } else {
-        await openFolder(path)
+        await backendApi.openFolder(path)
       }
     } catch (err) {
       toast.error(t("toasts.openFolderFailed"), {
         description: toErrorMessage(err),
       })
     }
-  }, [t])
+  }, [t, backendApi, backendPlatform])
 
   return (
     <div className="h-full flex flex-col p-3 md:p-4">

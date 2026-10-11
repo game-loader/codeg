@@ -1,9 +1,10 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import { workTaskDeliverPr, workTaskSettingsEffective } from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -62,6 +63,8 @@ export function TaskDeliverPrDialog({
   onOpenChange,
   task,
 }: TaskDeliverPrDialogProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Tasks")
   const [title, setTitle] = useState("")
   const [draft, setDraft] = useState(false)
@@ -98,14 +101,15 @@ export function TaskDeliverPrDialog({
       if (cancelled || worktreeChoiceMade.current) return
       setDeleteWorktree(value)
     }
-    workTaskSettingsEffective(task.folder_id)
+    backendApi
+      .workTaskSettingsEffective(task.folder_id)
       .then((s) => seed(s.delete_worktree_default))
       .catch(() => seed(true))
     return () => {
       cancelled = true
     }
     /* eslint-enable react-hooks/set-state-in-effect */
-  }, [open, task])
+  }, [open, task, backendApi])
 
   const pushBack = task != null && mustDeliverToPr(task)
   // GitLab's word for the same thing. Only the wording differs — every step
@@ -119,8 +123,13 @@ export function TaskDeliverPrDialog({
       const cleanup = hasWorktree && deleteWorktree
       // A push-back creates nothing, so it carries neither title nor draft.
       const url = pushBack
-        ? await workTaskDeliverPr(task.id, null, false, cleanup)
-        : await workTaskDeliverPr(task.id, title.trim() || null, draft, cleanup)
+        ? await backendApi.workTaskDeliverPr(task.id, null, false, cleanup)
+        : await backendApi.workTaskDeliverPr(
+            task.id,
+            title.trim() || null,
+            draft,
+            cleanup
+          )
       onOpenChange(false)
       const done = pushBack
         ? mr

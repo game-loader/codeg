@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useState, useEffect, useCallback, useRef } from "react"
 import { useTranslations } from "next-intl"
 import { ChevronRight, ChevronUp, FileIcon, Home, Loader2 } from "lucide-react"
@@ -15,7 +16,7 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useImeGuard } from "@/hooks/use-ime-guard"
 import { cn } from "@/lib/utils"
-import { getHomeDirectory, listDirectoryWithFiles } from "@/lib/api"
+
 import { parentFsPath } from "@/lib/path-utils"
 import type { DirectoryItem } from "@/lib/types"
 
@@ -40,6 +41,8 @@ export function ServerFileBrowserDialog({
   initialPath,
   multiple = true,
 }: ServerFileBrowserDialogProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("ServerFileBrowser")
   const ime = useImeGuard()
 
@@ -62,7 +65,7 @@ export function ServerFileBrowserDialog({
       setLoading((prev) => new Set(prev).add(path))
       setError(null)
       try {
-        const result = await listDirectoryWithFiles(path)
+        const result = await backendApi.listDirectoryWithFiles(path)
         setEntries((prev) => new Map(prev).set(path, result))
         return result
       } catch {
@@ -76,7 +79,7 @@ export function ServerFileBrowserDialog({
         })
       }
     },
-    [entries, t]
+    [entries, t, backendApi]
   )
 
   const navigateTo = useCallback(
@@ -102,7 +105,7 @@ export function ServerFileBrowserDialog({
 
     const init = async () => {
       try {
-        const startPath = initialPath || (await getHomeDirectory())
+        const startPath = initialPath || (await backendApi.getHomeDirectory())
         setRootPath(startPath)
         setPathInput(startPath)
         setSelectedPaths(new Set())
@@ -111,7 +114,7 @@ export function ServerFileBrowserDialog({
         setError(null)
         setLoading(new Set([startPath]))
 
-        const result = await listDirectoryWithFiles(startPath)
+        const result = await backendApi.listDirectoryWithFiles(startPath)
         setEntries(new Map([[startPath, result]]))
         setLoading(new Set())
       } catch {
@@ -120,7 +123,7 @@ export function ServerFileBrowserDialog({
       }
     }
     init()
-  }, [open, initialPath, t])
+  }, [open, initialPath, t, backendApi])
 
   const handleToggleExpand = useCallback(
     async (path: string) => {
@@ -176,12 +179,12 @@ export function ServerFileBrowserDialog({
 
   const handleGoHome = useCallback(async () => {
     try {
-      const home = await getHomeDirectory()
+      const home = await backendApi.getHomeDirectory()
       navigateTo(home)
     } catch {
       setError(t("errorLoadingDir"))
     }
-  }, [navigateTo, t])
+  }, [navigateTo, t, backendApi])
 
   const handlePathInputKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

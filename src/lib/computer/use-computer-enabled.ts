@@ -9,9 +9,8 @@
 // missed; a broadcast that lands while that read is in flight is newer than
 // it. `null` until one or the other has answered.
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
-
-import { subscribe } from "@/lib/platform"
 
 import { getComputerToolsSettings, useComputerAvailable } from "./computer-api"
 import {
@@ -26,6 +25,8 @@ export function useComputerEnabled({
    *  for what only exists with it, like the status-bar popover. */
   desktopOnly: boolean
 }) {
+  const backendPlatform = useBackendPlatform()
+
   const [enabled, setEnabled] = useState<boolean | null>(null)
   /** Broadcasts heard so far: an answer to something asked before the last
    *  of them is older than it. */
@@ -39,19 +40,20 @@ export function useComputerEnabled({
     const asked = heardRef.current
     const ask = () => {
       if (disposed) return
-      getComputerToolsSettings()
+      getComputerToolsSettings(backendPlatform)
         .then((s) => {
           if (!disposed && heardRef.current === asked) setEnabled(s.enabled)
         })
         .catch(() => {})
     }
-    subscribe<ComputerToolsSettings>(
-      COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
-      (s) => {
-        heardRef.current += 1
-        setEnabled(s.enabled)
-      }
-    )
+    backendPlatform
+      .subscribe<ComputerToolsSettings>(
+        COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
+        (s) => {
+          heardRef.current += 1
+          setEnabled(s.enabled)
+        }
+      )
       .then((fn) => {
         if (disposed) fn()
         else unsubscribe = fn
@@ -62,7 +64,7 @@ export function useComputerEnabled({
       disposed = true
       unsubscribe?.()
     }
-  }, [desktopOnly, available])
+  }, [desktopOnly, available, backendPlatform])
 
   /** Where the broadcasts stand, to hand back to {@link applySince}. */
   const mark = useCallback(() => heardRef.current, [])

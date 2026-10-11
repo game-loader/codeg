@@ -1,5 +1,9 @@
 "use client"
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -36,11 +40,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import {
-  acpCursorAuthStatus,
-  acpCursorListModels,
-  acpUpdateAgentConfig,
-} from "@/lib/api"
+
 import type { AcpAgentInfo, CursorAuthStatus } from "@/lib/types"
 import {
   buildCursorModelFamilies,
@@ -56,7 +56,7 @@ import {
   type CursorModelFamily,
   type CursorVariant,
 } from "@/lib/cursor-model-variants"
-import { isDesktop, isRemoteDesktopMode } from "@/lib/transport"
+import { isDesktop } from "@/lib/transport"
 import { cn } from "@/lib/utils"
 
 const CURSOR_API_KEY_ENV = "CURSOR_API_KEY"
@@ -344,6 +344,9 @@ export function CursorConfigPanel({
    * restart-required (the env step reports its own count internally). */
   onAffectedSessions: (count: number) => void
 }) {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("AcpAgentSettings")
 
   // --- authentication method ---
@@ -418,7 +421,7 @@ export function CursorConfigPanel({
   const refreshAuth = useCallback(async () => {
     setAuthLoading(true)
     try {
-      const status = await acpCursorAuthStatus(probeKeyRef.current)
+      const status = await backendApi.acpCursorAuthStatus(probeKeyRef.current)
       if (mountedRef.current) setAuth(status)
     } catch {
       // Probe failures already surface through `auth.error`; a transport-level
@@ -426,7 +429,7 @@ export function CursorConfigPanel({
     } finally {
       if (mountedRef.current) setAuthLoading(false)
     }
-  }, [])
+  }, [backendApi])
 
   // Probe on mount and whenever the method changes (the ref above is updated
   // first, so the probe sees the right credential for the new mode).
@@ -438,7 +441,7 @@ export function CursorConfigPanel({
     setModelsLoading(true)
     setModelsError(null)
     try {
-      const result = await acpCursorListModels(probeKeyRef.current)
+      const result = await backendApi.acpCursorListModels(probeKeyRef.current)
       if (!mountedRef.current) return
       setModels(
         result.models.map((m) => ({
@@ -457,7 +460,7 @@ export function CursorConfigPanel({
     } finally {
       if (mountedRef.current) setModelsLoading(false)
     }
-  }, [])
+  }, [backendApi])
 
   const authState = cursorAuthState(auth, authLoading)
 
@@ -487,11 +490,15 @@ export function CursorConfigPanel({
   // only a POSIX host can carry the env prefix.
   const remoteLogin = cursorLoginRunsOnCodegHost(
     isDesktop(),
-    isRemoteDesktopMode()
+    backendPlatform.isRemoteDesktopMode()
   )
   const loginCommand = cursorLoginCommand(
     auth?.binary_path,
-    cursorLoginIsHeadless(auth?.binary_path, isDesktop(), isRemoteDesktopMode())
+    cursorLoginIsHeadless(
+      auth?.binary_path,
+      isDesktop(),
+      backendPlatform.isRemoteDesktopMode()
+    )
   )
 
   const copyLoginCommand = useCallback(async () => {
@@ -594,13 +601,16 @@ export function CursorConfigPanel({
         agent.enabled
       )
       try {
-        const affected = await acpUpdateAgentConfig(agent.agent_type, {
-          cursor_structured: {
-            sandboxMode,
-            permissionsAllow: allowRules,
-            permissionsDeny: denyRules,
-          },
-        })
+        const affected = await backendApi.acpUpdateAgentConfig(
+          agent.agent_type,
+          {
+            cursor_structured: {
+              sandboxMode,
+              permissionsAllow: allowRules,
+              permissionsDeny: denyRules,
+            },
+          }
+        )
         onAffectedSessions(affected)
       } catch (e) {
         // A failed rules write must not leave the freshly-saved permission
@@ -636,12 +646,13 @@ export function CursorConfigPanel({
     onSaved,
     sandboxMode,
     t,
+    backendApi,
   ])
 
   const saveRaw = useCallback(async () => {
     setSavingRaw(true)
     try {
-      const affected = await acpUpdateAgentConfig(agent.agent_type, {
+      const affected = await backendApi.acpUpdateAgentConfig(agent.agent_type, {
         cursor_cli_config_json: rawConfig,
       })
       onAffectedSessions(affected)
@@ -656,7 +667,7 @@ export function CursorConfigPanel({
     } finally {
       if (mountedRef.current) setSavingRaw(false)
     }
-  }, [agent.agent_type, onAffectedSessions, onSaved, rawConfig, t])
+  }, [agent.agent_type, onAffectedSessions, onSaved, rawConfig, t, backendApi])
 
   const busy = saving || savingAll
 

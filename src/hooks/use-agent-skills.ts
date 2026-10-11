@@ -1,112 +1,97 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
-
-import { acpListAgentSkills } from "@/lib/api"
+import { useBackendApi } from "@/contexts/backend-client-context"
+import type { BackendApi } from "@/lib/backend/types"
+import * as legacyBackendApi from "@/lib/api"
+import { useCallback, useEffect, useSyncExternalStore } from "react"
 import type { AgentSkillItem, AgentType } from "@/lib/types"
 
-// Cache/inflight keyed by `${agentType}|${workspacePath ?? ""}` so different
-// folders keep their own skill list, and switching folders never serves stale
-// entries from a previous workspace.
-const cache = new Map<string, AgentSkillItem[]>()
-const inflight = new Map<string, Promise<AgentSkillItem[]>>()
-
 const EMPTY: AgentSkillItem[] = []
-
-function makeKey(agentType: AgentType, workspacePath: string | null): string {
-  return `${agentType}|${workspacePath ?? ""}`
+interface Cache {
+  values: Map<string, AgentSkillItem[]>
+  inflight: Map<string, Promise<void>>
+  listeners: Set<() => void>
 }
-
-function fetchSkills(
-  agentType: AgentType,
-  workspacePath: string | null
-): Promise<AgentSkillItem[]> {
-  const key = makeKey(agentType, workspacePath)
-  let promise = inflight.get(key)
-  if (!promise) {
-    promise = acpListAgentSkills({ agentType, workspacePath })
-      .then((result) => {
-        const skills = result.supported ? result.skills : EMPTY
-        cache.set(key, skills)
-        inflight.delete(key)
-        return skills
-      })
-      .catch((err) => {
-        inflight.delete(key)
-        console.warn("[useAgentSkills] failed:", err)
-        return EMPTY
-      })
-    inflight.set(key, promise)
+const caches = new WeakMap<BackendApi, Cache>()
+function getCache(api: BackendApi): Cache {
+  let cache = caches.get(api)
+  if (!cache) {
+    cache = { values: new Map(), inflight: new Map(), listeners: new Set() }
+    caches.set(api, cache)
   }
-  return promise
+  return cache
 }
-
+function keyFor(agent: AgentType, path: string | null) {
+  return JSON.stringify([agent, path])
+}
+function load(
+  api: BackendApi,
+  cache: Cache,
+  agent: AgentType,
+  path: string | null
+) {
+  const key = keyFor(agent, path)
+  if (cache.values.has(key) || cache.inflight.has(key)) return
+  const request = api
+    .acpListAgentSkills({ agentType: agent, workspacePath: path })
+    .then((result) => {
+      // Invalidated/superseded requests cannot refill a stale entry.
+      if (cache.inflight.get(key) !== request) return
+      cache.values.set(key, result.supported ? result.skills : EMPTY)
+      for (const notify of cache.listeners) notify()
+    })
+    .catch((err) => console.warn("[useAgentSkills] failed:", err))
+    .finally(() => {
+      if (cache.inflight.get(key) === request) cache.inflight.delete(key)
+    })
+  cache.inflight.set(key, request)
+}
 export function useAgentSkills(
-  agentType: AgentType | null,
+  agent: AgentType | null,
   workspacePath?: string | null
 ): AgentSkillItem[] {
-  const normalizedPath = workspacePath ?? null
-  const cacheKey = useMemo(
-    () => (agentType ? makeKey(agentType, normalizedPath) : null),
-    [agentType, normalizedPath]
+  const api = useBackendApi()
+  const cache = getCache(api)
+  const path = workspacePath ?? null
+  const key = agent ? keyFor(agent, path) : null
+  const skills = useSyncExternalStore(
+    useCallback(
+      (notify: () => void) => {
+        cache.listeners.add(notify)
+        return () => {
+          cache.listeners.delete(notify)
+        }
+      },
+      [cache]
+    ),
+    () => (key ? (cache.values.get(key) ?? EMPTY) : EMPTY),
+    () => EMPTY
   )
-  const cached = useMemo(
-    () => (cacheKey ? (cache.get(cacheKey) ?? null) : null),
-    [cacheKey]
-  )
-  // Track which (agentType, workspacePath) the fetched result belongs to so
-  // stale data from a previous key is never returned after a switch.
-  const [fetched, setFetched] = useState<{
-    key: string
-    skills: AgentSkillItem[]
-  } | null>(null)
-
-  const doFetch = useCallback(() => {
-    if (!agentType || !cacheKey || cache.has(cacheKey)) return
-    let cancelled = false
-    fetchSkills(agentType, normalizedPath).then((list) => {
-      if (!cancelled) setFetched({ key: cacheKey, skills: list })
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [agentType, cacheKey, normalizedPath])
-
-  // Initial fetch
-  useEffect(() => doFetch(), [doFetch])
-
-  // Re-fetch when window regains focus (covers cross-window cache
-  // invalidation — e.g. settings window creates/removes skills while the
-  // conversation window stays mounted). Only invalidate the current key to
-  // avoid clobbering caches for other folders.
   useEffect(() => {
+    if (!agent || !key) return
+    load(api, cache, agent, path)
     const onFocus = () => {
-      if (!cacheKey) return
-      cache.delete(cacheKey)
-      inflight.delete(cacheKey)
-      doFetch()
+      cache.values.delete(key)
+      cache.inflight.delete(key)
+      load(api, cache, agent, path)
     }
     window.addEventListener("focus", onFocus)
     return () => window.removeEventListener("focus", onFocus)
-  }, [cacheKey, doFetch])
-
-  if (!agentType || !cacheKey) return EMPTY
-  if (cached) return cached
-  if (fetched && fetched.key === cacheKey) return fetched.skills
-  return EMPTY
+  }, [api, cache, agent, path, key])
+  return skills
 }
-
-export function invalidateAgentSkillsCache(agentType?: AgentType) {
-  if (agentType) {
-    const prefix = `${agentType}|`
-    for (const key of Array.from(cache.keys())) {
-      if (key.startsWith(prefix)) cache.delete(key)
+export function invalidateAgentSkillsCache(
+  agent?: AgentType,
+  api: BackendApi = legacyBackendApi
+): void {
+  const cache = getCache(api)
+  for (const key of new Set([
+    ...cache.values.keys(),
+    ...cache.inflight.keys(),
+  ])) {
+    if (!agent || (JSON.parse(key) as [string, string | null])[0] === agent) {
+      cache.values.delete(key)
+      cache.inflight.delete(key)
     }
-    for (const key of Array.from(inflight.keys())) {
-      if (key.startsWith(prefix)) inflight.delete(key)
-    }
-  } else {
-    cache.clear()
-    inflight.clear()
   }
 }

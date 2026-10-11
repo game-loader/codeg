@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef } from "react"
+import { useOptionalBackendClient } from "@/contexts/backend-client-context"
 
 import {
   useWorkspaceActions,
@@ -16,6 +17,8 @@ import {
   getBrowserTabState,
 } from "@/lib/browser/browser-tab-store"
 import { isDesktop } from "@/lib/transport"
+import { nativeBrowserBackendKey } from "@/lib/browser/browser-runtime-scope"
+import { browserTabBackendId } from "@/lib/file-tab-id"
 
 /** How often the background tabs are checked against the idle threshold; a
  *  page is never released to the minute, so a coarse tick is enough. */
@@ -29,6 +32,7 @@ export const SUSPEND_POLL_MS = 60 * 1000
  * Renders nothing; mounted next to the events bridge.
  */
 export function BrowserTabsSuspender() {
+  const client = useOptionalBackendClient()
   const { suspendBackgroundTabs } = useBrowserPrefs()
   const { suspendBrowserTab } = useWorkspaceActions()
   const { fileTabs } = useWorkspaceFileTabs()
@@ -42,17 +46,29 @@ export function BrowserTabsSuspender() {
   useEffect(() => {
     if (!suspendBackgroundTabs || !isDesktop()) return
     const tick = () => {
-      const candidates = fileTabsRef.current.flatMap((tab) =>
-        tab.kind === "browser"
-          ? [
-              {
-                id: tab.id,
-                hiddenAt: browserTabHiddenAt(tab.id),
-                loaded: getBrowserTabState(tab.id) !== null,
-              },
-            ]
-          : []
-      )
+      const candidates = fileTabsRef.current.flatMap((tab) => {
+        if (tab.kind !== "browser") return []
+        const state = getBrowserTabState(tab.id)
+        // A tab record is already runtime-bound, including public pages in
+        // ordinary profiles. Explicit native connection identity must agree.
+        if (
+          client &&
+          state &&
+          (state.hostConnectionId != null ||
+            state.profile?.startsWith("remote-")) &&
+          nativeBrowserBackendKey(state, browserTabBackendId(tab.id)) !==
+            client.key
+        ) {
+          return []
+        }
+        return [
+          {
+            id: tab.id,
+            hiddenAt: browserTabHiddenAt(tab.id),
+            loaded: state !== null,
+          },
+        ]
+      })
       for (const id of selectBrowserTabsToSuspend(
         candidates,
         Date.now(),
@@ -63,7 +79,7 @@ export function BrowserTabsSuspender() {
     }
     const timer = window.setInterval(tick, SUSPEND_POLL_MS)
     return () => window.clearInterval(timer)
-  }, [suspendBackgroundTabs, suspendBrowserTab])
+  }, [suspendBackgroundTabs, suspendBrowserTab, client])
 
   return null
 }

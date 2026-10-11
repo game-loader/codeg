@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import {
   createContext,
   useCallback,
@@ -40,7 +41,7 @@ import {
   writeDismissedVersion,
   writeLastCheck,
 } from "@/lib/update-check-storage"
-import { getTransport } from "@/lib/transport"
+
 import { extractAppCommandError } from "@/lib/app-error"
 import type { AppCommandError } from "@/lib/types"
 
@@ -178,6 +179,8 @@ function countdown(
 }
 
 export function UpdateProvider({ children }: { children: React.ReactNode }) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("SystemSettings")
   const [state, setState] = useState<AppUpdateState>(IDLE_STATE)
   const [restartCountdown, setRestartCountdown] = useState<number | null>(null)
@@ -224,8 +227,8 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
    * dismiss a release we ALREADY hold, which writes the dismissal key and
    * nothing else. */
   const syncDismissed = useCallback(() => {
-    setDismissedVersion(readDismissedVersion())
-  }, [])
+    setDismissedVersion(readDismissedVersion(backendPlatform))
+  }, [backendPlatform])
 
   /** Apply a stored result — ours from a previous run, or one a sibling window
    * recorded while we sat idle. */
@@ -273,9 +276,9 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   // during render would break the static-export pass, so it happens here.
   useEffect(() => {
     syncDismissed()
-    const last = readLastCheck()
+    const last = readLastCheck(backendPlatform)
     if (last) adoptCached(last)
-  }, [adoptCached, syncDismissed])
+  }, [adoptCached, syncDismissed, backendPlatform])
 
   // `storage` fires in the OTHER windows of this origin, so what one workspace
   // window learns reaches its siblings right away instead of at whatever point
@@ -288,8 +291,8 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       // A null key means storage was cleared wholesale — that touches both.
       if (
         key !== null &&
-        key !== dismissedVersionStorageKey() &&
-        key !== lastCheckStorageKey()
+        key !== dismissedVersionStorageKey(backendPlatform) &&
+        key !== lastCheckStorageKey(backendPlatform)
       ) {
         return
       }
@@ -300,13 +303,13 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       // offer — a loud badge showing the old version number and old release
       // notes until its next check. Re-reading both keeps them in step
       // whichever event arrives first.
-      const last = readLastCheck()
+      const last = readLastCheck(backendPlatform)
       if (last) adoptCached(last)
       else syncDismissed()
     }
     window.addEventListener("storage", onStorage)
     return () => window.removeEventListener("storage", onStorage)
-  }, [adoptCached, syncDismissed])
+  }, [adoptCached, syncDismissed, backendPlatform])
 
   // Mirror state into a ref so the action callbacks read the latest snapshot
   // without being re-created on every transition.
@@ -353,7 +356,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       }
       const epoch = resyncEpochRef.current
       try {
-        const snap = await getAppUpdateState()
+        const snap = await getAppUpdateState(backendPlatform)
         // Discard if we unmounted, or a newer reset superseded this fetch while
         // it was in flight.
         if (cancelled || epoch !== resyncEpochRef.current) return
@@ -367,7 +370,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       try {
         const u = await subscribeAppUpdateState((s) => {
           if (!cancelled) applyState(s)
-        })
+        }, backendPlatform)
         // If we unmounted while subscribing, the cleanup below already ran with
         // a null `unsub` — tear the subscription down here so it doesn't leak.
         if (cancelled) {
@@ -384,7 +387,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     }
 
     void arm()
-    const offReconnect = getTransport().onReconnect?.(() => {
+    const offReconnect = backendPlatform.getTransport().onReconnect?.(() => {
       void resync(true)
     })
 
@@ -393,7 +396,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       unsub?.()
       offReconnect?.()
     }
-  }, [applyState])
+  }, [applyState, backendPlatform])
 
   // ─── Availability check ─────────────────────────────────────────────────
 
@@ -432,7 +435,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         // stays the verdict's only writer.
         await refreshLocalStatusRef.current().catch(() => {})
         if (!mountedRef.current) return
-        const result = await checkAppUpdateInfo()
+        const result = await checkAppUpdateInfo(backendPlatform)
         if (!mountedRef.current) return
         setCurrentVersion(result.currentVersion)
         setAvailable(result.update)
@@ -443,11 +446,14 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         setCheckError(null)
 
         const now = Date.now()
-        writeLastCheck({
-          at: now,
-          currentVersion: result.currentVersion,
-          info: result.update,
-        })
+        writeLastCheck(
+          {
+            at: now,
+            currentVersion: result.currentVersion,
+            info: result.update,
+          },
+          backendPlatform
+        )
         appliedAtRef.current = now
         appliedOfferRef.current = result.update?.version ?? null
         appliedBaselineRef.current = result.currentVersion || null
@@ -457,7 +463,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         // longer the newest thing on offer, drop it so the next one surfaces.
         setDismissedVersion((prev) => {
           if (!prev || prev === result.update?.version) return prev
-          writeDismissedVersion(null)
+          writeDismissedVersion(null, backendPlatform)
           return null
         })
       } catch (err) {
@@ -476,7 +482,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         if (mountedRef.current) setChecking(false)
       }
     },
-    [t]
+    [t, backendPlatform]
   )
 
   const checkNow = useCallback(
@@ -516,23 +522,26 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
    * Comparing baselines rather than release versions also covers rollbacks and
    * sideways installs, with no need for a semver comparator.
    */
-  const discardStaleAvailability = useCallback((running: string) => {
-    const cached = readLastCheck()
-    const cacheStale =
-      !!cached?.currentVersion && cached.currentVersion !== running
-    const memoryStale =
-      !!appliedBaselineRef.current && appliedBaselineRef.current !== running
-    if (cacheStale) clearLastCheck()
-    if (!cacheStale && !memoryStale) return
-    appliedAtRef.current = 0
-    appliedOfferRef.current = null
-    appliedBaselineRef.current = null
-    setAvailable(null)
-    setLastCheckedAt(null)
-    // Ask again now: waiting for the next scheduled tick could leave the UI
-    // blank for 6h if this landed after the startup timer had already run.
-    void checkNowRef.current({ silent: true })
-  }, [])
+  const discardStaleAvailability = useCallback(
+    (running: string) => {
+      const cached = readLastCheck(backendPlatform)
+      const cacheStale =
+        !!cached?.currentVersion && cached.currentVersion !== running
+      const memoryStale =
+        !!appliedBaselineRef.current && appliedBaselineRef.current !== running
+      if (cacheStale) clearLastCheck(backendPlatform)
+      if (!cacheStale && !memoryStale) return
+      appliedAtRef.current = 0
+      appliedOfferRef.current = null
+      appliedBaselineRef.current = null
+      setAvailable(null)
+      setLastCheckedAt(null)
+      // Ask again now: waiting for the next scheduled tick could leave the UI
+      // blank for 6h if this landed after the startup timer had already run.
+      void checkNowRef.current({ silent: true })
+    },
+    [backendPlatform]
+  )
 
   /**
    * Refresh the LOCAL facts (running version, self-update capability, rollback
@@ -543,12 +552,12 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   const runRefresh = useCallback(async () => {
     let running: string | null = null
     try {
-      if (usesTauriUpdater()) {
-        const version = await getCurrentAppVersion()
+      if (usesTauriUpdater(backendPlatform)) {
+        const version = await getCurrentAppVersion(backendPlatform)
         running = version === "unknown" ? null : version
       } else {
         try {
-          const status = await getServerUpdateStatus()
+          const status = await getServerUpdateStatus(backendPlatform)
           if (status) {
             running = status.currentVersion
             if (mountedRef.current) {
@@ -567,7 +576,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
           // whole refresh — same fail-open contract as getCurrentAppVersion().
           console.error("[Update] status route unavailable:", err)
         }
-        if (!running) running = await getRunningServerVersion()
+        if (!running) running = await getRunningServerVersion(backendPlatform)
       }
     } catch (err) {
       // Never fatal: this only enriches what the UI can show.
@@ -577,7 +586,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     if (!running || !mountedRef.current) return
     setCurrentVersion(running)
     discardStaleAvailability(running)
-  }, [discardStaleAvailability])
+  }, [discardStaleAvailability, backendPlatform])
 
   const startRefresh = useCallback((): Promise<void> => {
     const p = runRefresh().finally(() => {
@@ -637,11 +646,11 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   // separately from the lifecycle subscription (both transports keep a Set of
   // reconnect callbacks) so the seq/epoch effect stays untouched.
   useEffect(() => {
-    const off = getTransport().onReconnect?.(() => {
+    const off = backendPlatform.getTransport().onReconnect?.(() => {
       void refreshLocalStatus()
     })
     return () => off?.()
-  }, [refreshLocalStatus])
+  }, [refreshLocalStatus, backendPlatform])
 
   // A failed attempt may have left a fresh `.bak` — re-read what can be rolled
   // back. A success relaunches the app/server, so only the failure path needs
@@ -673,9 +682,9 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
 
   const dismissAvailable = useCallback(() => {
     if (!available) return
-    writeDismissedVersion(available.version)
+    writeDismissedVersion(available.version, backendPlatform)
     setDismissedVersion(available.version)
-  }, [available])
+  }, [available, backendPlatform])
 
   useEffect(() => {
     let cancelled = false
@@ -686,7 +695,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       // newer answer BEFORE deciding whether to fetch: it is what suppresses
       // our own request, so skipping without taking it would leave this window
       // badge-less for the rest of the interval even though an update is out.
-      const last = readLastCheck()
+      const last = readLastCheck(backendPlatform)
       if (last) adoptCached(last)
       // Background tab: skip. `visibilitychange` re-runs this when it returns.
       if (typeof document !== "undefined" && document.hidden) return
@@ -712,13 +721,13 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       document.removeEventListener("visibilitychange", onVisibility)
     }
     // `adoptCached` is stable, so this still arms exactly once.
-  }, [adoptCached])
+  }, [adoptCached, backendPlatform])
 
   // ─── Actions ────────────────────────────────────────────────────────────
 
   const startUpdate = useCallback(async () => {
     try {
-      const snap = await startAppUpdate()
+      const snap = await startAppUpdate(backendPlatform)
       applyState(snap)
     } catch (err) {
       // The detached backend task reports its own failures via the state
@@ -728,15 +737,15 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       toast.error(t("installFailed", { message: rawMessage }))
       console.error("[Update] start failed:", err)
     }
-  }, [applyState, t])
+  }, [applyState, t, backendPlatform])
 
   const restart = useCallback(async () => {
     setIsRestarting(true)
     // Desktop relaunches the whole app — nothing to verify, the new process
     // boots into the updated build.
-    if (usesTauriUpdater()) {
+    if (usesTauriUpdater(backendPlatform)) {
       try {
-        await restartApp()
+        await restartApp(backendPlatform)
         // Success: the app is relaunching; stay busy until it does.
       } catch (err) {
         setIsRestarting(false)
@@ -760,7 +769,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       let reachable = false
       for (let i = 0; i < 3; i++) {
         try {
-          baseline = await readServerVersionStrict()
+          baseline = await readServerVersionStrict(backendPlatform)
           reachable = true
           break
         } catch {
@@ -780,13 +789,16 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       const trialSeconds =
         snap.capability === "supervised" ? (snap.trialSeconds ?? 0) : 0
 
-      await restartApp()
+      await restartApp(backendPlatform)
       await countdown(delayMs, setRestartCountdown)
 
-      const healthy = await waitForServerHealthy({
-        timeoutMs: 90_000,
-        intervalMs: 1500,
-      })
+      const healthy = await waitForServerHealthy(
+        {
+          timeoutMs: 90_000,
+          intervalMs: 1500,
+        },
+        backendPlatform
+      )
       if (!healthy) {
         toast.error(t("restartTimeout"))
         return
@@ -794,7 +806,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
 
       // Healthy — but the supervisor may have auto-rolled-back a version that
       // couldn't boot. Confirm the running version advanced.
-      const running = await getRunningServerVersion()
+      const running = await getRunningServerVersion(backendPlatform)
       if (isRollback(running)) {
         toast.error(t("upgradeRolledBack"))
         return
@@ -808,7 +820,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         while (Date.now() < trialDeadline) {
           setRestartCountdown(Math.ceil((trialDeadline - Date.now()) / 1000))
           await sleep(2000)
-          const v = await getRunningServerVersion()
+          const v = await getRunningServerVersion(backendPlatform)
           if (isRollback(v)) {
             reverted = true
             break
@@ -822,7 +834,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         // require one definitive post-window reading before claiming success.
         let finalVersion: string | null = null
         for (let i = 0; i < 5; i++) {
-          finalVersion = await getRunningServerVersion()
+          finalVersion = await getRunningServerVersion(backendPlatform)
           if (finalVersion) break
           await sleep(1500)
         }
@@ -846,7 +858,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       setRestartCountdown(null)
       setIsRestarting(false)
     }
-  }, [t])
+  }, [t, backendPlatform])
 
   const rollback = useCallback(async () => {
     setIsRollingBack(true)
@@ -858,7 +870,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       let reachable = false
       for (let i = 0; i < 3; i++) {
         try {
-          fromVersion = await readServerVersionStrict()
+          fromVersion = await readServerVersionStrict(backendPlatform)
           reachable = true
           break
         } catch {
@@ -872,22 +884,29 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
 
       // Revert + relaunch is a single locked server op: it responds before it
       // exits/re-execs, so there is no separate restart call.
-      const result = await rollbackServer()
+      const result = await rollbackServer(backendPlatform)
       const delayMs =
         result.restartDelayMs || (stateRef.current.restartDelayMs ?? 2000)
 
       await countdown(delayMs, setRestartCountdown)
 
-      const healthy = await waitForServerHealthy({
-        timeoutMs: 90_000,
-        intervalMs: 1500,
-      })
+      const healthy = await waitForServerHealthy(
+        {
+          timeoutMs: 90_000,
+          intervalMs: 1500,
+        },
+        backendPlatform
+      )
       if (!healthy) {
         toast.error(t("restartTimeout"))
         return
       }
 
-      const outcome = await confirmRollbackVersion(fromVersion)
+      const outcome = await confirmRollbackVersion(
+        fromVersion,
+        undefined,
+        backendPlatform
+      )
       if (outcome === "unchanged") {
         toast.error(t("rollbackFailed"))
         return
@@ -906,7 +925,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       setIsRollingBack(false)
       setRestartCountdown(null)
     }
-  }, [t])
+  }, [t, backendPlatform])
 
   const isUpdating =
     state.status === "downloading" || state.status === "installing"
@@ -922,7 +941,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   // endpoint) and reports nothing in the way (an in-place update it already
   // knows would fail), so anything else falls back to a "view release" link.
   const canInstallInPlace =
-    usesTauriUpdater() ||
+    usesTauriUpdater(backendPlatform) ||
     (selfUpdateSupported && liveProgress && !selfUpdateBlocker)
 
   const value = useMemo<UpdateContextValue>(

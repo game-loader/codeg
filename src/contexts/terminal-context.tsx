@@ -1,6 +1,10 @@
 "use client"
 
 import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
+import {
   createContext,
   useCallback,
   useContext,
@@ -10,12 +14,12 @@ import {
   useState,
   type ReactNode,
 } from "react"
-import { getSystemTerminalSettings, terminalKill } from "@/lib/api"
-import { getTransport } from "@/lib/transport"
+
 import { randomUUID } from "@/lib/utils"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
+import { useRuntimeEventScope } from "@/hooks/use-runtime-event-scope"
 
 export interface TerminalTab {
   id: string
@@ -70,6 +74,10 @@ export function useTerminalContext() {
 }
 
 export function TerminalProvider({ children }: { children: ReactNode }) {
+  const ownsEvent = useRuntimeEventScope()
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const { activeFolder, activeFolderId } = useActiveFolder()
   const { shortcuts } = useShortcutSettings()
   const [isOpen, setIsOpen] = useState(false)
@@ -99,7 +107,8 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     let cancelled = false
     let unlisten: (() => void) | undefined
 
-    getSystemTerminalSettings()
+    backendApi
+      .getSystemTerminalSettings()
       .then((settings) => {
         if (!cancelled) setDefaultTerminalShell(settings.default_shell)
       })
@@ -107,7 +116,8 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
         console.error("[terminal] load terminal settings failed:", err)
       })
 
-    getTransport()
+    backendPlatform
+      .getTransport()
       .subscribe<{ default_shell: string | null }>(
         TERMINAL_SETTINGS_UPDATED_EVENT,
         (settings) => {
@@ -129,7 +139,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       cancelled = true
       unlisten?.()
     }
-  }, [])
+  }, [backendApi, backendPlatform])
 
   const markTerminalExited = useCallback((id: string) => {
     setExitedTerminals((prev) => {
@@ -152,11 +162,14 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  const killTerminalTabs = useCallback((targetTabs: TerminalTab[]) => {
-    targetTabs.forEach((tab) => {
-      terminalKill(tab.id).catch(() => {})
-    })
-  }, [])
+  const killTerminalTabs = useCallback(
+    (targetTabs: TerminalTab[]) => {
+      targetTabs.forEach((tab) => {
+        backendApi.terminalKill(tab.id).catch(() => {})
+      })
+    },
+    [backendApi]
+  )
 
   const toggle = useCallback(() => {
     const autoId = randomUUID()
@@ -251,7 +264,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     (id: string) => {
       markTerminalExited(id)
       removeExitedTerminals([id])
-      terminalKill(id).catch(() => {})
+      backendApi.terminalKill(id).catch(() => {})
       setTabs((prev) => {
         const next = prev.filter((t) => t.id !== id)
         if (next.length === 0) {
@@ -266,7 +279,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
         return next
       })
     },
-    [markTerminalExited, removeExitedTerminals]
+    [markTerminalExited, removeExitedTerminals, backendApi]
   )
 
   const closeOtherTerminals = useCallback(
@@ -301,10 +314,16 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     setActiveTabId(id)
   }, [])
 
-  const isInTerminalRegion = useCallback((target: EventTarget | null) => {
-    if (!(target instanceof Element)) return false
-    return Boolean(target.closest('[data-terminal-panel-region="true"]'))
-  }, [])
+  const isInTerminalRegion = useCallback(
+    (target: EventTarget | null) => {
+      if (!(target instanceof Element)) return false
+      return (
+        ownsEvent(target) &&
+        Boolean(target.closest('[data-terminal-panel-region="true"]'))
+      )
+    },
+    [ownsEvent]
+  )
 
   const updateLastMouseActivity = useCallback(
     (target: EventTarget | null) => {
@@ -341,7 +360,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const handleTerminalHotkeys = (event: KeyboardEvent) => {
-      if (!isOpen) return
+      if (!isOpen || !ownsEvent(event.target)) return
 
       const targetInTerminal = isInTerminalRegion(event.target)
       const activeElementInTerminal = isInTerminalRegion(document.activeElement)
@@ -378,6 +397,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     createTerminal,
     isInTerminalRegion,
     isOpen,
+    ownsEvent,
     shortcuts.close_current_terminal_tab,
     shortcuts.new_terminal_tab,
   ])
@@ -386,10 +406,10 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     return () => {
       tabsRef.current.forEach((t) => {
-        terminalKill(t.id).catch(() => {})
+        backendApi.terminalKill(t.id).catch(() => {})
       })
     }
-  }, [])
+  }, [backendApi])
 
   const value = useMemo(
     () => ({

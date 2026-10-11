@@ -1,8 +1,9 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useEffect, useState } from "react"
 import { listActivePetSessions } from "@/lib/pet/api"
-import { getTransport } from "@/lib/transport"
+
 import type { PetSessionsPayload } from "@/lib/pet/types"
 
 const PET_SESSIONS_EVENT = "pet://sessions"
@@ -41,6 +42,8 @@ const backoffMs = (attempt: number) =>
  * arrives, snapshot retries stop and never clobber it.
  */
 export function usePetSessions(): PetSessionsPayload {
+  const backendPlatform = useBackendPlatform()
+
   const [payload, setPayload] = useState<PetSessionsPayload>(EMPTY)
 
   useEffect(() => {
@@ -72,7 +75,7 @@ export function usePetSessions(): PetSessionsPayload {
     // retries, until a live event arrives or we unmount.
     const fetchSnapshot = (attempt = 0) => {
       if (cancelled || liveEventSeen) return
-      void listActivePetSessions()
+      void listActivePetSessions(backendPlatform)
         .then((snapshot) => {
           // A reachable backend answered — latch so a pending retry from an
           // earlier rejection (on the other chain) doesn't keep firing. The
@@ -95,7 +98,8 @@ export function usePetSessions(): PetSessionsPayload {
     // and the listener going live.
     const subscribe = (attempt = 0) => {
       if (cancelled) return
-      void getTransport()
+      void backendPlatform
+        .getTransport()
         .subscribe<PetSessionsPayload>(PET_SESSIONS_EVENT, (raw) =>
           applyLive(normalize(raw))
         )
@@ -128,7 +132,7 @@ export function usePetSessions(): PetSessionsPayload {
       timers.clear()
       if (unlisten) unlisten()
     }
-  }, [])
+  }, [backendPlatform])
 
   return payload
 }

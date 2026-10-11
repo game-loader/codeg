@@ -1,5 +1,11 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -43,18 +49,11 @@ import {
   normalizeFsPath,
   type DirectoryBrowserHandle,
 } from "@/components/shared/directory-browser"
-import {
-  createFolderLinks,
-  listFolderLinks,
-  previewFolderLinks,
-  removeFolderLink,
-  renameFolderLink,
-  repairFolderLink,
-} from "@/lib/api"
+
 import { useImeGuard } from "@/hooks/use-ime-guard"
-import { isDesktop, openFileDialog } from "@/lib/platform"
+import { isDesktop } from "@/lib/platform"
 import { parentFsPath } from "@/lib/path-utils"
-import { getActiveRemoteConnectionId } from "@/lib/transport"
+
 import { toErrorMessage } from "@/lib/app-error"
 import {
   basenameOf,
@@ -69,7 +68,6 @@ import type {
   FolderLinkPlan,
   FolderLinkStatus,
 } from "@/lib/types"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 
 type View = "pick-root" | "links" | "add-targets"
 
@@ -101,6 +99,12 @@ export function WorkspaceFolderDialog({
   folder,
   onFolderOpened,
 }: WorkspaceFolderDialogProps) {
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Folder.workspaceDialog")
   const tBrowser = useTranslations("DirectoryBrowser")
   const openFolder = useAppWorkspaceStore((s) => s.openFolder)
@@ -131,7 +135,7 @@ export function WorkspaceFolderDialog({
   const [busyLinkId, setBusyLinkId] = useState<number | null>(null)
 
   const nativePickerAvailable =
-    isDesktop() && getActiveRemoteConnectionId() === null
+    isDesktop() && backendPlatform.getActiveRemoteConnectionId() === null
 
   const linkBrowseStart = useMemo(
     () =>
@@ -158,16 +162,19 @@ export function WorkspaceFolderDialog({
     setPreviewing(false)
   }, [open, folder])
 
-  const refreshLinks = useCallback(async (folderId: number) => {
-    setLoadingLinks(true)
-    try {
-      setLinks(await listFolderLinks(folderId))
-    } catch (err) {
-      console.error("[WorkspaceFolderDialog] failed to list links:", err)
-    } finally {
-      setLoadingLinks(false)
-    }
-  }, [])
+  const refreshLinks = useCallback(
+    async (folderId: number) => {
+      setLoadingLinks(true)
+      try {
+        setLinks(await backendApi.listFolderLinks(folderId))
+      } catch (err) {
+        console.error("[WorkspaceFolderDialog] failed to list links:", err)
+      } finally {
+        setLoadingLinks(false)
+      }
+    },
+    [backendApi]
+  )
 
   useEffect(() => {
     if (!open || !rootFolder) return
@@ -203,11 +210,14 @@ export function WorkspaceFolderDialog({
   // it has to behave like typing into it — opening the folder outright would
   // skip the confirm step and land it in the sidebar before the user asked.
   const handleNativeRootPick = useCallback(async () => {
-    const selected = await openFileDialog({ directory: true, multiple: false })
+    const selected = await backendPlatform.openFileDialog({
+      directory: true,
+      multiple: false,
+    })
     if (!selected) return
     const path = Array.isArray(selected) ? selected[0] : selected
     if (path) setRootPath(path)
-  }, [])
+  }, [backendPlatform])
 
   // ── Step 2: link targets ──────────────────────────────────────────────────
 
@@ -225,7 +235,7 @@ export function WorkspaceFolderDialog({
       if (!rootFolder || paths.length === 0) return
       setPreviewing(true)
       try {
-        const plans = await previewFolderLinks(rootFolder.id, paths)
+        const plans = await backendApi.previewFolderLinks(rootFolder.id, paths)
         const { usable, skipped: rejected } = partitionPlans(plans)
         // Merge rather than replace: a second "add" round keeps what the user
         // already queued (and edited) instead of dropping it.
@@ -250,7 +260,7 @@ export function WorkspaceFolderDialog({
         setPreviewing(false)
       }
     },
-    [rootFolder, t]
+    [rootFolder, t, backendApi]
   )
 
   const handleAddPicked = useCallback(async () => {
@@ -268,7 +278,10 @@ export function WorkspaceFolderDialog({
   // the tick list (which is what "Add" reads) with the box tracking the last
   // one, exactly as if the rows had been clicked in the tree.
   const handleNativeTargetPick = useCallback(async () => {
-    const selected = await openFileDialog({ directory: true, multiple: true })
+    const selected = await backendPlatform.openFileDialog({
+      directory: true,
+      multiple: true,
+    })
     if (!selected) return
     const paths = (Array.isArray(selected) ? selected : [selected]).filter(
       Boolean
@@ -279,7 +292,7 @@ export function WorkspaceFolderDialog({
       return [...prev, ...paths.filter((p) => !seen.has(normalizeFsPath(p)))]
     })
     setTargetPath(paths[paths.length - 1])
-  }, [])
+  }, [backendPlatform])
 
   // Names already spoken for, so an inline edit can be validated before saving.
   const takenNames = useMemo(
@@ -302,7 +315,7 @@ export function WorkspaceFolderDialog({
     if (!rootFolder || pending.length === 0 || pendingIssues.size > 0) return
     setCreating(true)
     try {
-      const created = await createFolderLinks(
+      const created = await backendApi.createFolderLinks(
         rootFolder.id,
         pending.map((item) => ({ path: item.targetPath, name: item.name })),
         gitExclude
@@ -318,7 +331,15 @@ export function WorkspaceFolderDialog({
     } finally {
       setCreating(false)
     }
-  }, [rootFolder, pending, pendingIssues, gitExclude, refreshLinks, t])
+  }, [
+    rootFolder,
+    pending,
+    pendingIssues,
+    gitExclude,
+    refreshLinks,
+    t,
+    backendApi,
+  ])
 
   // ── Existing link actions ─────────────────────────────────────────────────
 
@@ -335,7 +356,7 @@ export function WorkspaceFolderDialog({
     const id = renamingId
     setBusyLinkId(id)
     try {
-      await renameFolderLink(id, renameValue.trim())
+      await backendApi.renameFolderLink(id, renameValue.trim())
       setRenamingId(null)
       if (rootFolder) await refreshLinks(rootFolder.id)
     } catch (err) {
@@ -343,13 +364,21 @@ export function WorkspaceFolderDialog({
     } finally {
       setBusyLinkId(null)
     }
-  }, [renamingId, renameIssue, renameValue, rootFolder, refreshLinks, t])
+  }, [
+    renamingId,
+    renameIssue,
+    renameValue,
+    rootFolder,
+    refreshLinks,
+    t,
+    backendApi,
+  ])
 
   const handleRemove = useCallback(
     async (link: FolderLinkDetail) => {
       setBusyLinkId(link.id)
       try {
-        await removeFolderLink(link.id, true)
+        await backendApi.removeFolderLink(link.id, true)
         if (rootFolder) await refreshLinks(rootFolder.id)
       } catch (err) {
         toast.error(t("removeFailed"), { description: toErrorMessage(err) })
@@ -357,14 +386,14 @@ export function WorkspaceFolderDialog({
         setBusyLinkId(null)
       }
     },
-    [rootFolder, refreshLinks, t]
+    [rootFolder, refreshLinks, t, backendApi]
   )
 
   const handleRepair = useCallback(
     async (link: FolderLinkDetail) => {
       setBusyLinkId(link.id)
       try {
-        await repairFolderLink(link.id)
+        await backendApi.repairFolderLink(link.id)
         if (rootFolder) await refreshLinks(rootFolder.id)
       } catch (err) {
         toast.error(t("repairFailed"), { description: toErrorMessage(err) })
@@ -372,7 +401,7 @@ export function WorkspaceFolderDialog({
         setBusyLinkId(null)
       }
     },
-    [rootFolder, refreshLinks, t]
+    [rootFolder, refreshLinks, t, backendApi]
   )
 
   // ── Render ────────────────────────────────────────────────────────────────

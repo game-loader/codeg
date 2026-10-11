@@ -1,15 +1,20 @@
 "use client"
 
+import { useAcademicStore as legacyAcademic } from "@/stores/academic-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useState } from "react"
 import { ChevronRight, GraduationCap } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
-import { useAcademicStore } from "@/stores/academic-store"
+
 import { cn } from "@/lib/utils"
 import { AcademicLibraryList } from "./academic-library-list"
 import { useAcademicEvents } from "./use-academic-events"
 
 export function AcademicSidebar({ onNavigate }: { onNavigate?: () => void }) {
+  const backendStores = useBackendStores({ academic: legacyAcademic })
+  const useAcademicStore = backendStores.academic
+
   const t = useTranslations("Academic")
   const { routeId, setRoute } = useWorkbenchRoute()
   const [expanded, setExpanded] = useState(false)

@@ -1,19 +1,14 @@
 "use client"
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import { FileWarning, Loader2 } from "lucide-react"
 
-import {
-  startOfficeWatch,
-  stopOfficeWatch,
-  openSettingsWindow,
-} from "@/lib/api"
-import {
-  isDesktop,
-  isRemoteDesktopMode,
-  getServerBaseUrl,
-} from "@/lib/transport"
+import { isDesktop } from "@/lib/transport"
 import { extractAppCommandError } from "@/lib/app-error"
 
 // Machine code the backend stamps into `i18n_params.watchCode` for a missing
@@ -65,6 +60,9 @@ export function OfficePreview({
   rootPath: string | null
   relPath: string | null
 }) {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Folder.fileWorkspacePanel")
   const [port, setPort] = useState<number | null>(null)
   const [cap, setCap] = useState<string>("")
@@ -76,13 +74,13 @@ export function OfficePreview({
 
   // True only for a local desktop window: it loads the watch's loopback URL
   // directly. Web windows go through the proxy.
-  const loopbackDirect = isDesktop() && !isRemoteDesktopMode()
+  const loopbackDirect = isDesktop() && !backendPlatform.isRemoteDesktopMode()
   // A Tauri window bound to a remote server can't load the preview at all: its
   // webview is a secure context that mixed-content-blocks the remote `http://`
   // proxy URL, and (unlike JSON calls) a raw iframe can't be tunnelled through
   // Rust. Rather than spawn a remote watch nobody can see, we show a hint to
   // open the preview in the server's web UI instead.
-  const remoteDesktop = isDesktop() && isRemoteDesktopMode()
+  const remoteDesktop = isDesktop() && backendPlatform.isRemoteDesktopMode()
 
   // Start the watch server on mount (and on retry); stop it on unmount. The
   // component is keyed by tab id upstream, so a different file remounts fresh.
@@ -98,12 +96,13 @@ export function OfficePreview({
     const root = rootPath ?? ""
     // Don't spawn a watch we can't display (remote-desktop, see above).
     if (!root || !path || remoteDesktop) return
-    startOfficeWatch(root, path)
+    backendApi
+      .startOfficeWatch(root, path)
       .then((res) => {
         acquired = true
         if (cancelled) {
           // Unmounted before start resolved — release the ref we just took.
-          void stopOfficeWatch(root, path).catch(() => {})
+          void backendApi.stopOfficeWatch(root, path).catch(() => {})
           return
         }
         setPort(res.port)
@@ -119,10 +118,10 @@ export function OfficePreview({
     return () => {
       cancelled = true
       if (acquired) {
-        void stopOfficeWatch(root, path).catch(() => {})
+        void backendApi.stopOfficeWatch(root, path).catch(() => {})
       }
     }
-  }, [path, rootPath, retryKey, remoteDesktop])
+  }, [path, rootPath, retryKey, remoteDesktop, backendApi])
 
   const watchUrl = useMemo(() => {
     if (port == null) return null
@@ -133,9 +132,9 @@ export function OfficePreview({
     }
     // Web: route through the reverse proxy on the server that backs this
     // window, carrying the per-watch capability the proxy validates.
-    const base = getServerBaseUrl()
+    const base = backendPlatform.getServerBaseUrl()
     return `${base}/api/office-watch-proxy/${port}/?cap=${encodeURIComponent(cap)}`
-  }, [port, cap, loopbackDirect])
+  }, [port, cap, loopbackDirect, backendPlatform])
 
   const retry = () => {
     setErrorCode(null)
@@ -174,7 +173,7 @@ export function OfficePreview({
             <button
               type="button"
               onClick={() => {
-                openSettingsWindow().catch(() => {})
+                backendApi.openSettingsWindow().catch(() => {})
               }}
               className="mt-1 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-primary/8"
             >

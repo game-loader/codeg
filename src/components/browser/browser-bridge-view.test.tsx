@@ -100,7 +100,8 @@ describe("BrowserBridgeView", () => {
     )) as HTMLIFrameElement
     expect(api.bridgeOpen).toHaveBeenCalledWith(
       "http://localhost:3000/docs?x=1",
-      expect.stringMatching(/^tab-1:/)
+      expect.stringMatching(/^tab-1:/),
+      expect.objectContaining({ getTransport: expect.any(Function) })
     )
     const expectedSrc = bridgeEntryUrl(grant, window.location)
     expect(frame.getAttribute("src")).toBe(expectedSrc)
@@ -220,7 +221,10 @@ describe("BrowserBridgeView", () => {
       view.unmount()
     })
     expect(api.bridgeClose).toHaveBeenCalledTimes(1)
-    expect(api.bridgeClose).toHaveBeenCalledWith(holdId)
+    expect(api.bridgeClose).toHaveBeenCalledWith(
+      holdId,
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
   })
 
   it("unmounted while the open is pending: closes after it lands, never before", async () => {
@@ -241,7 +245,10 @@ describe("BrowserBridgeView", () => {
       await Promise.resolve()
       await Promise.resolve()
     })
-    expect(api.bridgeClose).toHaveBeenCalledWith(holdId)
+    expect(api.bridgeClose).toHaveBeenCalledWith(
+      holdId,
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
   })
 
   it("a failed open is released too: the server may have recorded it", async () => {
@@ -253,7 +260,10 @@ describe("BrowserBridgeView", () => {
       view.unmount()
     })
     expect(api.bridgeClose).toHaveBeenCalledTimes(1)
-    expect(api.bridgeClose).toHaveBeenCalledWith(holdId)
+    expect(api.bridgeClose).toHaveBeenCalledWith(
+      holdId,
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
   })
 
   it("unmounted while the probe is pending: the hold is released, no outcome is painted", async () => {
@@ -270,7 +280,12 @@ describe("BrowserBridgeView", () => {
     await act(async () => {
       view.unmount()
     })
-    await waitFor(() => expect(api.bridgeClose).toHaveBeenCalledWith(holdId))
+    await waitFor(() =>
+      expect(api.bridgeClose).toHaveBeenCalledWith(
+        holdId,
+        expect.objectContaining({ getTransport: expect.any(Function) })
+      )
+    )
     await act(async () => {
       resolveProbe(true)
     })
@@ -292,8 +307,14 @@ describe("BrowserBridgeView", () => {
     const ids = api.bridgeOpen.mock.calls.map((call) => call[1] as string)
     expect(new Set(ids).size).toBe(3)
     await waitFor(() => expect(api.bridgeClose).toHaveBeenCalledTimes(2))
-    expect(api.bridgeClose).toHaveBeenCalledWith(ids[0])
-    expect(api.bridgeClose).toHaveBeenCalledWith(ids[1])
+    expect(api.bridgeClose).toHaveBeenCalledWith(
+      ids[0],
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
+    expect(api.bridgeClose).toHaveBeenCalledWith(
+      ids[1],
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
     expect(api.bridgeClose).not.toHaveBeenCalledWith(ids[2])
     await waitFor(() =>
       expect(
@@ -322,7 +343,12 @@ describe("BrowserBridgeView", () => {
       (call) => call[1] as string
     )
     expect(first).not.toBe(second)
-    await waitFor(() => expect(api.bridgeClose).toHaveBeenCalledWith(first))
+    await waitFor(() =>
+      expect(api.bridgeClose).toHaveBeenCalledWith(
+        first,
+        expect.objectContaining({ getTransport: expect.any(Function) })
+      )
+    )
     expect(api.bridgeClose).toHaveBeenCalledTimes(1)
     expect(api.bridgeClose).not.toHaveBeenCalledWith(second)
     // The frame shows the surviving attempt's entry.
@@ -347,7 +373,12 @@ describe("BrowserBridgeView", () => {
     )
     const second = api.bridgeOpen.mock.calls[1][1]
     expect(second).not.toBe(first)
-    await waitFor(() => expect(api.bridgeClose).toHaveBeenCalledWith(first))
+    await waitFor(() =>
+      expect(api.bridgeClose).toHaveBeenCalledWith(
+        first,
+        expect.objectContaining({ getTransport: expect.any(Function) })
+      )
+    )
     expect(api.bridgeClose).not.toHaveBeenCalledWith(second)
   })
 })

@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   BarChart3,
@@ -34,17 +35,7 @@ import {
   loadOfficeAutoPreview,
   saveOfficeAutoPreview,
 } from "@/lib/office-preview-prefs"
-import {
-  acpListAgents,
-  officecliDetect,
-  officecliInstall,
-  officecliListSkills,
-  officecliSkillApplyLinks,
-  officecliSkillListAllInstallStatuses,
-  officecliSkillReadContent,
-  officecliSyncSkills,
-  officecliUninstall,
-} from "@/lib/api"
+
 import { invalidateAgentSkillsCache } from "@/hooks/use-agent-skills"
 import { useOfficecliInstallStream } from "@/hooks/use-officecli-install-stream"
 import { pickLocalized } from "@/lib/expert-presentation"
@@ -222,6 +213,8 @@ export function OfficeToolsBody({
 }: {
   onRegisterRefresh?: (refresh: () => void) => void
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("OfficeToolsSettings")
   const locale = useLocale()
   const [autoPreview, setAutoPreview] = useState(() => loadOfficeAutoPreview())
@@ -278,20 +271,20 @@ export function OfficeToolsBody({
   const detect = useCallback(async () => {
     setDetecting(true)
     try {
-      const result = await officecliDetect()
+      const result = await backendApi.officecliDetect()
       setInfo(result)
     } catch {
       setInfo(null)
     } finally {
       setDetecting(false)
     }
-  }, [])
+  }, [backendApi])
 
   const refreshSkills = useCallback(async () => {
     try {
       const [skillList, agentList] = await Promise.all([
-        officecliListSkills(),
-        acpListAgents(),
+        backendApi.officecliListSkills(),
+        backendApi.acpListAgents(),
       ])
       setSkills(skillList)
       // A pi pointed at a custom PI_CODING_AGENT_DIR isn't managed by the
@@ -307,7 +300,7 @@ export function OfficeToolsBody({
     } catch (err) {
       toast.error(t("toasts.loadFailed"), { description: toErrorMessage(err) })
     }
-  }, [t])
+  }, [t, backendApi])
 
   useEffect(() => {
     Promise.all([detect(), refreshSkills()]).catch((err) => {
@@ -362,10 +355,10 @@ export function OfficeToolsBody({
     (skillId: string) => {
       const skill = skills.find((s) => s.id === skillId)
       return skill?.installedCentrally
-        ? officecliSkillReadContent(skillId)
+        ? backendApi.officecliSkillReadContent(skillId)
         : Promise.resolve("")
     },
-    [skills]
+    [skills, backendApi]
   )
 
   const handleInstall = useCallback(async () => {
@@ -375,12 +368,12 @@ export function OfficeToolsBody({
     const taskId = randomUUID()
     await installStream.start(taskId)
     try {
-      const result = await officecliInstall(taskId)
+      const result = await backendApi.officecliInstall(taskId)
       setInfo(result)
       toast.success(t("toasts.installSuccess"))
       // Auto-sync the newly available skills, surfacing failures like handleSync
       // so a partial/failed sync isn't silently swallowed behind the success toast.
-      const report = await officecliSyncSkills()
+      const report = await backendApi.officecliSyncSkills()
       if (report.errors.length > 0) {
         toast.warning(
           t("toasts.syncPartial", {
@@ -405,11 +398,11 @@ export function OfficeToolsBody({
     // `installStream` is a fresh object each render, but its state lives in this
     // component so a streamed line already re-renders us; handleInstall identity
     // is immaterial (its only consumer isn't memoized).
-  }, [t, detect, refreshSkills, installStream])
+  }, [t, detect, refreshSkills, installStream, backendApi])
 
   const handleUninstall = useCallback(async () => {
     try {
-      const result = await officecliUninstall()
+      const result = await backendApi.officecliUninstall()
       setInfo(result)
       await refreshSkills()
       toast.success(t("toasts.uninstallSuccess"))
@@ -418,12 +411,12 @@ export function OfficeToolsBody({
         description: toErrorMessage(err),
       })
     }
-  }, [t, refreshSkills])
+  }, [t, refreshSkills, backendApi])
 
   const handleSync = useCallback(async () => {
     setSyncing(true)
     try {
-      const report = await officecliSyncSkills()
+      const report = await backendApi.officecliSyncSkills()
       await refreshSkills()
       if (report.errors.length > 0) {
         toast.warning(
@@ -443,7 +436,7 @@ export function OfficeToolsBody({
     } finally {
       setSyncing(false)
     }
-  }, [t, refreshSkills])
+  }, [t, refreshSkills, backendApi])
 
   const installed = info?.installed === true
 
@@ -508,11 +501,11 @@ export function OfficeToolsBody({
             categoryOrder={CATEGORY_SORT}
             translateCategory={translatedCategory}
             translateState={translatedState}
-            loadAllStatuses={officecliSkillListAllInstallStatuses}
-            applyLinks={officecliSkillApplyLinks}
+            loadAllStatuses={backendApi.officecliSkillListAllInstallStatuses}
+            applyLinks={backendApi.officecliSkillApplyLinks}
             loadContent={loadContent}
             onApplied={(touched) =>
-              touched.forEach((a) => invalidateAgentSkillsCache(a))
+              touched.forEach((a) => invalidateAgentSkillsCache(a, backendApi))
             }
             searchPlaceholder={t("searchPlaceholder")}
             notReadyHint={installed ? t("syncFirst") : t("installFirst")}

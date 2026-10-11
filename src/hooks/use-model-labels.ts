@@ -1,5 +1,9 @@
 "use client"
 
+import {
+  useBackendApi,
+  useOptionalBackendClient,
+} from "@/contexts/backend-client-context"
 import { useCallback, useMemo, useSyncExternalStore } from "react"
 import { getModelLabels, subscribeModelLabels } from "@/lib/model-label-store"
 
@@ -22,15 +26,20 @@ export type ModelLabelResolver = (
 export function useModelLabels(
   agentType: string | null | undefined
 ): ModelLabelResolver {
+  const api = useBackendApi()
+  const client = useOptionalBackendClient()
+  const storageKey = client
+    ? `codeg:model-labels:backend:${client.key}`
+    : undefined
+  const subscribe = useCallback(
+    (notify: () => void) => subscribeModelLabels(notify, api, storageKey),
+    [api, storageKey]
+  )
   const getSnapshot = useCallback(
-    () => (agentType ? getModelLabels(agentType) : null),
-    [agentType]
+    () => (agentType ? getModelLabels(agentType, api, storageKey) : null),
+    [agentType, api, storageKey]
   )
-  const labels = useSyncExternalStore(
-    subscribeModelLabels,
-    getSnapshot,
-    getSnapshot
-  )
+  const labels = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
   return useMemo<ModelLabelResolver>(
     () => (model) => (model ? (labels?.get(model) ?? model) : null),
     [labels]

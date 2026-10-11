@@ -1,5 +1,12 @@
 "use client"
 
+import { defaultBackendStoreStorage as legacyStorage } from "@/stores/backend-store-storage"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import {
   createContext,
   useCallback,
@@ -12,21 +19,9 @@ import {
 } from "react"
 import { useTranslations } from "next-intl"
 import { useActiveFolder } from "@/contexts/active-folder-context"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import { browserTabBackendId, buildFileTabId } from "@/lib/file-tab-id"
-import {
-  gitDiff,
-  gitDiffWithBranch,
-  gitIsTracked,
-  gitShowDiff,
-  gitShowFile,
-  listDirectoryWithFiles,
-  readFileBase64,
-  readFileForEdit,
-  readFilePreview,
-  saveFileContent,
-  saveFileCopy,
-} from "@/lib/api"
+
 import type { FileEditContent } from "@/lib/types"
 import {
   expandHomePath,
@@ -39,7 +34,6 @@ import {
 import { isAbsoluteFilePath } from "@/lib/file-path-display"
 import {
   batchCloseSlots,
-  pushClosedTab,
   snapshotBrowserTab,
   snapshotFileTab,
 } from "@/lib/closed-tab-stack"
@@ -532,6 +526,16 @@ interface WorkspaceProviderProps {
 }
 
 export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
+  const backendStores = useBackendStores({
+    storage: legacyStorage,
+    workspace: legacyWorkspace,
+  })
+  const { pushClosedTab } = backendStores.storage.closedTabs
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Folder.workspaceContext")
   const { activeFolder } = useActiveFolder()
   // Reactive: `useOpenFileTabsWatch` re-derives its per-root FS subscriptions
@@ -656,7 +660,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       }
       return activeFolderRef.current
     },
-    []
+    [useAppWorkspaceStore]
   )
 
   // Resolve an opener input into the canonical absolute path that is the
@@ -666,7 +670,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   const resolveOpenAbsolutePath = useCallback(
     async (rawPath: string, baseFolderId?: number): Promise<string | null> => {
       const input = isHomeRelativePath(rawPath)
-        ? await expandHomePath(rawPath)
+        ? await expandHomePath(rawPath, backendApi)
         : rawPath
       if (isAbsoluteFilePath(input)) {
         const abs = normalizeAbsPath(input)
@@ -685,7 +689,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       if (!base) return null
       return joinRootRel(base.path, normalizePath(input))
     },
-    [resolveTargetFolder]
+    [resolveTargetFolder, backendApi, useAppWorkspaceStore]
   )
 
   // Git gutter base for the file at absPath, derived from its owning
@@ -700,13 +704,15 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         useAppWorkspaceStore.getState().allFolders
       )
       if (!owning) return undefined
-      const tracked = await gitIsTracked(owning.rootPath, owning.relPath).catch(
-        () => false
-      )
+      const tracked = await backendApi
+        .gitIsTracked(owning.rootPath, owning.relPath)
+        .catch(() => false)
       if (!tracked) return undefined
-      return gitShowFile(owning.rootPath, owning.relPath).catch(() => "")
+      return backendApi
+        .gitShowFile(owning.rootPath, owning.relPath)
+        .catch(() => "")
     },
-    []
+    [backendApi, useAppWorkspaceStore]
   )
 
   const mode: WorkspaceMode = fileTabs.length > 0 ? "fusion" : "conversation"
@@ -716,9 +722,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   // later starts from the normal split instead of a stale maximized layout.
   useEffect(() => {
     if (fileTabs.length === 0 && filesMaximized) {
-      /* eslint-disable react-hooks/set-state-in-effect */
       setFilesMaximized(false)
-      /* eslint-enable react-hooks/set-state-in-effect */
     }
   }, [fileTabs.length, filesMaximized])
 
@@ -876,7 +880,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           // A request from a page of a connection's profile (a ⌘-click):
           // its opener's, even when the opener's record is already gone.
           remoteConnectionOfProfile(options?.profile) !== null ||
-          isRemoteHostAddress(url))
+          isRemoteHostAddress(url, backendPlatform))
       // A tab opened from another tab (⌘-click, a popup) belongs with it:
       // same cookies, same signed-in state. Otherwise the preference. A
       // profile that no longer exists (a reopened tab of a deleted one, a
@@ -962,7 +966,13 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       }
       return record.id
     },
-    [activateFilePane, activateTab, browserTabRecord, seedLoadingTab]
+    [
+      activateFilePane,
+      activateTab,
+      browserTabRecord,
+      seedLoadingTab,
+      backendPlatform,
+    ]
   )
 
   const adoptBrowserTab = useCallback(
@@ -1038,7 +1048,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           // An address of the remote host comes back as a remote tab even
           // if its record did not say so (a page that walked there on its
           // own): never as a page of this computer.
-          const remote = entry.remote === true || isRemoteHostAddress(entry.url)
+          const remote =
+            entry.remote === true ||
+            isRemoteHostAddress(entry.url, backendPlatform)
           const profile =
             !remote && browserProfileExists(prefs, entry.profile)
               ? entry.profile
@@ -1063,7 +1075,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         return records.length === 0 ? prev : [...prev, ...records]
       })
     },
-    [browserTabRecord]
+    [browserTabRecord, backendPlatform]
   )
 
   // A deleted profile has no store any more. Its loaded tabs are closed by
@@ -1489,8 +1501,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
             : (IMAGE_MIME[ext] ?? "image/png")
           const b64 = await withTimeout(
             pdf
-              ? readFileBase64(absPath, PDF_PREVIEW_MAX_BYTES)
-              : readFileBase64(absPath),
+              ? backendApi.readFileBase64(absPath, PDF_PREVIEW_MAX_BYTES)
+              : backendApi.readFileBase64(absPath),
             15_000,
             t("previewRequestTimedOut")
           )
@@ -1515,7 +1527,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
         const [result, gitBaseContent] = await withTimeout(
           Promise.all([
-            readFileForEdit(io.rootPath, io.ioPath),
+            backendApi.readFileForEdit(io.rootPath, io.ioPath),
             fetchGitBase(absPath),
           ]),
           15_000,
@@ -1555,6 +1567,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       rejectTab,
       settleFetch,
       t,
+      backendApi,
     ]
   )
 
@@ -1847,8 +1860,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
               : (IMAGE_MIME[ext] ?? "image/png")
             const b64 = await withTimeout(
               pdf
-                ? readFileBase64(absPath, PDF_PREVIEW_MAX_BYTES)
-                : readFileBase64(absPath),
+                ? backendApi.readFileBase64(absPath, PDF_PREVIEW_MAX_BYTES)
+                : backendApi.readFileBase64(absPath),
               15_000,
               t("previewRequestTimedOut")
             )
@@ -1873,7 +1886,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
           const [result, gitBaseContent] = await withTimeout(
             Promise.all([
-              readFileForEdit(io.rootPath, io.ioPath),
+              backendApi.readFileForEdit(io.rootPath, io.ioPath),
               fetchGitBase(absPath),
             ]),
             15_000,
@@ -1923,6 +1936,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       resolveOpenAbsolutePath,
       settleFetch,
       t,
+      backendApi,
     ]
   )
 
@@ -1962,7 +1976,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       if (!changed_paths || changed_paths.length === 0) return
       const directories = new Map<
         string,
-        ReturnType<typeof listDirectoryWithFiles>
+        ReturnType<typeof backendApi.listDirectoryWithFiles>
       >()
       // Tab identity is the absolute path, so joining the stream root onto
       // the changed relative path compares exactly — an identically-named
@@ -2005,7 +2019,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         // locking the Office document. Share one listing per parent per burst.
         let listing = directories.get(io.rootPath)
         if (!listing) {
-          listing = listDirectoryWithFiles(io.rootPath)
+          listing = backendApi.listDirectoryWithFiles(io.rootPath)
           directories.set(io.rootPath, listing)
         }
         void listing
@@ -2041,6 +2055,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     officeAutoPreview,
     subscribeOfficeEnvelopes,
     openFilePreview,
+    backendApi,
   ])
 
   // The image counterpart of the three rich-diff loaders below: a binary image
@@ -2062,7 +2077,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
             args.folderPath,
             args.file,
             args.original,
-            args.modified
+            args.modified,
+            backendApi
           ),
           20_000,
           args.timeoutMessage
@@ -2076,7 +2092,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         }
       }
     },
-    [rejectTab, resolveImageDiffTab, settleFetch]
+    [rejectTab, resolveImageDiffTab, settleFetch, backendApi]
   )
 
   const openWorkingTreeDiff = useCallback(
@@ -2112,7 +2128,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const { gen } = decision
         try {
           const result = await withTimeout(
-            gitDiff(folderPath),
+            backendApi.gitDiff(folderPath),
             20_000,
             t("diffRequestTimedOut")
           )
@@ -2153,7 +2169,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const { gen } = decision
         try {
           const result = await withTimeout(
-            gitDiff(folderPath, path),
+            backendApi.gitDiff(folderPath, path),
             20_000,
             t("diffRequestTimedOut")
           )
@@ -2187,7 +2203,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const { gen } = decision
         try {
           const result = await withTimeout(
-            gitDiff(folderPath, path),
+            backendApi.gitDiff(folderPath, path),
             20_000,
             t("diffRequestTimedOut")
           )
@@ -2238,8 +2254,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       try {
         const [originalContent, modifiedResult] = await withTimeout(
           Promise.all([
-            gitShowFile(folderPath, path).catch(() => ""),
-            readFilePreview(folderPath, path).catch(() => ({
+            backendApi.gitShowFile(folderPath, path).catch(() => ""),
+            backendApi.readFilePreview(folderPath, path).catch(() => ({
               content: "",
               path: "",
             })),
@@ -2262,6 +2278,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       resolveTargetFolder,
       settleFetch,
       t,
+      backendApi,
     ]
   )
 
@@ -2330,8 +2347,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         try {
           const [originalContent, modifiedResult] = await withTimeout(
             Promise.all([
-              gitShowFile(folderPath, path, targetBranch).catch(() => ""),
-              readFilePreview(folderPath, path).catch(() => ({
+              backendApi
+                .gitShowFile(folderPath, path, targetBranch)
+                .catch(() => ""),
+              backendApi.readFilePreview(folderPath, path).catch(() => ({
                 content: "",
                 path: "",
               })),
@@ -2361,7 +2380,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       const { gen } = decision
       try {
         const result = await withTimeout(
-          gitDiffWithBranch(folderPath, targetBranch, path ?? undefined),
+          backendApi.gitDiffWithBranch(
+            folderPath,
+            targetBranch,
+            path ?? undefined
+          ),
           20_000,
           t("branchCompareRequestTimedOut")
         )
@@ -2380,6 +2403,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       resolveTargetFolder,
       settleFetch,
       t,
+      backendApi,
     ]
   )
 
@@ -2449,8 +2473,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         try {
           const [originalContent, modifiedContent] = await withTimeout(
             Promise.all([
-              gitShowFile(folderPath, path, `${commit}~1`).catch(() => ""),
-              gitShowFile(folderPath, path, commit).catch(() => ""),
+              backendApi
+                .gitShowFile(folderPath, path, `${commit}~1`)
+                .catch(() => ""),
+              backendApi.gitShowFile(folderPath, path, commit).catch(() => ""),
             ]),
             20_000,
             t("commitDiffRequestTimedOut")
@@ -2475,7 +2501,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const { gen } = decision
         try {
           const result = await withTimeout(
-            gitShowDiff(folderPath, commit, undefined),
+            backendApi.gitShowDiff(folderPath, commit, undefined),
             20_000,
             t("commitDiffRequestTimedOut")
           )
@@ -2495,6 +2521,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       resolveTargetFolder,
       settleFetch,
       t,
+      backendApi,
     ]
   )
 
@@ -2645,10 +2672,14 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         : head.unsavedContent
     // Throws on failure BEFORE dequeueing — the conflict stays queued so
     // the user can retry or pick another resolution.
-    const result = await saveFileCopy(io.rootPath, io.ioPath, unsavedContent)
+    const result = await backendApi.saveFileCopy(
+      io.rootPath,
+      io.ioPath,
+      unsavedContent
+    )
     dequeueExternalConflict()
     return result.path
-  }, [dequeueExternalConflict])
+  }, [dequeueExternalConflict, backendApi])
 
   const dismissExternalConflict = useCallback(() => {
     dequeueExternalConflict()
@@ -2719,7 +2750,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       )
       if ((tab.stale || unwatched) && !options?.force) {
         try {
-          const latest = await readFileForEdit(io.rootPath, io.ioPath)
+          const latest = await backendApi.readFileForEdit(
+            io.rootPath,
+            io.ioPath
+          )
           if ((latest.etag ?? null) !== (tab.etag ?? null)) {
             // Forced: the user just asked to save and the save is being
             // refused — the dialog must re-appear even if this divergence
@@ -2767,7 +2801,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
       try {
         const result = await withTimeout(
-          saveFileContent(
+          backendApi.saveFileContent(
             io.rootPath,
             io.ioPath,
             contentAtSaveStart,
@@ -2822,7 +2856,13 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         return false
       }
     },
-    [enqueueExternalConflict, recordSelfWriteEcho, t]
+    [
+      enqueueExternalConflict,
+      recordSelfWriteEcho,
+      t,
+      backendApi,
+      useAppWorkspaceStore,
+    ]
   )
 
   useEffect(() => {
@@ -2882,7 +2922,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       try {
         const [result, gitBaseContent] = await withTimeout(
           Promise.all([
-            readFileForEdit(io.rootPath, io.ioPath),
+            backendApi.readFileForEdit(io.rootPath, io.ioPath),
             fetchGitBase(tabPath),
           ]),
           15_000,
@@ -2928,7 +2968,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         )
       }
     },
-    [fetchGitBase, t]
+    [fetchGitBase, t, backendApi]
   )
 
   const reloadActiveFile = useCallback(async () => {
@@ -3005,7 +3045,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         return next
       })
     },
-    [activateConversationPane, activateFilePane, t]
+    [activateConversationPane, activateFilePane, t, pushClosedTab]
   )
 
   const closeOtherFileTabs = useCallback(
@@ -3038,7 +3078,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         return remaining
       })
     },
-    [activateFilePane, t]
+    [activateFilePane, t, pushClosedTab]
   )
 
   const closeAllFileTabs = useCallback(() => {
@@ -3063,7 +3103,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       activateConversationPane()
       return []
     })
-  }, [activateConversationPane, t])
+  }, [activateConversationPane, t, pushClosedTab])
 
   const reorderFileTabs = useCallback((tabs: FileWorkspaceTab[]) => {
     setFileTabs(tabs)
@@ -3150,13 +3190,12 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     if (tab.loading || tab.isDirty) return
     const key = conflictKey(tab.path)
     conflictSignatureByKeyRef.current.delete(key)
-    /* eslint-disable react-hooks/set-state-in-effect */
+
     setExternalConflictQueue((prev) =>
       prev.some((conflict) => conflictKey(conflict.path) === key)
         ? prev.filter((conflict) => conflictKey(conflict.path) !== key)
         : prev
     )
-    /* eslint-enable react-hooks/set-state-in-effect */
   }, [activeFileTab])
 
   // The watcher: per-root FS stream subscriptions derived from the open

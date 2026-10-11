@@ -1,5 +1,10 @@
 "use client"
 
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import {
   useCallback,
   useEffect,
@@ -44,15 +49,9 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { WorkbenchPageTitle } from "@/components/workbench/workbench-page-title"
 import { FolderAliasLabel } from "@/components/conversations/folder-alias-label"
 import { formatFolderLabelWithAlias } from "@/lib/folder-display"
-import {
-  tokenUsageFacets,
-  tokenUsageReport,
-  tokenUsageStatus,
-  tokenUsageSync,
-} from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
-import { getAgentLabel } from "@/lib/custom-agents"
-import { subscribe } from "@/lib/platform"
+
 import { formatTokenCount } from "@/lib/token-format"
 import {
   averagePerActiveDay,
@@ -315,6 +314,11 @@ function LoadingSkeleton() {
  * disagree with anything else on it.
  */
 export function TokenUsagePage() {
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("TokenUsage")
   const locale = useLocale()
 
@@ -403,7 +407,7 @@ export function TokenUsagePage() {
     setError(null)
     try {
       const [next, nextFacets, nextStatus] = await Promise.all([
-        tokenUsageReport({
+        backendApi.tokenUsageReport({
           start: range.start,
           end: range.end,
           folderIds: folderIds.length ? folderIds.map(Number) : null,
@@ -413,8 +417,8 @@ export function TokenUsagePage() {
           tzOffsetMinutes: localTzOffsetMinutes(now),
           comparePrevious: true,
         }),
-        tokenUsageFacets(),
-        tokenUsageStatus(),
+        backendApi.tokenUsageFacets(),
+        backendApi.tokenUsageStatus(),
       ])
       // Drop a response overtaken by a newer request, so fast filter clicks
       // can't land an older result last.
@@ -428,7 +432,7 @@ export function TokenUsagePage() {
     } finally {
       if (id === reqRef.current) setLoading(false)
     }
-  }, [range, folderIds, agentTypes, models, effectiveBucket, now])
+  }, [range, folderIds, agentTypes, models, effectiveBucket, now, backendApi])
 
   useEffect(() => {
     void load()
@@ -447,21 +451,23 @@ export function TokenUsagePage() {
   useEffect(() => {
     let unsub: (() => void) | undefined
     let cancelled = false
-    void subscribe<TokenUsageSyncProgress>(SYNC_PROGRESS_EVENT, (payload) => {
-      setProgress(payload.result ? null : payload)
-      if (payload.result) {
-        setSyncing(false)
-        void loadRef.current()
-      }
-    }).then((u) => {
-      if (cancelled) u()
-      else unsub = u
-    })
+    void backendPlatform
+      .subscribe<TokenUsageSyncProgress>(SYNC_PROGRESS_EVENT, (payload) => {
+        setProgress(payload.result ? null : payload)
+        if (payload.result) {
+          setSyncing(false)
+          void loadRef.current()
+        }
+      })
+      .then((u) => {
+        if (cancelled) u()
+        else unsub = u
+      })
     return () => {
       cancelled = true
       unsub?.()
     }
-  }, [])
+  }, [backendPlatform])
 
   // An import is the main way new sessions appear while this page is open, and
   // it drops the usage stamp of everything it touched. Refetch so the stale
@@ -469,24 +475,26 @@ export function TokenUsagePage() {
   useEffect(() => {
     let unsub: (() => void) | undefined
     let cancelled = false
-    void subscribe(CONVERSATIONS_BULK_CHANGED_EVENT, () => {
-      void loadRef.current()
-    }).then((u) => {
-      if (cancelled) u()
-      else unsub = u
-    })
+    void backendPlatform
+      .subscribe(CONVERSATIONS_BULK_CHANGED_EVENT, () => {
+        void loadRef.current()
+      })
+      .then((u) => {
+        if (cancelled) u()
+        else unsub = u
+      })
     return () => {
       cancelled = true
       unsub?.()
     }
-  }, [])
+  }, [backendPlatform])
 
   const runSync = useCallback(
     async (mode: "incremental" | "full", opts?: { silent?: boolean }) => {
       setSyncing(true)
       setProgress(null)
       try {
-        const result = await tokenUsageSync(mode)
+        const result = await backendApi.tokenUsageSync(mode)
         if (!opts?.silent)
           toast.success(t("syncDone", { synced: result.synced }))
         if (result.failed > 0) toast.warning(t("syncFailed"))
@@ -501,7 +509,7 @@ export function TokenUsagePage() {
         await load()
       }
     },
-    [load, t]
+    [load, t, backendApi]
   )
 
   // Catch the facts up once per page mount when they are behind the
@@ -546,7 +554,7 @@ export function TokenUsagePage() {
         value: a,
         label: getAgentLabel(a as AgentType),
       })),
-    [facets]
+    [facets, getAgentLabel]
   )
   const modelOptions = useMemo(
     () => (facets?.models ?? []).map((m) => ({ value: m, label: m })),
@@ -681,7 +689,7 @@ export function TokenUsagePage() {
       if (dim === "model" && key === "__unknown__") return t("unknownModel")
       return fallback
     },
-    [dim, t]
+    [dim, t, getAgentLabel]
   )
 
   const breakdownRows = useMemo<RankedDatum[]>(() => {

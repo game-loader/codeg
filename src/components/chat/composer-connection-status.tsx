@@ -1,7 +1,8 @@
 "use client"
 
+import { useAgentDisplay } from "@/hooks/use-agent-display"
 import { useCallback, useState, useSyncExternalStore } from "react"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import {
   HeartHandshake,
   HeartPulse,
@@ -90,6 +91,8 @@ function DetailRow({ label, value }: { label: string; value: string }) {
  * recorded for this key (see `AcpActionsValue.reconnect`).
  */
 export function ComposerConnectionStatus({ tabId }: { tabId: string | null }) {
+  const { getAgentLabel } = useAgentDisplay()
+
   const t = useTranslations("Folder.statusBar.connection")
   const store = useConnectionStore()
   const { reconnect, getReconnectInfo } = useAcpActions()

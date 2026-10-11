@@ -37,6 +37,7 @@
  * the real list — or while a save is on its way.
  */
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -112,7 +113,6 @@ import {
 } from "@/lib/computer/types"
 import { useComputerStopKey } from "@/lib/computer/use-stop-key"
 import { setShortcutRecorderArmed } from "@/lib/keyboard-shortcuts"
-import { isLocalDesktop, subscribe } from "@/lib/platform"
 
 /** The choices offered, in minutes; 0 is "until I take it back". */
 const TTL_CHOICES = [10, 30, 60, 240, 0] as const
@@ -206,6 +206,8 @@ function defaultDeliveryDirty(values: Values, baseline: Values): boolean {
 }
 
 export function ComputerSettingsSection() {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("ComputerUse.settings")
   const tComputer = useTranslations("ComputerUse")
   const [loaded, setLoaded] = useState(false)
@@ -252,18 +254,18 @@ export function ComputerSettingsSection() {
     setLoading(true)
     const gen = remoteGenRef.current
     try {
-      applyRead(await getComputerToolsSettings(), gen)
+      applyRead(await getComputerToolsSettings(backendPlatform), gen)
     } catch (e) {
       setLoadError(toErrorMessage(e))
     } finally {
       setLoading(false)
     }
-  }, [applyRead])
+  }, [applyRead, backendPlatform])
 
   useEffect(() => {
     let cancelled = false
     const gen = remoteGenRef.current
-    getComputerToolsSettings()
+    getComputerToolsSettings(backendPlatform)
       .then((settings) => {
         if (!cancelled) applyRead(settings, gen)
       })
@@ -276,7 +278,7 @@ export function ComputerSettingsSection() {
     return () => {
       cancelled = true
     }
-  }, [applyRead])
+  }, [applyRead, backendPlatform])
 
   // Another window saved the record: every field this form has not touched
   // follows it; a touched one keeps its edit (only its baseline moves, so it
@@ -284,49 +286,50 @@ export function ComputerSettingsSection() {
   useEffect(() => {
     let disposed = false
     let unsubscribe: (() => void) | undefined
-    void subscribe<ComputerToolsSettings>(
-      COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
-      (remote) => {
-        remoteGenRef.current += 1
-        const next = fromSettings(remote)
-        remoteRef.current = next
-        const current = valuesRef.current
-        const base = baselineRef.current
-        setValues((prev) => ({
-          ttl: ttlDirty(current, base) ? prev.ttl : next.ttl,
-          blocklist: blocklistDirty(current, base)
-            ? prev.blocklist
-            : next.blocklist,
-          removed: removedDirty(current, base) ? prev.removed : next.removed,
-          stopShortcut: stopShortcutDirty(current, base)
-            ? prev.stopShortcut
-            : next.stopShortcut,
-          showIndicator: showIndicatorDirty(current, base)
-            ? prev.showIndicator
-            : next.showIndicator,
-          allowForeground: allowForegroundDirty(current, base)
-            ? prev.allowForeground
-            : next.allowForeground,
-          defaultDelivery: defaultDeliveryDirty(current, base)
-            ? prev.defaultDelivery
-            : next.defaultDelivery,
-          launchEnabled: launchEnabledDirty(current, base)
-            ? prev.launchEnabled
-            : next.launchEnabled,
-          clipboardEnabled: clipboardEnabledDirty(current, base)
-            ? prev.clipboardEnabled
-            : next.clipboardEnabled,
-          screenEnabled: screenEnabledDirty(current, base)
-            ? prev.screenEnabled
-            : next.screenEnabled,
-        }))
-        setBaseline(next)
-        setEnabled(remote.enabled)
-        setDefaults(remote.blocklistDefaults)
-        setLoaded(true)
-        setLoadError(null)
-      }
-    )
+    void backendPlatform
+      .subscribe<ComputerToolsSettings>(
+        COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
+        (remote) => {
+          remoteGenRef.current += 1
+          const next = fromSettings(remote)
+          remoteRef.current = next
+          const current = valuesRef.current
+          const base = baselineRef.current
+          setValues((prev) => ({
+            ttl: ttlDirty(current, base) ? prev.ttl : next.ttl,
+            blocklist: blocklistDirty(current, base)
+              ? prev.blocklist
+              : next.blocklist,
+            removed: removedDirty(current, base) ? prev.removed : next.removed,
+            stopShortcut: stopShortcutDirty(current, base)
+              ? prev.stopShortcut
+              : next.stopShortcut,
+            showIndicator: showIndicatorDirty(current, base)
+              ? prev.showIndicator
+              : next.showIndicator,
+            allowForeground: allowForegroundDirty(current, base)
+              ? prev.allowForeground
+              : next.allowForeground,
+            defaultDelivery: defaultDeliveryDirty(current, base)
+              ? prev.defaultDelivery
+              : next.defaultDelivery,
+            launchEnabled: launchEnabledDirty(current, base)
+              ? prev.launchEnabled
+              : next.launchEnabled,
+            clipboardEnabled: clipboardEnabledDirty(current, base)
+              ? prev.clipboardEnabled
+              : next.clipboardEnabled,
+            screenEnabled: screenEnabledDirty(current, base)
+              ? prev.screenEnabled
+              : next.screenEnabled,
+          }))
+          setBaseline(next)
+          setEnabled(remote.enabled)
+          setDefaults(remote.blocklistDefaults)
+          setLoaded(true)
+          setLoadError(null)
+        }
+      )
       .then((fn) => {
         if (disposed) fn()
         else unsubscribe = fn
@@ -336,7 +339,7 @@ export function ComputerSettingsSection() {
       disposed = true
       unsubscribe?.()
     }
-  }, [])
+  }, [backendPlatform])
 
   const dirtyTtl = ttlDirty(values, baseline)
   const dirtyBlocklist = blocklistDirty(values, baseline)
@@ -364,37 +367,40 @@ export function ComputerSettingsSection() {
   // the screen it runs on. The stop shortcut and the strip are the desktop
   // app's alone — a server has neither, its Stop is in this panel.
   const available = useComputerAvailable()
-  const desktopHere = isLocalDesktop()
+  const desktopHere = backendPlatform.isLocalDesktop()
   // The entire screen is offered on macOS and Windows: Linux has no one list
   // of every window on it to judge them by. The machine is the server's,
   // where a server shares its screen — not the one this page shows on.
   const { isLinux: localLinux } = usePlatform()
   const isLinux = desktopHere
     ? localLinux
-    : computerServerPlatform() === "linux"
+    : computerServerPlatform(backendPlatform) === "linux"
 
   const save = useCallback(async () => {
     setSaving(true)
     const gen = remoteGenRef.current
     try {
-      const applied = await setComputerToolsPreferences({
-        grantTtlMinutes: dirtyTtl ? values.ttl : undefined,
-        blocklist: dirtyBlocklist ? values.blocklist : undefined,
-        blocklistRemoved: dirtyRemoved ? values.removed : undefined,
-        stopShortcut: dirtyStopShortcut ? values.stopShortcut : undefined,
-        showIndicator: dirtyShowIndicator ? values.showIndicator : undefined,
-        allowForeground: dirtyAllowForeground
-          ? values.allowForeground
-          : undefined,
-        defaultDelivery: dirtyDefaultDelivery
-          ? values.defaultDelivery
-          : undefined,
-        launchEnabled: dirtyLaunchEnabled ? values.launchEnabled : undefined,
-        clipboardEnabled: dirtyClipboardEnabled
-          ? values.clipboardEnabled
-          : undefined,
-        screenEnabled: dirtyScreenEnabled ? values.screenEnabled : undefined,
-      })
+      const applied = await setComputerToolsPreferences(
+        {
+          grantTtlMinutes: dirtyTtl ? values.ttl : undefined,
+          blocklist: dirtyBlocklist ? values.blocklist : undefined,
+          blocklistRemoved: dirtyRemoved ? values.removed : undefined,
+          stopShortcut: dirtyStopShortcut ? values.stopShortcut : undefined,
+          showIndicator: dirtyShowIndicator ? values.showIndicator : undefined,
+          allowForeground: dirtyAllowForeground
+            ? values.allowForeground
+            : undefined,
+          defaultDelivery: dirtyDefaultDelivery
+            ? values.defaultDelivery
+            : undefined,
+          launchEnabled: dirtyLaunchEnabled ? values.launchEnabled : undefined,
+          clipboardEnabled: dirtyClipboardEnabled
+            ? values.clipboardEnabled
+            : undefined,
+          screenEnabled: dirtyScreenEnabled ? values.screenEnabled : undefined,
+        },
+        backendPlatform
+      )
       // The save's own broadcast, or another window's after it, may have
       // landed first; the last broadcast is then the newest record there is.
       const latest =
@@ -422,6 +428,7 @@ export function ComputerSettingsSection() {
     dirtyClipboardEnabled,
     dirtyScreenEnabled,
     t,
+    backendPlatform,
   ])
 
   return (

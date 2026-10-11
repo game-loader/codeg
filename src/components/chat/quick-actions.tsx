@@ -1,5 +1,7 @@
 "use client"
 
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import {
   useCallback,
   useEffect,
@@ -13,7 +15,7 @@ import { toast } from "sonner"
 import { ChevronLeft, ChevronRight, Lock, type LucideIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
-import { openSettingsWindow, type SettingsSection } from "@/lib/api"
+import { type SettingsSection } from "@/lib/api"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useBuiltInExperts } from "@/hooks/use-built-in-experts"
 import { useEnabledSkillIds } from "@/hooks/use-enabled-skill-ids"
@@ -36,7 +38,6 @@ import {
 } from "@/lib/quick-actions-tab-storage"
 import type { ComposerInjectContent } from "@/components/chat/message-input"
 import { type AgentType, type ExpertListItem } from "@/lib/types"
-import { getAgentLabel } from "@/lib/custom-agents"
 
 // Three primary office categories — prominent fixed cards (keep their color).
 const OFFICE_FIXED: (OfficeAction & { accent: string })[] =
@@ -377,6 +378,10 @@ export function QuickActions({
   agentType,
   initialTab,
 }: QuickActionsProps) {
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.chat.welcomePanel.quickActions")
   const locale = useLocale()
   const experts = useBuiltInExperts()
@@ -407,15 +412,17 @@ export function QuickActions({
           action: {
             label: t("notEnabled.action"),
             onClick: () => {
-              void openSettingsWindow(section).catch((err) =>
-                console.error("[QuickActions] failed to open settings:", err)
-              )
+              void backendApi
+                .openSettingsWindow(section)
+                .catch((err) =>
+                  console.error("[QuickActions] failed to open settings:", err)
+                )
             },
           },
         }
       )
     },
-    [agentType, t]
+    [agentType, t, backendApi, getAgentLabel]
   )
 
   // Restore the last-picked tab; persist on change. The lazy initializer reads

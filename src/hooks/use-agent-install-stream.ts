@@ -1,5 +1,6 @@
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useCallback, useRef, useState } from "react"
-import { subscribe } from "@/lib/platform"
+
 import type { AgentInstallEvent, AgentInstallEventKind } from "@/lib/types"
 
 const AGENT_INSTALL_EVENT = "app://agent-install"
@@ -13,6 +14,8 @@ interface AgentInstallStreamState {
 }
 
 export function useAgentInstallStream() {
+  const backendPlatform = useBackendPlatform()
+
   const [state, setState] = useState<AgentInstallStreamState>({
     status: "idle",
     logs: [],
@@ -20,49 +23,52 @@ export function useAgentInstallStream() {
   })
   const unsubRef = useRef<(() => void) | null>(null)
 
-  const start = useCallback(async (taskId: string) => {
-    setState({ status: "running", logs: [], error: null })
+  const start = useCallback(
+    async (taskId: string) => {
+      setState({ status: "running", logs: [], error: null })
 
-    unsubRef.current?.()
+      unsubRef.current?.()
 
-    const unsub = await subscribe<AgentInstallEvent>(
-      AGENT_INSTALL_EVENT,
-      (event) => {
-        if (event.task_id !== taskId) return
+      const unsub = await backendPlatform.subscribe<AgentInstallEvent>(
+        AGENT_INSTALL_EVENT,
+        (event) => {
+          if (event.task_id !== taskId) return
 
-        switch (event.kind as AgentInstallEventKind) {
-          case "started":
-            setState((prev) => ({ ...prev, status: "running" }))
-            break
-          case "log":
-            setState((prev) => ({
-              ...prev,
-              logs: [...prev.logs, event.payload],
-            }))
-            break
-          case "completed":
-            setState((prev) => ({
-              ...prev,
-              status: "success",
-              logs: [...prev.logs, event.payload],
-            }))
-            unsubRef.current?.()
-            break
-          case "failed":
-            setState((prev) => ({
-              ...prev,
-              status: "failed",
-              error: event.payload,
-              logs: [...prev.logs, `ERROR: ${event.payload}`],
-            }))
-            unsubRef.current?.()
-            break
+          switch (event.kind as AgentInstallEventKind) {
+            case "started":
+              setState((prev) => ({ ...prev, status: "running" }))
+              break
+            case "log":
+              setState((prev) => ({
+                ...prev,
+                logs: [...prev.logs, event.payload],
+              }))
+              break
+            case "completed":
+              setState((prev) => ({
+                ...prev,
+                status: "success",
+                logs: [...prev.logs, event.payload],
+              }))
+              unsubRef.current?.()
+              break
+            case "failed":
+              setState((prev) => ({
+                ...prev,
+                status: "failed",
+                error: event.payload,
+                logs: [...prev.logs, `ERROR: ${event.payload}`],
+              }))
+              unsubRef.current?.()
+              break
+          }
         }
-      }
-    )
+      )
 
-    unsubRef.current = unsub
-  }, [])
+      unsubRef.current = unsub
+    },
+    [backendPlatform]
+  )
 
   const reset = useCallback(() => {
     unsubRef.current?.()

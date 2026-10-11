@@ -25,6 +25,7 @@
  *    A modal dialog has no such stack: the second one simply buried the first.
  */
 
+import { useAgentDisplay } from "@/hooks/use-agent-display"
 import { useTranslations } from "next-intl"
 
 import { AgentIcon } from "@/components/agent-icon"
@@ -37,7 +38,6 @@ import {
   SIDE_PANEL_CONTENT_CLASS,
 } from "@/components/ui/drawer"
 import { type AgentType } from "@/lib/types"
-import { getAgentLabel } from "@/lib/custom-agents"
 
 interface Props {
   open: boolean
@@ -62,6 +62,8 @@ export function SubAgentSessionDialog({
   agentType,
   kickoffTask,
 }: Props) {
+  const { getAgentLabel } = useAgentDisplay()
+
   const t = useTranslations("Folder.chat.delegation")
 
   return (

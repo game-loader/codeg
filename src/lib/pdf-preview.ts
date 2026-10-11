@@ -1,6 +1,8 @@
-import { downloadWorkspaceFile } from "@/lib/api"
+import type { BackendApi, BackendPlatform } from "@/lib/backend/types"
+import * as legacyBackendApi from "@/lib/api"
+import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
+
 import { splitAbsPath } from "@/lib/file-open-target"
-import { isLocalDesktop } from "@/lib/platform"
 
 export const PDF_PREVIEW_MAX_BYTES = 50_000_000
 export const PDF_DATA_PREFIX = "data:application/pdf;base64,"
@@ -33,9 +35,11 @@ export async function loadPdf(content: string) {
 export async function downloadPdf(
   path: string,
   content: string,
-  name: string
+  name: string,
+  backendApi: BackendApi = legacyBackendApi,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
 ): Promise<void> {
-  if (isLocalDesktop()) {
+  if (backendPlatform.isLocalDesktop()) {
     const { save } = await import("@tauri-apps/plugin-dialog")
     const savePath = await save({
       defaultPath: name,
@@ -53,5 +57,5 @@ export async function downloadPdf(
   }
   const io = splitAbsPath(path)
   if (!io) throw new Error("Invalid PDF path")
-  await downloadWorkspaceFile(io.rootPath, io.ioPath, name)
+  await backendApi.downloadWorkspaceFile(io.rootPath, io.ioPath, name)
 }

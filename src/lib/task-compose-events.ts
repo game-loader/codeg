@@ -9,23 +9,29 @@
 export const CREATE_TASK_FROM_TEXT_EVENT = "codeg:create-task-from-text"
 
 export interface CreateTaskFromTextDetail {
+  /** Omitted for the legacy single-backend page. */
+  backendKey?: string
+  /** Ephemeral initiating client identity, never restored on a replacement. */
+  backendScope?: string
   /** Message text to seed the task description with. */
   text: string
   /** The source conversation's project folder, when known. */
   folderId: number | null
 }
 
-let pendingDraft: CreateTaskFromTextDetail | null = null
+const pendingDrafts = new Map<string | undefined, CreateTaskFromTextDetail>()
 
 /** Park a draft and nudge a mounted Tasks page (the caller switches routes). */
 export function requestCreateTaskFromText(detail: CreateTaskFromTextDetail) {
-  pendingDraft = detail
-  window.dispatchEvent(new CustomEvent(CREATE_TASK_FROM_TEXT_EVENT))
+  pendingDrafts.set(detail.backendScope ?? detail.backendKey, detail)
+  window.dispatchEvent(new CustomEvent(CREATE_TASK_FROM_TEXT_EVENT, { detail }))
 }
 
 /** One-shot consume — called by the Tasks page on mount and on the event. */
-export function consumePendingTaskDraft(): CreateTaskFromTextDetail | null {
-  const draft = pendingDraft
-  pendingDraft = null
+export function consumePendingTaskDraft(
+  backendKey?: string
+): CreateTaskFromTextDetail | null {
+  const draft = pendingDrafts.get(backendKey) ?? null
+  pendingDrafts.delete(backendKey)
   return draft
 }

@@ -1,5 +1,6 @@
 "use client"
 
+import { useAgentDisplay } from "@/hooks/use-agent-display"
 import {
   useCallback,
   useEffect,
@@ -12,7 +13,7 @@ import { useTranslations } from "next-intl"
 import { MoreHorizontal } from "lucide-react"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import type { AgentType, AcpAgentInfo } from "@/lib/types"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import { AgentIcon } from "@/components/agent-icon"
 import { SelectorTooltip } from "@/components/chat/selector-tooltip"
 import {
@@ -76,6 +77,8 @@ export function AgentSelector({
   disabled = false,
   align = "start",
 }: AgentSelectorProps) {
+  const { getAgentLabel } = useAgentDisplay()
+
   const t = useTranslations("Folder.chat.agentSelector")
   const { agents: rawAgents } = useAcpAgents()
   const agents = useMemo<AcpAgentInfo[]>(

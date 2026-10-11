@@ -1,5 +1,7 @@
 "use client"
 
+import { useCanvasBoardsStore as legacyCanvasBoards } from "@/stores/canvas-boards-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { formatDistance } from "date-fns"
 import {
@@ -33,7 +35,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { dateFnsLocale } from "@/lib/date-fns-locale"
 import type { CanvasBoard, CanvasBoardSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
-import { useCanvasBoardsStore } from "@/stores/canvas-boards-store"
+
 import {
   useCanvasBoardActions,
   useCanvasBoardStatsRefresh,
@@ -75,6 +77,9 @@ type FormState = { open: boolean; board: CanvasBoard | null }
  * edit and delete. Clicking a card opens that canvas.
  */
 export function CanvasBoardList() {
+  const backendStores = useBackendStores({ canvasBoards: legacyCanvasBoards })
+  const useCanvasBoardsStore = backendStores.canvasBoards
+
   useCanvasBoardStatsRefresh()
   const t = useTranslations("Canvas")
   const boards = useCanvasBoardsStore((s) => s.boards)
@@ -257,6 +262,9 @@ function LoadError({
   message: string | null
   inline?: boolean
 }) {
+  const backendStores = useBackendStores({ canvasBoards: legacyCanvasBoards })
+  const useCanvasBoardsStore = backendStores.canvasBoards
+
   const t = useTranslations("Canvas")
   const refetch = useCanvasBoardsStore((s) => s.refetch)
   return (

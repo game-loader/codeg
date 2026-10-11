@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { AlertCircle, Loader2, RefreshCw } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -11,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { weixinGetQrcode, weixinCheckQrcode } from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 
 /** Client-side QR code expiry (5 minutes). */
@@ -35,6 +36,8 @@ function WeixinQrcodeContent({
   onAuthSuccess: (channelId: number) => void
   onClose: () => void
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("ChatChannelSettings")
   const [qrcodeImg, setQrcodeImg] = useState<string | null>(null)
   const [qrcodeId, setQrcodeId] = useState<string | null>(null)
@@ -74,7 +77,7 @@ function WeixinQrcodeContent({
     stopPolling()
 
     try {
-      const result = await weixinGetQrcode()
+      const result = await backendApi.weixinGetQrcode()
       setQrcodeId(result.qrcode_id)
 
       if (result.qrcode_img_content) {
@@ -91,7 +94,7 @@ function WeixinQrcodeContent({
       setError(msg)
       setStatus("expired")
     }
-  }, [stopPolling])
+  }, [stopPolling, backendApi])
 
   // Fetch QR code on mount + cleanup on unmount
   useEffect(() => {
@@ -112,7 +115,7 @@ function WeixinQrcodeContent({
 
     pollingRef.current = setInterval(async () => {
       try {
-        const result = await weixinCheckQrcode(channelId, qrcodeId)
+        const result = await backendApi.weixinCheckQrcode(channelId, qrcodeId)
         setPollErrors(0)
         if (result.status === "confirmed") {
           stopPolling()
@@ -128,7 +131,7 @@ function WeixinQrcodeContent({
     }, 2000)
 
     return () => stopPolling()
-  }, [qrcodeId, status, channelId, stopPolling])
+  }, [qrcodeId, status, channelId, stopPolling, backendApi])
 
   return (
     <div className="flex flex-col items-center gap-4 py-4">

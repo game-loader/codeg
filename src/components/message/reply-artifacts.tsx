@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { memo, useMemo, useState } from "react"
 import {
   ChevronRight,
@@ -33,7 +34,7 @@ import {
   extractReplyFileChanges,
   type FileChangeStat,
 } from "@/lib/session-files"
-import { isLocalDesktop, revealItemInDir } from "@/lib/platform"
+
 import type { MessageTurn } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -65,6 +66,8 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
   sourceTurns: MessageTurn[]
   isResponseComplete: boolean
 }) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Folder.chat.replyArtifacts")
   const tCommon = useTranslations("Folder.common")
   const { activeFolder: folder } = useActiveFolder()
@@ -108,7 +111,7 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
 
   const revealInFolder = (file: FileChangeStat) => {
     const absolute = toAbsoluteFilePath(file.path, folderPath)
-    if (absolute) void revealItemInDir(absolute)
+    if (absolute) void backendPlatform.revealItemInDir(absolute)
   }
 
   // Open the file's unified diff. Keyed by the reply's first turn id so the
@@ -214,7 +217,7 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
                           </TooltipContent>
                         </Tooltip>
 
-                        {isLocalDesktop() && (
+                        {backendPlatform.isLocalDesktop() && (
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <button
@@ -381,7 +384,7 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
                           </TooltipContent>
                         </Tooltip>
 
-                        {isLocalDesktop() && (
+                        {backendPlatform.isLocalDesktop() && (
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <button

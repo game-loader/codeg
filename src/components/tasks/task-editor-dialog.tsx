@@ -1,9 +1,13 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { BookmarkPlus, LayoutTemplate, Trash2 } from "lucide-react"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import { AgentSelector } from "@/components/chat/agent-selector"
 import {
   TaskMessageComposer,
@@ -15,7 +19,7 @@ import {
   snapshotLabels,
 } from "@/components/automations/agent-config-section"
 import { useAgentOptions } from "@/components/automations/use-agent-options"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -31,12 +35,7 @@ import {
 import { BranchPicker } from "@/components/shared/branch-picker"
 import { FolderSelect } from "@/components/shared/folder-select"
 import { useScrollbarSafeDismiss } from "@/hooks/use-scrollbar-safe-dismiss"
-import {
-  workTaskSettingsEffective,
-  workTaskTemplateDelete,
-  workTaskTemplateList,
-  workTaskTemplateSave,
-} from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import type {
   AgentType,
@@ -105,6 +104,13 @@ function TaskEditorBody({
   onSubmit: (draft: WorkTaskDraft) => Promise<void>
   onCancel: () => void
 }) {
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Tasks")
   // The upload-in-flight message is the conversation composer's own.
   const tChat = useTranslations("Folder.chat.messageInput")
@@ -181,7 +187,8 @@ function TaskEditorBody({
 
   useEffect(() => {
     let cancelled = false
-    workTaskTemplateList()
+    backendApi
+      .workTaskTemplateList()
       .then((list) => {
         if (!cancelled) setTemplates(list)
       })
@@ -189,7 +196,7 @@ function TaskEditorBody({
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [backendApi])
 
   const folderDefaultAgent = useMemo(
     () => folders.find((f) => f.id === folderId)?.default_agent_type ?? null,
@@ -202,7 +209,8 @@ function TaskEditorBody({
   useEffect(() => {
     if (agentDirty || folderId == null) return
     let cancelled = false
-    workTaskSettingsEffective(folderId)
+    backendApi
+      .workTaskSettingsEffective(folderId)
       .then((s) => {
         if (cancelled) return
         const agent = s.default_agent_type ?? folderDefaultAgent ?? null
@@ -217,7 +225,7 @@ function TaskEditorBody({
     return () => {
       cancelled = true
     }
-  }, [agentDirty, folderId, folderDefaultAgent])
+  }, [agentDirty, folderId, folderDefaultAgent, backendApi])
 
   const folderPath = useMemo(
     () => folders.find((f) => f.id === folderId)?.path ?? null,
@@ -373,12 +381,12 @@ function TaskEditorBody({
       // the task created from it settles that against its own folder.
       const config = await buildConfig(agentDirty)
       delete config.base_branch
-      await workTaskTemplateSave({
+      await backendApi.workTaskTemplateSave({
         name: title.trim(),
         title: title.trim(),
         config,
       })
-      setTemplates(await workTaskTemplateList())
+      setTemplates(await backendApi.workTaskTemplateList())
     } catch (e) {
       setError(toErrorMessage(e))
     } finally {
@@ -388,7 +396,7 @@ function TaskEditorBody({
 
   const deleteTemplate = async (id: number) => {
     try {
-      await workTaskTemplateDelete(id)
+      await backendApi.workTaskTemplateDelete(id)
       setTemplates((prev) => prev.filter((tpl) => tpl.id !== id))
     } catch (e) {
       setError(toErrorMessage(e))

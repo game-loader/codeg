@@ -1,5 +1,6 @@
+import type { BackendPlatform } from "@/lib/backend/types"
+import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
 import { toErrorMessage } from "./app-error"
-import { getActiveRemoteConnectionId, getTransport } from "./transport"
 
 export interface Machine {
   id: string
@@ -64,23 +65,34 @@ export interface ManualMachineInput extends SshEndpointInput {
   jump_host: SshEndpointInput | null
 }
 
-export function saveManualMachine(input: ManualMachineInput): Promise<Machine> {
-  return getTransport().call("save_manual_machine", { input })
+export function saveManualMachine(
+  input: ManualMachineInput,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<Machine> {
+  return backendPlatform.getTransport().call("save_manual_machine", { input })
 }
 
-export function deleteManualMachine(machineId: string): Promise<void> {
-  return getTransport().call("delete_manual_machine", { machineId })
+export function deleteManualMachine(
+  machineId: string,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<void> {
+  return backendPlatform
+    .getTransport()
+    .call("delete_manual_machine", { machineId })
 }
 
-export function listMachines(): Promise<MachineInventory> {
-  return getTransport().call("list_machines")
+export function listMachines(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<MachineInventory> {
+  return backendPlatform.getTransport().call("list_machines")
 }
 
 export function probeMachine(
   machineId: string,
-  sshUser: string
+  sshUser: string,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
 ): Promise<MachineSnapshot> {
-  return getTransport().call("probe_machine", {
+  return backendPlatform.getTransport().call("probe_machine", {
     machineId,
     sshUser: sshUser.trim() || null,
   })
@@ -113,19 +125,29 @@ export function tailscaleLoginUrl(error: unknown): string | null {
   return null
 }
 
-function userKey(id: string): string {
-  return `machines:ssh-user:${getActiveRemoteConnectionId() ?? "local"}:${id}`
+function userKey(
+  id: string,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): string {
+  return `machines:ssh-user:${backendPlatform.getActiveRemoteConnectionId() ?? "local"}:${id}`
 }
-export function loadMachineUser(id: string): string {
+export function loadMachineUser(
+  id: string,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): string {
   try {
-    return localStorage.getItem(userKey(id)) ?? ""
+    return localStorage.getItem(userKey(id, backendPlatform)) ?? ""
   } catch {
     return ""
   }
 }
-export function saveMachineUser(id: string, user: string): void {
+export function saveMachineUser(
+  id: string,
+  user: string,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): void {
   try {
-    localStorage.setItem(userKey(id), user.trim())
+    localStorage.setItem(userKey(id, backendPlatform), user.trim())
   } catch {
     /* storage is optional */
   }

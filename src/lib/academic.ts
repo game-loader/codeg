@@ -1,5 +1,7 @@
 import { getTransport, type Transport } from "@/lib/transport"
+
 import { getSavedPrefsForConnect } from "@/lib/selector-prefs-storage"
+
 import type { AgentType } from "@/lib/types"
 
 export interface AcademicSettings {
@@ -103,106 +105,6 @@ export interface AcademicOpenTarget {
   working_dir: string | null
 }
 
-async function invokeAcademic<T>(
-  command: string,
-  args?: Record<string, unknown>,
-  transport: Transport = getTransport()
-): Promise<T> {
-  if (transport !== getTransport()) throw new Error("Workspace changed")
-  // Each synchronous Zotero request has a 90s deadline. Library/select do
-  // health + library; import adds translation/import. Leave 10s for overhead
-  // so web and remote desktop clients receive the backend's result.
-  const timeoutMs =
-    command === "academic_import"
-      ? 280_000
-      : command === "academic_library" || command === "academic_select"
-        ? 190_000
-        : undefined
-  const result = await (timeoutMs
-    ? transport.call<T>(command, args ?? {}, { timeoutMs })
-    : transport.call<T>(command, args ?? {}))
-  if (transport !== getTransport()) throw new Error("Workspace changed")
-  return result
-}
-
-export const academicSettingsGet = () =>
-  invokeAcademic<AcademicSettings>("academic_settings_get")
-export const academicSettingsSet = (settings: {
-  agentType: AgentType
-  bridgePort: number
-  token?: string
-  mcpEnabled?: boolean
-}) => invokeAcademic<AcademicSettings>("academic_settings_set", settings)
-export const academicLibrary = () =>
-  invokeAcademic<AcademicLibrary>("academic_library")
-async function researchAgentPreferences(transport: Transport) {
-  const settings = await invokeAcademic<AcademicSettings>(
-    "academic_settings_get",
-    {},
-    transport
-  )
-  const prefs = getSavedPrefsForConnect(settings.agent_type)
-  return {
-    agent_type: settings.agent_type,
-    mode_id: prefs.modeId,
-    config_values: prefs.configValues ?? {},
-  }
-}
-
-export const academicSelect = async (itemKey: string) => {
-  const transport = getTransport()
-  const agentPreferences = await researchAgentPreferences(transport)
-  return invokeAcademic<AcademicPaper>(
-    "academic_select",
-    {
-      itemKey,
-      agentPreferences,
-    },
-    transport
-  )
-}
-export const academicPaperGet = (paperId: string) =>
-  invokeAcademic<AcademicPaper>("academic_paper_get", { paperId })
-export const academicImport = (identifier: string, collectionKey: string) =>
-  invokeAcademic<AcademicItem>("academic_import", { identifier, collectionKey })
-export const academicPrepare = async (
-  paperId: string,
-  arxivId?: string,
-  repoUrl?: string
-) => {
-  const transport = getTransport()
-  const agentPreferences = await researchAgentPreferences(transport)
-  return invokeAcademic<AcademicPaper>(
-    "academic_prepare",
-    {
-      paperId,
-      arxivId,
-      repoUrl,
-      agentPreferences,
-    },
-    transport
-  )
-}
-export const academicCancel = (paperId: string) =>
-  invokeAcademic<void>("academic_cancel", { paperId })
-export const academicOpenTarget = (paperId: string, withoutCode = false) =>
-  invokeAcademic<AcademicOpenTarget>("academic_open_target", {
-    paperId,
-    withoutCode,
-  })
-export const academicBindConversation = (
-  paperId: string,
-  conversationId: number
-) =>
-  invokeAcademic<void>("academic_bind_conversation", {
-    paperId,
-    conversationId,
-  })
-export const academicConversationPaper = (conversationId: number) =>
-  invokeAcademic<AcademicPaper | null>("academic_conversation_paper", {
-    conversationId,
-  })
-
 export function isAcademicBusy(status: AcademicStatus): boolean {
   return [
     "queued",
@@ -213,3 +115,161 @@ export function isAcademicBusy(status: AcademicStatus): boolean {
     "cloning",
   ].includes(status)
 }
+/** A client created here keeps its backend for every request and continuation. */
+export function createAcademicApi(
+  boundTransport: Transport,
+  readAgentPreferences: typeof getSavedPrefsForConnect = getSavedPrefsForConnect
+) {
+  async function invokeAcademic<T>(
+    command: string,
+    args?: Record<string, unknown>,
+    transport: Transport = boundTransport
+  ): Promise<T> {
+    // Each synchronous Zotero request has a 90s deadline. Library/select do
+    // health + library; import adds translation/import. Leave 10s for overhead
+    // so web and remote desktop clients receive the backend's result.
+    const timeoutMs =
+      command === "academic_import"
+        ? 280_000
+        : command === "academic_library" || command === "academic_select"
+          ? 190_000
+          : undefined
+    const result = await (timeoutMs
+      ? transport.call<T>(command, args ?? {}, { timeoutMs })
+      : transport.call<T>(command, args ?? {}))
+    return result
+  }
+
+  const academicSettingsGet = () =>
+    invokeAcademic<AcademicSettings>("academic_settings_get")
+
+  const academicSettingsSet = (settings: {
+    agentType: AgentType
+    bridgePort: number
+    token?: string
+    mcpEnabled?: boolean
+  }) => invokeAcademic<AcademicSettings>("academic_settings_set", settings)
+
+  const academicLibrary = () =>
+    invokeAcademic<AcademicLibrary>("academic_library")
+
+  async function researchAgentPreferences(transport: Transport) {
+    const settings = await invokeAcademic<AcademicSettings>(
+      "academic_settings_get",
+      {},
+      transport
+    )
+    const prefs = readAgentPreferences(settings.agent_type)
+    return {
+      agent_type: settings.agent_type,
+      mode_id: prefs.modeId,
+      config_values: prefs.configValues ?? {},
+    }
+  }
+
+  const academicSelect = async (itemKey: string) => {
+    const transport = boundTransport
+    const agentPreferences = await researchAgentPreferences(transport)
+    return invokeAcademic<AcademicPaper>(
+      "academic_select",
+      {
+        itemKey,
+        agentPreferences,
+      },
+      transport
+    )
+  }
+
+  const academicPaperGet = (paperId: string) =>
+    invokeAcademic<AcademicPaper>("academic_paper_get", { paperId })
+
+  const academicImport = (identifier: string, collectionKey: string) =>
+    invokeAcademic<AcademicItem>("academic_import", {
+      identifier,
+      collectionKey,
+    })
+
+  const academicPrepare = async (
+    paperId: string,
+    arxivId?: string,
+    repoUrl?: string
+  ) => {
+    const transport = boundTransport
+    const agentPreferences = await researchAgentPreferences(transport)
+    return invokeAcademic<AcademicPaper>(
+      "academic_prepare",
+      {
+        paperId,
+        arxivId,
+        repoUrl,
+        agentPreferences,
+      },
+      transport
+    )
+  }
+
+  const academicCancel = (paperId: string) =>
+    invokeAcademic<void>("academic_cancel", { paperId })
+
+  const academicOpenTarget = (paperId: string, withoutCode = false) =>
+    invokeAcademic<AcademicOpenTarget>("academic_open_target", {
+      paperId,
+      withoutCode,
+    })
+
+  const academicBindConversation = (paperId: string, conversationId: number) =>
+    invokeAcademic<void>("academic_bind_conversation", {
+      paperId,
+      conversationId,
+    })
+
+  const academicConversationPaper = (conversationId: number) =>
+    invokeAcademic<AcademicPaper | null>("academic_conversation_paper", {
+      conversationId,
+    })
+  return {
+    academicSettingsGet,
+    academicSettingsSet,
+    academicLibrary,
+    academicSelect,
+    academicPaperGet,
+    academicImport,
+    academicPrepare,
+    academicCancel,
+    academicOpenTarget,
+    academicBindConversation,
+    academicConversationPaper,
+  }
+}
+
+export type AcademicApi = ReturnType<typeof createAcademicApi>
+
+/** Compatibility entry points for a single-backend page. Scoped workspaces use the factory. */
+function getDefaultAcademicApi() {
+  return createAcademicApi(getTransport())
+}
+export const academicSettingsGet: AcademicApi["academicSettingsGet"] = (
+  ...args
+) => getDefaultAcademicApi().academicSettingsGet(...args)
+export const academicSettingsSet: AcademicApi["academicSettingsSet"] = (
+  ...args
+) => getDefaultAcademicApi().academicSettingsSet(...args)
+export const academicLibrary: AcademicApi["academicLibrary"] = (...args) =>
+  getDefaultAcademicApi().academicLibrary(...args)
+export const academicSelect: AcademicApi["academicSelect"] = (...args) =>
+  getDefaultAcademicApi().academicSelect(...args)
+export const academicPaperGet: AcademicApi["academicPaperGet"] = (...args) =>
+  getDefaultAcademicApi().academicPaperGet(...args)
+export const academicImport: AcademicApi["academicImport"] = (...args) =>
+  getDefaultAcademicApi().academicImport(...args)
+export const academicPrepare: AcademicApi["academicPrepare"] = (...args) =>
+  getDefaultAcademicApi().academicPrepare(...args)
+export const academicCancel: AcademicApi["academicCancel"] = (...args) =>
+  getDefaultAcademicApi().academicCancel(...args)
+export const academicOpenTarget: AcademicApi["academicOpenTarget"] = (
+  ...args
+) => getDefaultAcademicApi().academicOpenTarget(...args)
+export const academicBindConversation: AcademicApi["academicBindConversation"] =
+  (...args) => getDefaultAcademicApi().academicBindConversation(...args)
+export const academicConversationPaper: AcademicApi["academicConversationPaper"] =
+  (...args) => getDefaultAcademicApi().academicConversationPaper(...args)

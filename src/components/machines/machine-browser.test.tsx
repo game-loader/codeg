@@ -216,18 +216,21 @@ describe("manual machine management", () => {
     })
     fireEvent.click(screen.getByRole("button", { name: "Save machine" }))
     await waitFor(() =>
-      expect(api.save).toHaveBeenCalledWith({
-        id: null,
-        name: "Rental GPU",
-        host: "203.0.113.10",
-        port: 2222,
-        username: "root",
-        password: "temporary-secret",
-        auth_method: "password",
-        private_key: null,
-        passphrase: null,
-        jump_host: null,
-      })
+      expect(api.save).toHaveBeenCalledWith(
+        {
+          id: null,
+          name: "Rental GPU",
+          host: "203.0.113.10",
+          port: 2222,
+          username: "root",
+          password: "temporary-secret",
+          auth_method: "password",
+          private_key: null,
+          passphrase: null,
+          jump_host: null,
+        },
+        expect.objectContaining({ getTransport: expect.any(Function) })
+      )
     )
     await waitFor(() =>
       expect(screen.queryByLabelText("Password")).not.toBeInTheDocument()
@@ -275,29 +278,36 @@ describe("manual machine management", () => {
     })
     fireEvent.click(screen.getByRole("button", { name: "Save machine" }))
     await waitFor(() =>
-      expect(api.save).toHaveBeenCalledWith({
-        id: null,
-        name: "Private GPU",
-        host: "gpu.internal",
-        port: 22,
-        username: "root",
-        auth_method: "private_key",
-        password: null,
-        private_key: key,
-        passphrase: "key-secret",
-        jump_host: {
-          host: "jump.example.com",
+      expect(api.save).toHaveBeenCalledWith(
+        {
+          id: null,
+          name: "Private GPU",
+          host: "gpu.internal",
           port: 22,
-          username: "alice",
-          auth_method: "password",
-          password: "jump-secret",
-          private_key: null,
-          passphrase: null,
+          username: "root",
+          auth_method: "private_key",
+          password: null,
+          private_key: key,
+          passphrase: "key-secret",
+          jump_host: {
+            host: "jump.example.com",
+            port: 22,
+            username: "alice",
+            auth_method: "password",
+            password: "jump-secret",
+            private_key: null,
+            passphrase: null,
+          },
         },
-      })
+        expect.objectContaining({ getTransport: expect.any(Function) })
+      )
     )
     await waitFor(() =>
-      expect(api.probe).toHaveBeenCalledWith(manual.id, "root")
+      expect(api.probe).toHaveBeenCalledWith(
+        manual.id,
+        "root",
+        expect.objectContaining({ getTransport: expect.any(Function) })
+      )
     )
     expect(JSON.stringify(localStorage)).not.toContain("secret")
   })
@@ -335,7 +345,8 @@ describe("manual machine management", () => {
           passphrase: null,
           password: null,
           jump_host: null,
-        })
+        }),
+        expect.objectContaining({ getTransport: expect.any(Function) })
       )
     )
   })
@@ -363,7 +374,11 @@ describe("manual machine management", () => {
     expect(
       screen.getByRole("button", { name: /Rental GPU.*Reachable/ })
     ).toBeInTheDocument()
-    expect(api.probe).toHaveBeenCalledWith("manual:gpu", "root")
+    expect(api.probe).toHaveBeenCalledWith(
+      "manual:gpu",
+      "root",
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
     expect(screen.queryByLabelText("SSH user")).not.toBeInTheDocument()
     fireEvent.click(
       screen.getByRole("button", { name: "Insert into conversation" })
@@ -400,7 +415,8 @@ describe("manual machine management", () => {
           id: "manual:gpu",
           port: 2200,
           password: null,
-        })
+        }),
+        expect.objectContaining({ getTransport: expect.any(Function) })
       )
     )
   })
@@ -418,6 +434,9 @@ describe("manual machine management", () => {
         screen.queryByRole("button", { name: /Rental GPU/ })
       ).not.toBeInTheDocument()
     )
-    expect(api.remove).toHaveBeenLastCalledWith("manual:gpu")
+    expect(api.remove).toHaveBeenLastCalledWith(
+      "manual:gpu",
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
   })
 })

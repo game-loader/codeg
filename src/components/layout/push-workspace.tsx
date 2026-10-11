@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import type { ReactElement } from "react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
@@ -52,7 +53,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { gitLog, gitPush, gitPushInfo, gitShowFile } from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import { loadImageDiffSides, type ImageDiffSides } from "@/lib/image-diff"
 import { isBinaryImageFile, languageFromPath } from "@/lib/language-detect"
@@ -297,6 +298,8 @@ export function PushWorkspace({
   initialBranch = null,
   onPushed,
 }: PushWorkspaceProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.pushWindow")
   const tLog = useTranslations("Folder.gitLogTab")
   const { withCredentialRetry } = useGitCredential()
@@ -370,7 +373,8 @@ export function PushWorkspace({
   // Load push info (branch, remotes, tracking remote) for the target branch.
   useEffect(() => {
     let cancelled = false
-    gitPushInfo(folderPath, targetBranch)
+    backendApi
+      .gitPushInfo(folderPath, targetBranch)
       .then((info) => {
         // A retarget mid-flight supersedes this response — writing it would show
         // the previous branch's remote against the new branch's commits.
@@ -389,7 +393,7 @@ export function PushWorkspace({
     return () => {
       cancelled = true
     }
-  }, [folderPath, targetBranch])
+  }, [folderPath, targetBranch, backendApi])
 
   // A per-branch push raises the folder's existing push window instead of
   // opening a second one, so the backend tells the live window which branch it
@@ -470,7 +474,7 @@ export function PushWorkspace({
       try {
         // `git_log` already scopes both the commit list AND the per-commit
         // pushed flag to a named branch, so targeting one needs nothing new.
-        const result = await gitLog(
+        const result = await backendApi.gitLog(
           folderPath,
           100,
           targetBranch ?? undefined,
@@ -496,7 +500,7 @@ export function PushWorkspace({
         if (gen === commitsGenRef.current) setListLoading(false)
       }
     },
-    [folderPath, targetBranch]
+    [folderPath, targetBranch, backendApi]
   )
 
   // Reload commits when selected remote changes
@@ -524,15 +528,18 @@ export function PushWorkspace({
           // clone's boundary — reads as "nothing came before", matching what
           // git itself reports for those commits.
           { kind: "ref", ref: `${commitHash}~1`, missingRefIsAbsent: true },
-          { kind: "ref", ref: commitHash }
+          { kind: "ref", ref: commitHash },
+          backendApi
         )
         if (requestId !== diffRequestRef.current) return
         setImageSides({ commit: commitHash, file, sides })
         return
       }
       const [orig, mod] = await Promise.all([
-        gitShowFile(folderPath, file, `${commitHash}~1`).catch(() => ""),
-        gitShowFile(folderPath, file, commitHash).catch(() => ""),
+        backendApi
+          .gitShowFile(folderPath, file, `${commitHash}~1`)
+          .catch(() => ""),
+        backendApi.gitShowFile(folderPath, file, commitHash).catch(() => ""),
       ])
       if (requestId !== diffRequestRef.current) return
       setOriginalContent(orig)
@@ -556,7 +563,13 @@ export function PushWorkspace({
       const hint: GitRemoteHint = remoteUrl ? { remoteUrl } : { folderPath }
       await withCredentialRetry(
         (creds) =>
-          gitPush(folderPath, selectedRemote, creds, folderId, targetBranch),
+          backendApi.gitPush(
+            folderPath,
+            selectedRemote,
+            creds,
+            folderId,
+            targetBranch
+          ),
         hint
       )
       onPushed?.()

@@ -1,12 +1,13 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react"
+import * as legacyBackendApi from "@/lib/api"
+import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
 import {
-  getWorkspaceSnapshot,
-  startWorkspaceStateStream,
-  stopWorkspaceStateStream,
-} from "@/lib/api"
-import { subscribe } from "@/lib/platform"
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
+import type { BackendApi, BackendPlatform } from "@/lib/backend/types"
 import type {
   FileTreeNode,
   WorkspaceDelta,
@@ -185,7 +186,12 @@ class WorkspaceStateStore {
   private shutdownTimer: ReturnType<typeof setTimeout> | null = null
   private hasBaselineSnapshot = false
 
-  constructor(rootPath: string) {
+  constructor(
+    rootPath: string,
+    private readonly api: BackendApi,
+    private readonly platform: BackendPlatform,
+    private readonly stores: Map<string, WorkspaceStateStore>
+  ) {
     this.rootPath = rootPath
     this.normalizedRootPath = normalizeComparePath(rootPath)
     this.state = {
@@ -306,7 +312,7 @@ class WorkspaceStateStore {
         if (desired === this.backendWantsTreeGit) return
         const previous = this.backendWantsTreeGit
         try {
-          const snapshot = await startWorkspaceStateStream(
+          const snapshot = await this.api.startWorkspaceStateStream(
             this.rootPath,
             desired
           )
@@ -318,9 +324,9 @@ class WorkspaceStateStore {
           if (snapshot.full) {
             this.hasBaselineSnapshot = true
           }
-          await stopWorkspaceStateStream(this.rootPath, previous).catch(
-            () => {}
-          )
+          await this.api
+            .stopWorkspaceStateStream(this.rootPath, previous)
+            .catch(() => {})
         } catch {
           // Transition failed (backend unreachable). Keep the previous
           // subscription; the next token change retries.
@@ -336,6 +342,7 @@ class WorkspaceStateStore {
   requestResync = async (reason?: string) => {
     void reason
     if (this.resyncInFlight) return this.resyncInFlight
+    const lifecycleId = this.lifecycleId
 
     const run = async () => {
       this.patchState((prev) => ({
@@ -345,7 +352,11 @@ class WorkspaceStateStore {
 
       try {
         const sinceSeq = this.hasBaselineSnapshot ? this.state.seq : undefined
-        const snapshot = await getWorkspaceSnapshot(this.rootPath, sinceSeq)
+        const snapshot = await this.api.getWorkspaceSnapshot(
+          this.rootPath,
+          sinceSeq
+        )
+        if (!this.isLifecycleCurrent(lifecycleId)) return
         this.patchState((prev) => applySnapshot(prev, snapshot))
         if (snapshot.full) {
           this.hasBaselineSnapshot = true
@@ -361,6 +372,7 @@ class WorkspaceStateStore {
           }
         }
       } catch (error) {
+        if (!this.isLifecycleCurrent(lifecycleId)) return
         this.patchState((prev) => ({
           ...prev,
           health: "degraded",
@@ -432,15 +444,15 @@ class WorkspaceStateStore {
         // while the call is in flight are reconciled by the syncBackendMode
         // pass at the end of the start sequence.
         const wantsTreeGit = this.wantsTreeGit
-        const initialSnapshot = await startWorkspaceStateStream(
+        const initialSnapshot = await this.api.startWorkspaceStateStream(
           this.rootPath,
           wantsTreeGit
         )
         this.backendWantsTreeGit = wantsTreeGit
         if (!this.isLifecycleActive(lifecycleId)) {
-          await stopWorkspaceStateStream(this.rootPath, wantsTreeGit).catch(
-            () => {}
-          )
+          await this.api
+            .stopWorkspaceStateStream(this.rootPath, wantsTreeGit)
+            .catch(() => {})
           return
         }
         // Reset our seq baseline before applying. The backend stream is
@@ -457,7 +469,7 @@ class WorkspaceStateStore {
         )
         this.hasBaselineSnapshot = true
 
-        const unlisten = await subscribe<WorkspaceStateEvent>(
+        const unlisten = await this.platform.subscribe<WorkspaceStateEvent>(
           "folder://workspace-state-event",
           (event) => {
             if (
@@ -465,21 +477,21 @@ class WorkspaceStateStore {
             ) {
               return
             }
-            this.handleEvent(event)
+            if (this.isLifecycleActive(lifecycleId)) this.handleEvent(event)
           }
         )
 
         if (!this.isLifecycleActive(lifecycleId)) {
           unlisten()
-          await stopWorkspaceStateStream(this.rootPath, wantsTreeGit).catch(
-            () => {}
-          )
+          await this.api
+            .stopWorkspaceStateStream(this.rootPath, wantsTreeGit)
+            .catch(() => {})
           return
         }
 
         this.unlisten = unlisten
         this.started = true
-        const catchUpSnapshot = await getWorkspaceSnapshot(
+        const catchUpSnapshot = await this.api.getWorkspaceSnapshot(
           this.rootPath,
           this.state.seq
         )
@@ -498,6 +510,7 @@ class WorkspaceStateStore {
         // sequence was in flight — reconcile now that we're started.
         this.syncBackendMode()
       } catch (error) {
+        if (!this.isLifecycleCurrent(lifecycleId)) return
         this.patchState((prev) => ({
           ...prev,
           health: "degraded",
@@ -526,10 +539,9 @@ class WorkspaceStateStore {
     if (unlisten) {
       unlisten()
     }
-    await stopWorkspaceStateStream(
-      this.rootPath,
-      this.backendWantsTreeGit
-    ).catch(() => {})
+    await this.api
+      .stopWorkspaceStateStream(this.rootPath, this.backendWantsTreeGit)
+      .catch(() => {})
   }
 
   private cancelPendingShutdown = () => {
@@ -572,7 +584,8 @@ class WorkspaceStateStore {
       if (this.tokenCount !== 0) return
       if (this.started || this.starting || this.stopping || this.unlisten)
         return
-      deleteStore(this.normalizedRootPath, this)
+      if (this.stores.get(this.normalizedRootPath) === this)
+        this.stores.delete(this.normalizedRootPath)
     }, STORE_EVICT_DELAY_MS)
   }
 
@@ -651,21 +664,21 @@ class WorkspaceStateStore {
   }
 }
 
-const stores = new Map<string, WorkspaceStateStore>()
-
-function deleteStore(normalizedRootPath: string, store: WorkspaceStateStore) {
-  const current = stores.get(normalizedRootPath)
-  if (current === store) {
-    stores.delete(normalizedRootPath)
+const caches = new WeakMap<BackendApi, Map<string, WorkspaceStateStore>>()
+function getStore(
+  rootPath: string,
+  api: BackendApi,
+  platform: BackendPlatform
+): WorkspaceStateStore {
+  let stores = caches.get(api)
+  if (!stores) {
+    stores = new Map()
+    caches.set(api, stores)
   }
-}
-
-function getStore(rootPath: string): WorkspaceStateStore {
   const normalized = normalizeComparePath(rootPath)
   const existing = stores.get(normalized)
   if (existing) return existing
-
-  const created = new WorkspaceStateStore(rootPath)
+  const created = new WorkspaceStateStore(rootPath, api, platform, stores)
   stores.set(normalized, created)
   return created
 }
@@ -678,18 +691,24 @@ export type { WorkspaceStateStore }
 // — the same refcount that keeps the aux panel's backend stream alive.
 // Client-only: never call during SSR/prerender (stores start backend
 // streams); call from effects.
-export function getWorkspaceStateStore(rootPath: string): WorkspaceStateStore {
-  return getStore(rootPath)
+export function getWorkspaceStateStore(
+  rootPath: string,
+  api: BackendApi = legacyBackendApi,
+  platform: BackendPlatform = legacyBackendPlatform
+): WorkspaceStateStore {
+  return getStore(rootPath, api, platform)
 }
 
 export function useWorkspaceStateStore(
   rootPath: string | null,
   mode: WorkspaceWatchMode = "full"
 ): WorkspaceStateResult {
+  const api = useBackendApi()
+  const platform = useBackendPlatform()
   const store = useMemo(() => {
     if (!rootPath) return null
-    return getStore(rootPath)
-  }, [rootPath])
+    return getStore(rootPath, api, platform)
+  }, [rootPath, api, platform])
 
   useEffect(() => {
     if (!store || !rootPath) return

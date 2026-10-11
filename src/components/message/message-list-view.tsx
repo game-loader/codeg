@@ -1,11 +1,14 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useConversationRuntimeActions as standaloneUseConversationRuntimeActions } from "@/stores/conversation-runtime-store"
+import { useConversationRuntimeStore as legacyConversationRuntime } from "@/stores/conversation-runtime-store"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   isLiveTurnId,
   selectTimelineTurns,
-  useConversationRuntimeActions,
-  useConversationRuntimeStore,
 } from "@/stores/conversation-runtime-store"
 import { isWindowedDetail } from "@/lib/turn-window"
 import { CompletedTurnContent } from "./completed-turn-content"
@@ -85,7 +88,7 @@ import { useModelLabels } from "@/hooks/use-model-labels"
 import { usePageHandoffName } from "@/lib/browser/use-page-handoff-name"
 import { unescapeComposerText } from "@/lib/composer-copy-text"
 import { useStickToBottomContext } from "use-stick-to-bottom"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import { MarkdownImageProvider } from "@/components/ai-elements/markdown-local-image"
 
 interface MessageListViewProps {
@@ -1079,6 +1082,18 @@ export function MessageListView({
   onSaveNoteSelection,
   onForkFromTurn,
 }: MessageListViewProps) {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({
+    conversationRuntime: legacyConversationRuntime,
+    workspace: legacyWorkspace,
+  })
+  const useConversationRuntimeStore = backendStores.conversationRuntime
+  const useAppWorkspaceStore = backendStores.workspace
+  const useConversationRuntimeActions = backendStoreSelection
+    ? backendStores.conversationRuntime.useConversationRuntimeActions
+    : standaloneUseConversationRuntimeActions
+
   const t = useTranslations("Folder.chat.messageList")
   const sharedT = useTranslations("Folder.chat.shared")
   const pageHandoffName = usePageHandoffName()

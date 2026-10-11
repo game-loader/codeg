@@ -1,10 +1,7 @@
+import type { BackendPlatform } from "@/lib/backend/types"
+import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
 import { splitAbsPath } from "@/lib/file-open-target"
-import {
-  getActiveRemoteConnectionId,
-  getServerBaseUrl,
-  getShellTransport,
-  getTransport,
-} from "@/lib/transport"
+import { getShellTransport } from "@/lib/transport"
 
 interface VideoSession {
   token: string
@@ -13,13 +10,17 @@ interface VideoSession {
 
 /** Capture transports before awaiting: a late cleanup must release the
  * capability on the host that issued it, even if the user changed connection. */
-export async function openVideoPreview(path: string) {
+export async function openVideoPreview(
+  path: string,
+  backendPlatform: BackendPlatform = legacyBackendPlatform,
+  configRevision?: string
+) {
   const io = splitAbsPath(path)
   if (!io) throw new Error("Invalid video path")
-  const transport = getTransport()
+  const transport = backendPlatform.getTransport()
   const shell = getShellTransport()
-  const connectionId = getActiveRemoteConnectionId()
-  const baseUrl = getServerBaseUrl()
+  const connectionId = backendPlatform.getActiveRemoteConnectionId()
+  const baseUrl = backendPlatform.getServerBaseUrl()
   const session = await transport.call<VideoSession>("start_video_preview", {
     rootPath: io.rootPath,
     path: io.ioPath,
@@ -29,6 +30,7 @@ export async function openVideoPreview(path: string) {
     if (connectionId !== null) {
       relay = await shell.call<VideoSession>("relay_video_preview", {
         connectionId,
+        ...(configRevision ? { configRevision } : {}),
         token: session.token,
       })
     }

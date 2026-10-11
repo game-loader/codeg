@@ -16,6 +16,8 @@
  *      NOT bleed into the chat context.
  */
 
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Loader2 } from "lucide-react"
@@ -36,8 +38,8 @@ import {
   type AgentType,
   type SessionConfigOptionInfo,
 } from "@/lib/types"
-import { getAgentLabel, isCustomAgentType } from "@/lib/custom-agents"
-import { describeAgentOptions } from "@/lib/api"
+import { isCustomAgentType } from "@/lib/custom-agents"
+
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { useAgentVocabulary } from "@/hooks/use-agent-vocabulary"
 import { toErrorMessage } from "@/lib/app-error"
@@ -106,6 +108,10 @@ export function DelegationAgentDefaultsPanel({
   onChange,
   disabled,
 }: DelegationAgentDefaultsPanelProps) {
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("AcpAgentSettings.multiAgent")
   // Custom ACP agents are delegation targets too (codeg-mcp advertises them
   // in `delegate_to_agent`'s enum), so they get a defaults tab after the
@@ -132,32 +138,35 @@ export function DelegationAgentDefaultsPanel({
   const [error, setError] = useState<string | null>(null)
   const reqIdRef = useRef(0)
 
-  const loadSnapshot = useCallback(async (agent: AgentType, force: boolean) => {
-    if (!force) {
-      const cached = readCache(agent)
-      if (cached) {
-        setLoaded({ agent, snapshot: cached })
-        setError(null)
-        setLoading(false)
-        return
+  const loadSnapshot = useCallback(
+    async (agent: AgentType, force: boolean) => {
+      if (!force) {
+        const cached = readCache(agent)
+        if (cached) {
+          setLoaded({ agent, snapshot: cached })
+          setError(null)
+          setLoading(false)
+          return
+        }
       }
-    }
-    const reqId = ++reqIdRef.current
-    setLoading(true)
-    setError(null)
-    setLoaded(null)
-    try {
-      const fresh = await describeAgentOptions(agent)
-      if (reqIdRef.current !== reqId) return
-      writeCache(agent, fresh)
-      setLoaded({ agent, snapshot: fresh })
-    } catch (err: unknown) {
-      if (reqIdRef.current !== reqId) return
-      setError(toErrorMessage(err))
-    } finally {
-      if (reqIdRef.current === reqId) setLoading(false)
-    }
-  }, [])
+      const reqId = ++reqIdRef.current
+      setLoading(true)
+      setError(null)
+      setLoaded(null)
+      try {
+        const fresh = await backendApi.describeAgentOptions(agent)
+        if (reqIdRef.current !== reqId) return
+        writeCache(agent, fresh)
+        setLoaded({ agent, snapshot: fresh })
+      } catch (err: unknown) {
+        if (reqIdRef.current !== reqId) return
+        setError(toErrorMessage(err))
+      } finally {
+        if (reqIdRef.current === reqId) setLoading(false)
+      }
+    },
+    [backendApi]
+  )
 
   useEffect(() => {
     // Debounce so rapid tab clicks (which would each fire a real probe

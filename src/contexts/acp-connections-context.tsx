@@ -1,5 +1,17 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { getConversationIdByExternalIdFromStore as standaloneGetConversationIdByExternalIdFromStore } from "@/stores/conversation-runtime-store"
+import { useTabStore as legacyTabs } from "@/stores/tab-store"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { defaultBackendStoreStorage as legacyStorage } from "@/stores/backend-store-storage"
+import { useConversationRuntimeStore as legacyConversationRuntime } from "@/stores/conversation-runtime-store"
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import {
   createContext,
   useCallback,
@@ -10,40 +22,21 @@ import {
   type ReactNode,
 } from "react"
 import { useTranslations } from "next-intl"
-import { subscribe, getEventStream } from "@/lib/platform"
+
 import type {
   AttachHandlers,
   EventStreamSubscription,
 } from "@/lib/transport/types"
 import { randomUUID } from "@/lib/utils"
 import { inferLiveToolName } from "@/lib/tool-call-normalization"
-import {
-  acpConnect,
-  acpGetAgentStatus,
-  acpPrompt,
-  acpSetMode,
-  acpSetConfigOption,
-  acpGoalControl,
-  acpCancel,
-  acpRespondPermission,
-  acpAnswerQuestion,
-  acpAnswerPlanApproval,
-  acpDisconnect,
-  acpTouchConnection,
-  acpGetSessionSnapshot,
-  acpFindConnectionForConversation,
-  openSettingsWindow,
-} from "@/lib/api"
+
 import { denormalizeSnapshot } from "@/lib/snapshot-denormalize"
 import { buildDelegationSeedEnvelopes } from "@/lib/delegation-seed"
 import {
   isConnectionBusy,
   isConnectionGoneError,
 } from "@/lib/connection-teardown"
-import {
-  getConversationIdByExternalIdFromStore,
-  useConversationRuntimeStore,
-} from "@/stores/conversation-runtime-store"
+
 import type {
   AgentType,
   AcpAgentStatus,
@@ -103,7 +96,7 @@ import {
 } from "@/lib/acp-error-presentation"
 import { dismissNotification, notify, type NotifyAction } from "@/lib/notify"
 import type { SnapshotPatch } from "@/lib/snapshot-denormalize"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import {
   localizeConfigOptionLabel,
   localizeConfigValueLabel,
@@ -123,11 +116,7 @@ import {
   primeNotificationSoundOutput,
   withEventSoundsSuppressed,
 } from "@/lib/notification-sound"
-import {
-  getSavedPrefsForConnect,
-  saveModePreference,
-  saveConfigPreference,
-} from "@/lib/selector-prefs-storage"
+
 import { rememberModelLabels } from "@/lib/model-label-store"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 
@@ -3391,6 +3380,26 @@ interface TurnFailureState {
 // ── Provider ──
 
 export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendStores = useBackendStores({
+    tabs: legacyTabs,
+    workspace: legacyWorkspace,
+    storage: legacyStorage,
+    conversationRuntime: legacyConversationRuntime,
+  })
+  const { getSavedPrefsForConnect, saveModePreference, saveConfigPreference } =
+    backendStores.storage.selectorPreferences
+  const getConversationIdByExternalIdFromStore = backendStoreSelection
+    ? backendStores.conversationRuntime.getConversationIdByExternalIdFromStore
+    : standaloneGetConversationIdByExternalIdFromStore
+  const useConversationRuntimeStore = backendStores.conversationRuntime
+
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Folder.chat.acpConnections")
   // Separate namespace: the agent-supplied vocabulary this provider has to
   // re-label lives under its own catalogue (see `lib/agent-label-vocabulary`).
@@ -3610,9 +3619,10 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         contextKey,
         lastConnectParamsRef.current.get(contextKey)?.conversationId,
         folderNameRef.current,
-        content
+        content,
+        backendStores
       ),
-    []
+    [backendStores]
   )
 
   type ConnectBlockState =
@@ -3658,7 +3668,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           : t("blocked.sdkMissing", { agent: agentLabel }),
       }
     },
-    [t]
+    [t, getAgentLabel]
   )
 
   // Per-contextKey liveMessage sinks. Fired synchronously from `dispatch` when a
@@ -3757,11 +3767,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         actions.push({
           label: t("actions.openAgentsSettings"),
           onClick: () => {
-            openSettingsWindow("agents", { agentType: info.agentType }).catch(
-              (err) => {
+            backendApi
+              .openSettingsWindow("agents", { agentType: info.agentType })
+              .catch((err) => {
                 console.error("[AcpConnections] open agent settings:", err)
-              }
-            )
+              })
           },
         })
       }
@@ -3783,7 +3793,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         actions,
       })
     },
-    [t]
+    [t, backendApi]
   )
 
   // ── Dispatch (replaces useReducer dispatch) ──
@@ -4171,9 +4181,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           actions.push({
             label: tFailure("action.login"),
             onClick: () => {
-              openSettingsWindow("agents", { agentType }).catch((err) => {
-                console.error("[AcpConnections] open agent settings:", err)
-              })
+              backendApi
+                .openSettingsWindow("agents", { agentType })
+                .catch((err) => {
+                  console.error("[AcpConnections] open agent settings:", err)
+                })
             },
           })
         } else if (sessionFailureHandlerFor(connectionId)) {
@@ -4188,7 +4200,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       }
       return actions
     },
-    [sessionFailureHandlerFor, tFailure]
+    [sessionFailureHandlerFor, tFailure, backendApi]
   )
 
   /**
@@ -4452,7 +4464,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         }),
       })
     },
-    [t, vocabularyT]
+    [t, vocabularyT, getAgentLabel]
   )
 
   // Localize a backend `error` by its stable `code`. Both the live event and a
@@ -5080,7 +5092,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             // not off whatever is selected in the UI — the settings panels'
             // probe snapshots lag an agent switch by a debounce and would
             // file the labels under the wrong one.
-            rememberModelLabels(cfgConn.agentType, e.config_options)
+            rememberModelLabels(
+              cfgConn.agentType,
+              e.config_options,
+              backendApi,
+              backendStores.storage.key("codeg:model-labels")
+            )
           }
           break
         }
@@ -5126,7 +5143,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             }
             // Also covers the replay path, where the options were restored onto
             // the connection without a fresh `session_config_options` event.
-            rememberModelLabels(rdyConn.agentType, rdyConn.configOptions)
+            rememberModelLabels(
+              rdyConn.agentType,
+              rdyConn.configOptions,
+              backendApi,
+              backendStores.storage.key("codeg:model-labels")
+            )
           }
           break
         }
@@ -5495,14 +5517,16 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                       {
                         label: tFailure("action.login"),
                         onClick: () => {
-                          openSettingsWindow("agents", {
-                            agentType: signInAgentType,
-                          }).catch((err) => {
-                            console.error(
-                              "[AcpConnections] open agent settings:",
-                              err
-                            )
-                          })
+                          backendApi
+                            .openSettingsWindow("agents", {
+                              agentType: signInAgentType,
+                            })
+                            .catch((err) => {
+                              console.error(
+                                "[AcpConnections] open agent settings:",
+                                err
+                              )
+                            })
                         },
                       },
                     ]
@@ -5525,14 +5549,16 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                     {
                       label: t("actions.openAgentsSettings"),
                       onClick: () => {
-                        openSettingsWindow("agents", {
-                          agentType: errorAgentType,
-                        }).catch((err) => {
-                          console.error(
-                            "[AcpConnections] open agent settings:",
-                            err
-                          )
-                        })
+                        backendApi
+                          .openSettingsWindow("agents", {
+                            agentType: errorAgentType,
+                          })
+                          .catch((err) => {
+                            console.error(
+                              "[AcpConnections] open agent settings:",
+                              err
+                            )
+                          })
                       },
                     },
                   ]
@@ -5663,6 +5689,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       t,
       tChat,
       tFailure,
+      backendApi,
+      getAgentLabel,
+      getConversationIdByExternalIdFromStore,
+      useConversationRuntimeStore,
+      backendStores,
     ]
   )
 
@@ -5784,7 +5815,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       )
       return { ...patch, lastError: text, lastErrorLevel: route.level }
     },
-    [presentBackendError]
+    [presentBackendError, getAgentLabel]
   )
   const presentSnapshotPatchRef = useRef(presentSnapshotPatch)
   useEffect(() => {
@@ -5809,7 +5840,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       connectionId: string,
       sinceSeq: number | undefined
     ): EventStreamSubscription | null => {
-      const stream = getEventStream()
+      const stream = backendPlatform.getEventStream()
       if (!stream) return null
 
       let activeSub: EventStreamSubscription | null = null
@@ -5914,6 +5945,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       dispatch,
       flushStreamingQueue,
       seedDelegationsFromSnapshot,
+      backendPlatform,
     ]
   )
 
@@ -5946,7 +5978,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     // dead WebSocket subscription and waste a slot on every reconnect.
     // `waitForListenerReady` becomes an immediate no-op since the path
     // it was guarding (Tauri's app.emit handshake) doesn't exist here.
-    if (getEventStream() !== null) {
+    if (backendPlatform.getEventStream() !== null) {
       listenerReadyRef.current = true
       resolveListenerReadyWaiters()
       return
@@ -5954,65 +5986,66 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
 
     listenerReadyRef.current = false
 
-    subscribe<EventEnvelope>("acp://event", (envelope) => {
-      // Tauri webview path: the desktop frontend receives ACP events here
-      // via `app.emit("acp://event", ...)`. Web / remote-desktop transports
-      // skipped this useEffect above and route ACP events solely via the
-      // per-connection attach streams.
-      const routes = reverseMapRef.current.get(envelope.connection_id)
-      if (!routes || routes.size === 0) {
-        bufferUnmappedEvent(envelope)
-        return
-      }
-
-      // Deliver to EVERY surface routing this connection (see
-      // `reverseMapRef`). Iterated over a copy: a handler may bind or release
-      // a route re-entrantly, and mutating the live Set mid-iteration would
-      // skip or double-deliver. Each surface keeps its own `lastAppliedSeq`,
-      // so they dedup independently.
-      let deliveredToAny = false
-      for (const contextKey of Array.from(routes)) {
-        // Seq dedup: skip envelopes already accounted for by a snapshot or a
-        // prior delivery. snapshot.event_seq sets the lower bound; subsequent
-        // envelopes with seq <= lastAppliedSeq are no-op duplicates.
-        const conn = storeRef.current.connections.get(contextKey)
-        if (conn && envelope.seq <= conn.lastAppliedSeq) {
-          continue
+    backendPlatform
+      .subscribe<EventEnvelope>("acp://event", (envelope) => {
+        // Tauri webview path: the desktop frontend receives ACP events here
+        // via `app.emit("acp://event", ...)`. Web / remote-desktop transports
+        // skipped this useEffect above and route ACP events solely via the
+        // per-connection attach streams.
+        const routes = reverseMapRef.current.get(envelope.connection_id)
+        if (!routes || routes.size === 0) {
+          bufferUnmappedEvent(envelope)
+          return
         }
-        // Touch activity on every incoming event
-        lastActivityRef.current.set(contextKey, Date.now())
-        // `deliveredToAny` doubles as "some surface already ran this
-        // envelope's user-facing effects", so the sound / OS notification /
-        // alert fire once no matter how many surfaces are watching.
-        handleMappedEventRef.current(contextKey, envelope, deliveredToAny)
-        deliveredToAny = true
 
-        // Advance lastAppliedSeq after the event's effects have dispatched.
-        // EVENT_APPLIED is idempotent (only advances if higher).
-        dispatch({
-          type: "EVENT_APPLIED",
-          contextKey,
-          seq: envelope.seq,
-        })
-      }
+        // Deliver to EVERY surface routing this connection (see
+        // `reverseMapRef`). Iterated over a copy: a handler may bind or release
+        // a route re-entrantly, and mutating the live Set mid-iteration would
+        // skip or double-deliver. Each surface keeps its own `lastAppliedSeq`,
+        // so they dedup independently.
+        let deliveredToAny = false
+        for (const contextKey of Array.from(routes)) {
+          // Seq dedup: skip envelopes already accounted for by a snapshot or a
+          // prior delivery. snapshot.event_seq sets the lower bound; subsequent
+          // envelopes with seq <= lastAppliedSeq are no-op duplicates.
+          const conn = storeRef.current.connections.get(contextKey)
+          if (conn && envelope.seq <= conn.lastAppliedSeq) {
+            continue
+          }
+          // Touch activity on every incoming event
+          lastActivityRef.current.set(contextKey, Date.now())
+          // `deliveredToAny` doubles as "some surface already ran this
+          // envelope's user-facing effects", so the sound / OS notification /
+          // alert fire once no matter how many surfaces are watching.
+          handleMappedEventRef.current(contextKey, envelope, deliveredToAny)
+          deliveredToAny = true
 
-      // Fan out to JS-level subscribers (e.g. ConversationDetailPanel's
-      // background turn_complete handler). Runs AFTER the reducer dispatches
-      // and AFTER seq dedup, so subscribers see a consistent, deduped stream.
-      // Unmapped events return early above and never reach here. Fired ONCE
-      // per envelope no matter how many surfaces routed it — these subscribers
-      // are keyed by connection, not by contextKey, and double-delivery would
-      // e.g. re-register a delegation binding. One bad subscriber must not kill
-      // the others — wrap each call in try/catch.
-      if (!deliveredToAny) return
-      for (const ref of eventSubscribersRef.current) {
-        try {
-          ref.current(envelope)
-        } catch (err) {
-          console.error("[acp-context] subscriber threw:", err)
+          // Advance lastAppliedSeq after the event's effects have dispatched.
+          // EVENT_APPLIED is idempotent (only advances if higher).
+          dispatch({
+            type: "EVENT_APPLIED",
+            contextKey,
+            seq: envelope.seq,
+          })
         }
-      }
-    })
+
+        // Fan out to JS-level subscribers (e.g. ConversationDetailPanel's
+        // background turn_complete handler). Runs AFTER the reducer dispatches
+        // and AFTER seq dedup, so subscribers see a consistent, deduped stream.
+        // Unmapped events return early above and never reach here. Fired ONCE
+        // per envelope no matter how many surfaces routed it — these subscribers
+        // are keyed by connection, not by contextKey, and double-delivery would
+        // e.g. re-register a delegation binding. One bad subscriber must not kill
+        // the others — wrap each call in try/catch.
+        if (!deliveredToAny) return
+        for (const ref of eventSubscribersRef.current) {
+          try {
+            ref.current(envelope)
+          } catch (err) {
+            console.error("[acp-context] subscriber threw:", err)
+          }
+        }
+      })
       .then((fn) => {
         if (cancelled) {
           fn()
@@ -6039,7 +6072,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     // registered once per mount and torn down only on unmount. The event
     // handler deliberately isn't a dep; it's reached through
     // `handleMappedEventRef` so a changing closure can't churn the listener.
-  }, [bufferUnmappedEvent, dispatch, resolveListenerReadyWaiters])
+  }, [
+    bufferUnmappedEvent,
+    dispatch,
+    resolveListenerReadyWaiters,
+    backendPlatform,
+  ])
 
   // Drop every armed window on unmount. Its own effect, because the listener
   // effect above returns early on web / remote-desktop transports — before it
@@ -6059,12 +6097,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   const isConnectionLiveOnBackend = useCallback(
     async (connectionId: string): Promise<boolean> => {
       try {
-        return await acpTouchConnection(connectionId)
+        return await backendApi.acpTouchConnection(connectionId)
       } catch {
         return true
       }
     },
-    []
+    [backendApi]
   )
 
   /**
@@ -6213,7 +6251,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       }
 
       for (const { contextKey, connectionId } of toDisconnect) {
-        acpDisconnect(connectionId).catch(() => {})
+        backendApi.acpDisconnect(connectionId).catch(() => {})
         releaseConnectionRoute(connectionId, contextKey)
         teardownAttachSubscription(contextKey)
         lastActivityRef.current.delete(contextKey)
@@ -6232,6 +6270,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     heldOpenKeys,
     releaseConnectionRoute,
     teardownAttachSubscription,
+    backendApi,
   ])
 
   // Disconnect all on unmount
@@ -6264,7 +6303,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           if (conn?.isViewer) continue
           if (alreadyTornDown.has(connectionId)) continue
           alreadyTornDown.add(connectionId)
-          acpDisconnect(connectionId).catch(() => {})
+          backendApi.acpDisconnect(connectionId).catch(() => {})
         }
       }
       for (const [, sub] of attachSubs) {
@@ -6275,7 +6314,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         }
       }
     }
-  }, [])
+  }, [backendApi])
 
   // The contextKey of the local entry that OWNS the given backend connection —
   // i.e. the one whose teardown `acpDisconnect`s the agent — or null when this
@@ -6352,7 +6391,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       })
       lastActivityRef.current.set(contextKey, Date.now())
 
-      const stream = getEventStream()
+      const stream = backendPlatform.getEventStream()
       if (stream) {
         // Web / remote: the per-connection WS attach delivers snapshot +
         // replay + live events atomically over the same socket.
@@ -6372,7 +6411,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       // merely unreachable.
       let connectionGone = false
       try {
-        const snapshot = await acpGetSessionSnapshot(connectionId)
+        const snapshot = await backendApi.acpGetSessionSnapshot(connectionId)
         if (snapshot) patch = denormalizeSnapshot(snapshot)
         else connectionGone = true
       } catch (e) {
@@ -6433,6 +6472,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       releaseConnectionRoute,
       seedDelegationsFromSnapshot,
       setupAttachSubscription,
+      backendPlatform,
+      backendApi,
     ]
   )
 
@@ -6499,7 +6540,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         // "alerted" error so the catch-all at the bottom doesn't publish a
         // second, vaguer copy of it.
         try {
-          configuredAgent = await acpGetAgentStatus(agentType)
+          configuredAgent = await backendApi.acpGetAgentStatus(agentType)
         } catch (error) {
           const reason = t("unableReadAgentConfig", {
             message: normalizeErrorMessage(error),
@@ -6612,7 +6653,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             // acpDisconnect (that would kill the owner's agent). Owners are
             // disconnected normally before re-spawning under new params.
             if (!existing.isViewer) {
-              await acpDisconnect(existing.connectionId).catch(() => {})
+              await backendApi
+                .acpDisconnect(existing.connectionId)
+                .catch(() => {})
             }
             releaseConnectionRoute(existing.connectionId, contextKey)
             teardownAttachSubscription(contextKey)
@@ -6717,7 +6760,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             // connection as a mis-tagged owner and kill it on tab close. The
             // external_id fallback is matched WITH agentType (external_id is
             // unique only per agent).
-            discovered = await acpFindConnectionForConversation(
+            discovered = await backendApi.acpFindConnectionForConversation(
               conversationId,
               sessionId,
               agentType
@@ -6789,7 +6832,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         // re-open (the snapshot frame doesn't carry a `session_modes` event,
         // so the apply-on-event hook never fired).
         const savedPrefs = getSavedPrefsForConnect(agentType)
-        const connectionId = await acpConnect(
+        const connectionId = await backendApi.acpConnect(
           agentType,
           workingDir,
           sessionId,
@@ -6809,14 +6852,14 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         // still see it to know this call established nothing (see there).
         if (abandonedKeysRef.current.has(contextKey)) {
           if (!isConnectionReferencedLocally(connectionId)) {
-            acpDisconnect(connectionId).catch(() => {})
+            backendApi.acpDisconnect(connectionId).catch(() => {})
           }
           return
         }
         const pendingRequest = pendingConnectRequestsRef.current.get(contextKey)
         if (pendingRequest && !sameConnectRequest(pendingRequest, request)) {
           if (!isConnectionReferencedLocally(connectionId)) {
-            acpDisconnect(connectionId).catch(() => {})
+            backendApi.acpDisconnect(connectionId).catch(() => {})
           }
           return
         }
@@ -6853,7 +6896,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             | import("@/lib/snapshot-denormalize").SnapshotPatch
             | null = null
           try {
-            const snapshot = await acpGetSessionSnapshot(connectionId)
+            const snapshot =
+              await backendApi.acpGetSessionSnapshot(connectionId)
             if (snapshot) {
               snapshotPatch = denormalizeSnapshot(snapshot)
             }
@@ -7008,6 +7052,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       t,
       teardownAttachSubscription,
       waitForListenerReady,
+      backendApi,
+      getAgentLabel,
+      getSavedPrefsForConnect,
     ]
   )
   connectRef.current = connect
@@ -7076,11 +7123,16 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       // the follow-up connect can re-attach to the process it believed it had
       // replaced. Report which happened and let the caller decide.
       let tornDown = true
-      await acpDisconnect(conn.connectionId).catch((error: unknown) => {
-        if (isConnectionGoneError(error)) return
-        console.warn("[Acp] backend teardown failed, releasing locally:", error)
-        tornDown = false
-      })
+      await backendApi
+        .acpDisconnect(conn.connectionId)
+        .catch((error: unknown) => {
+          if (isConnectionGoneError(error)) return
+          console.warn(
+            "[Acp] backend teardown failed, releasing locally:",
+            error
+          )
+          tornDown = false
+        })
       releaseConnectionRoute(conn.connectionId, contextKey)
       teardownAttachSubscription(contextKey)
       lastActivityRef.current.delete(contextKey)
@@ -7095,6 +7147,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       retireTurnFailures,
       setConnectError,
       teardownAttachSubscription,
+      backendApi,
     ]
   )
 
@@ -7291,7 +7344,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       // read-only subscription but never acpDisconnect (that would kill the
       // owner's agent). Owners are torn down normally.
       if (!conn.isViewer) {
-        promises.push(acpDisconnect(conn.connectionId).catch(() => {}))
+        promises.push(
+          backendApi.acpDisconnect(conn.connectionId).catch(() => {})
+        )
       }
       teardownAttachSubscription(contextKey)
       pendingUnmappedEventsRef.current.delete(conn.connectionId)
@@ -7327,6 +7382,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     retireTurnFailures,
     setConnectError,
     teardownAttachSubscription,
+    backendApi,
   ])
 
   const sendPrompt = useCallback(
@@ -7343,7 +7399,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       if (!conn) return
       lastActivityRef.current.set(contextKey, Date.now())
       try {
-        await acpPrompt(
+        await backendApi.acpPrompt(
           conn.connectionId,
           blocks,
           opts?.folderId ?? null,
@@ -7361,24 +7417,27 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         throw e
       }
     },
-    [markConnectionGone]
+    [markConnectionGone, backendApi]
   )
 
-  const setMode = useCallback(async (contextKey: string, modeId: string) => {
-    const conn = storeRef.current.connections.get(contextKey)
-    if (!conn) return
-    // Persist user's mode selection to localStorage
-    const modes =
-      conn.modes ?? selectorsCache.get(conn.agentType)?.modes ?? null
-    if (modes) {
-      saveModePreference(conn.agentType, {
-        ...modes,
-        current_mode_id: modeId,
-      })
-    }
-    lastActivityRef.current.set(contextKey, Date.now())
-    await acpSetMode(conn.connectionId, modeId)
-  }, [])
+  const setMode = useCallback(
+    async (contextKey: string, modeId: string) => {
+      const conn = storeRef.current.connections.get(contextKey)
+      if (!conn) return
+      // Persist user's mode selection to localStorage
+      const modes =
+        conn.modes ?? selectorsCache.get(conn.agentType)?.modes ?? null
+      if (modes) {
+        saveModePreference(conn.agentType, {
+          ...modes,
+          current_mode_id: modeId,
+        })
+      }
+      lastActivityRef.current.set(contextKey, Date.now())
+      await backendApi.acpSetMode(conn.connectionId, modeId)
+    },
+    [backendApi, saveModePreference]
+  )
 
   const setConfigOption = useCallback(
     async (contextKey: string, configId: string, valueId: string) => {
@@ -7394,9 +7453,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       // can ship it back to the backend as a preferred config value.
       saveConfigPreference(conn.agentType, configId, valueId)
       lastActivityRef.current.set(contextKey, Date.now())
-      await acpSetConfigOption(conn.connectionId, configId, valueId)
+      await backendApi.acpSetConfigOption(conn.connectionId, configId, valueId)
     },
-    [dispatch]
+    [dispatch, backendApi, saveConfigPreference]
   )
 
   const cancel = useCallback(
@@ -7404,7 +7463,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       const conn = storeRef.current.connections.get(contextKey)
       if (!conn) return
       try {
-        await acpCancel(conn.connectionId)
+        await backendApi.acpCancel(conn.connectionId)
       } catch (e) {
         // Pressing Stop on a connection the backend no longer has is the
         // clearest evidence that this entry's terminal event went missing —
@@ -7419,7 +7478,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         throw e
       }
     },
-    [markConnectionGone]
+    [markConnectionGone, backendApi]
   )
 
   const goalControl = useCallback(
@@ -7432,12 +7491,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       // recoverable Error event — so log here and don't rethrow.
       try {
         lastActivityRef.current.set(contextKey, Date.now())
-        await acpGoalControl(conn.connectionId, action)
+        await backendApi.acpGoalControl(conn.connectionId, action)
       } catch (e) {
         console.error("[AcpConnections] goalControl failed:", e)
       }
     },
-    []
+    [backendApi]
   )
 
   const respondPermission = useCallback(
@@ -7452,14 +7511,18 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       }
       try {
         lastActivityRef.current.set(contextKey, Date.now())
-        await acpRespondPermission(conn.connectionId, requestId, optionId)
+        await backendApi.acpRespondPermission(
+          conn.connectionId,
+          requestId,
+          optionId
+        )
         dispatch({ type: "PERMISSION_CLEARED", contextKey, requestId })
       } catch (e) {
         console.error("[AcpConnections] respondPermission failed:", e)
         throw e
       }
     },
-    [dispatch]
+    [dispatch, backendApi]
   )
 
   const answerQuestion = useCallback(
@@ -7476,7 +7539,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       }
       try {
         lastActivityRef.current.set(contextKey, Date.now())
-        await acpAnswerQuestion(conn.connectionId, questionId, answer)
+        await backendApi.acpAnswerQuestion(
+          conn.connectionId,
+          questionId,
+          answer
+        )
         // Optimistically clear; the backend also broadcasts question_resolved
         // (idempotent on the matched id).
         dispatch({ type: "CLEAR_ASK_QUESTION", contextKey, questionId })
@@ -7485,7 +7552,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         throw e
       }
     },
-    [dispatch]
+    [dispatch, backendApi]
   )
 
   const answerPlanApproval = useCallback(
@@ -7505,7 +7572,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       }
       try {
         lastActivityRef.current.set(contextKey, Date.now())
-        await acpAnswerPlanApproval(conn.connectionId, approvalId, answer)
+        await backendApi.acpAnswerPlanApproval(
+          conn.connectionId,
+          approvalId,
+          answer
+        )
         // Optimistically clear; the backend also broadcasts
         // plan_approval_resolved (idempotent on the matched id).
         dispatch({ type: "CLEAR_PLAN_APPROVAL", contextKey, approvalId })
@@ -7514,7 +7585,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         throw e
       }
     },
-    [dispatch]
+    [dispatch, backendApi]
   )
 
   const attachDelegationChild = useCallback(
@@ -7553,7 +7624,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       })
       lastActivityRef.current.set(connectionId, Date.now())
 
-      const stream = getEventStream()
+      const stream = backendPlatform.getEventStream()
       if (stream) {
         // Web / remote transport: open a per-connection attach so the
         // child's snapshot + replay + live events flow through the
@@ -7587,7 +7658,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         let patch: import("@/lib/snapshot-denormalize").SnapshotPatch | null =
           null
         try {
-          const snapshot = await acpGetSessionSnapshot(connectionId)
+          const snapshot = await backendApi.acpGetSessionSnapshot(connectionId)
           if (snapshot) patch = denormalizeSnapshot(snapshot)
         } catch (e) {
           console.warn(
@@ -7632,6 +7703,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       dispatch,
       seedDelegationsFromSnapshot,
       setupAttachSubscription,
+      backendPlatform,
+      backendApi,
     ]
   )
 

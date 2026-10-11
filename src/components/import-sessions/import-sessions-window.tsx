@@ -1,5 +1,10 @@
 "use client"
 
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
@@ -27,9 +32,9 @@ import {
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Switch } from "@/components/ui/switch"
-import { importSelectedSessions, scanImportableSessions } from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
-import { subscribe } from "@/lib/platform"
+
 import {
   ALL_AGENT_TYPES,
   IMPORT_SCAN_PROGRESS_EVENT,
@@ -41,7 +46,7 @@ import {
   type ScanSession,
   type SelectedSessionKey,
 } from "@/lib/types"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import { cn } from "@/lib/utils"
 import {
   FolderHeaderRow,
@@ -86,6 +91,11 @@ export function ImportSessionsWindow({
   focusPath,
   onClose,
 }: ImportSessionsWindowProps) {
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("ImportSessions")
 
   const [phase, setPhase] = useState<Phase>("scanning")
@@ -124,7 +134,7 @@ export function ImportSessionsWindow({
   const performScan = useCallback(async () => {
     const gen = ++scanGen.current
     try {
-      const result = await scanImportableSessions()
+      const result = await backendApi.scanImportableSessions()
       if (scanGen.current !== gen) return
       setScan(result)
       setPhase("ready")
@@ -174,7 +184,7 @@ export function ImportSessionsWindow({
       setScanError(toErrorMessage(err))
       setPhase("error")
     }
-  }, [focusPath])
+  }, [focusPath, backendApi])
 
   // Re-scan from a user action: reset to the clean scanning state first.
   const runScan = useCallback(() => {
@@ -200,7 +210,7 @@ export function ImportSessionsWindow({
     let disposed = false
     let unlisten: (() => void) | undefined
     void (async () => {
-      const dispose = await subscribe<ImportScanProgress>(
+      const dispose = await backendPlatform.subscribe<ImportScanProgress>(
         IMPORT_SCAN_PROGRESS_EVENT,
         (p) => {
           if (phaseRef.current !== "scanning") return
@@ -222,7 +232,7 @@ export function ImportSessionsWindow({
       disposed = true
       unlisten?.()
     }
-  }, [])
+  }, [backendPlatform])
 
   // ── Filtering + flat row model ──────────────────────────────────────────
   const filteredFolders = useMemo(() => {
@@ -430,14 +440,14 @@ export function ImportSessionsWindow({
     if (selections.length === 0) return
     setPhase("importing")
     try {
-      const result = await importSelectedSessions(selections)
+      const result = await backendApi.importSelectedSessions(selections)
       setImportResult(result)
       setPhase("done")
     } catch (err) {
       toast.error(t("toasts.importFailed", { message: toErrorMessage(err) }))
       setPhase("ready")
     }
-  }, [scan, selected, includeDeleted, t])
+  }, [scan, selected, includeDeleted, t, backendApi])
 
   const handleContinue = useCallback(() => {
     setImportResult(null)

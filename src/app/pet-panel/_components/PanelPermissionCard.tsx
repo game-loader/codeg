@@ -1,9 +1,10 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useEffect, useState } from "react"
 import { ShieldAlert, Terminal } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { acpRespondPermission } from "@/lib/api"
+
 import { parsePermissionToolCall } from "@/lib/permission-request"
 import type { PetPermissionSummary } from "@/lib/pet/types"
 import type { AgentType } from "@/lib/types"
@@ -32,6 +33,8 @@ export function PanelPermissionCard({
   permission,
   agentType,
 }: PanelPermissionCardProps) {
+  const backendApi = useBackendApi()
+
   const [busy, setBusy] = useState(false)
   const parsed = parsePermissionToolCall(permission.toolCall)
   const options = useAgentVocabulary(agentType).permissionOptions(
@@ -41,14 +44,12 @@ export function PanelPermissionCard({
   const respond = (optionId: string) => {
     if (busy) return
     setBusy(true)
-    void acpRespondPermission(
-      connectionId,
-      permission.requestId,
-      optionId
-    ).catch((err) => {
-      console.warn("[PetPanel] respond permission failed:", err)
-      setBusy(false) // hard failure → re-enable for retry
-    })
+    void backendApi
+      .acpRespondPermission(connectionId, permission.requestId, optionId)
+      .catch((err) => {
+        console.warn("[PetPanel] respond permission failed:", err)
+        setBusy(false) // hard failure → re-enable for retry
+      })
   }
 
   // The card normally unmounts the instant the session list drops this pending

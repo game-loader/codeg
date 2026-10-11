@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useState, useEffect, useCallback } from "react"
 import { useTranslations } from "next-intl"
 import { Loader2, ChevronsUpDown, CircleCheck, CircleX } from "lucide-react"
@@ -29,11 +30,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { closeCurrentWindow } from "@/lib/platform"
-import {
-  createShadcnProject,
-  openFolderInWorkspace,
-  detectPackageManager,
-} from "@/lib/api"
+
 import { extractAppCommandError, toErrorMessage } from "@/lib/app-error"
 import { joinFsPath } from "@/lib/path-utils"
 import { DirectoryPathInput } from "@/components/shared/directory-path-input"
@@ -54,6 +51,8 @@ export function CreateProjectDialog({
   onOpenChange,
   presetCode,
 }: CreateProjectDialogProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("ProjectBoot")
   const [projectName, setProjectName] = useState("my-app")
   const [framework, setFramework] = useState("next")
@@ -69,21 +68,24 @@ export function CreateProjectDialog({
   const [pmInstalled, setPmInstalled] = useState<boolean | null>(null)
   const [pmChecking, setPmChecking] = useState(false)
 
-  const checkPackageManager = useCallback(async (name: string) => {
-    setPmChecking(true)
-    setPmInstalled(null)
-    setPmVersion(null)
-    try {
-      const info = await detectPackageManager(name)
-      setPmInstalled(info.installed)
-      setPmVersion(info.version ?? null)
-    } catch {
-      setPmInstalled(false)
+  const checkPackageManager = useCallback(
+    async (name: string) => {
+      setPmChecking(true)
+      setPmInstalled(null)
       setPmVersion(null)
-    } finally {
-      setPmChecking(false)
-    }
-  }, [])
+      try {
+        const info = await backendApi.detectPackageManager(name)
+        setPmInstalled(info.installed)
+        setPmVersion(info.version ?? null)
+      } catch {
+        setPmInstalled(false)
+        setPmVersion(null)
+      } finally {
+        setPmChecking(false)
+      }
+    },
+    [backendApi]
+  )
 
   useEffect(() => {
     if (open) {
@@ -95,7 +97,7 @@ export function CreateProjectDialog({
     setError(null)
     setCreating(true)
     try {
-      const projectPath = await createShadcnProject({
+      const projectPath = await backendApi.createShadcnProject({
         projectName,
         template: framework,
         presetCode,
@@ -110,7 +112,7 @@ export function CreateProjectDialog({
       // draft tab) and closing this launcher is best-effort. A failure here
       // must not be reported as a creation failure.
       try {
-        await openFolderInWorkspace(projectPath)
+        await backendApi.openFolderInWorkspace(projectPath)
         await closeCurrentWindow()
       } catch (handoffErr) {
         // The project exists and was persisted as open, so it will surface in

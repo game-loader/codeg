@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useId, useState } from "react"
 import { Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -21,7 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { createChatChannel, saveChatChannelToken } from "@/lib/api"
+
 import type { ChannelType } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
 
@@ -36,6 +37,8 @@ export function AddChatChannelDialog({
   onOpenChange,
   onChannelAdded,
 }: AddChatChannelDialogProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("ChatChannelSettings")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -96,7 +99,7 @@ export function AddChatChannelDialog({
             ? JSON.stringify({ app_id: appId, chat_id: chatId })
             : JSON.stringify({ chat_id: chatId, topic_mode: topicMode })
 
-      const channel = await createChatChannel({
+      const channel = await backendApi.createChatChannel({
         name: name.trim(),
         channelType,
         configJson,
@@ -106,7 +109,7 @@ export function AddChatChannelDialog({
       })
 
       if (channelType !== "weixin" && token.trim()) {
-        await saveChatChannelToken(channel.id, token.trim())
+        await backendApi.saveChatChannelToken(channel.id, token.trim())
       }
 
       handleOpenChange(false)
@@ -130,6 +133,7 @@ export function AddChatChannelDialog({
     handleOpenChange,
     onChannelAdded,
     t,
+    backendApi,
   ])
 
   return (

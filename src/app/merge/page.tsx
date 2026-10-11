@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { Suspense, useCallback, useEffect, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import { useTranslations } from "next-intl"
@@ -11,7 +12,7 @@ import { Loader2 } from "lucide-react"
 import { MergeWorkspace } from "@/components/merge/merge-workspace"
 import { AppTitleBar } from "@/components/layout/app-title-bar"
 import { AppToaster } from "@/components/ui/app-toaster"
-import { getFolder } from "@/lib/api"
+
 import type { FolderDetail } from "@/lib/types"
 import { RemoteConnectionGate } from "@/contexts/remote-connection-context"
 
@@ -24,6 +25,8 @@ interface FolderLoadState {
 }
 
 function MergePageInner() {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("MergePage")
   const searchParams = useSearchParams()
   const [state, setState] = useState<FolderLoadState>({
@@ -55,7 +58,8 @@ function MergePageInner() {
 
     let cancelled = false
 
-    getFolder(normalizedFolderId)
+    backendApi
+      .getFolder(normalizedFolderId)
       .then((detail) => {
         if (!cancelled) {
           setState({
@@ -78,7 +82,7 @@ function MergePageInner() {
     return () => {
       cancelled = true
     }
-  }, [hasValidFolderId, normalizedFolderId])
+  }, [hasValidFolderId, normalizedFolderId, backendApi])
 
   const pageTitle = folder ? `${t("title")} · ${folder.name}` : t("title")
 

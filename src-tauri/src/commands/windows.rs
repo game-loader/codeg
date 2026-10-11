@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicU32;
 #[cfg(target_os = "macos")]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering as AtomicOrdering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use sea_orm::DatabaseConnection;
 use tauri::{
@@ -430,11 +430,20 @@ fn append_remote_context(
     route: String,
     remote_connection_id: Option<i32>,
     remote_window_id: Option<&str>,
+    config_revision: Option<&str>,
 ) -> String {
     let Some(id) = remote_connection_id else {
         return route;
     };
     let route = append_query_param(route, "remoteConnectionId", &id.to_string());
+    let route = match config_revision {
+        Some(revision) => append_query_param(
+            route,
+            "remoteConfigRevision",
+            &urlencoding::encode(revision),
+        ),
+        None => route,
+    };
     match remote_window_id {
         Some(window_id) => append_query_param(route, "remoteWindowId", window_id),
         None => route,
@@ -444,31 +453,107 @@ fn append_remote_context(
 fn route_with_new_remote_window(
     route: String,
     remote_connection_id: Option<i32>,
+    config_revision: Option<&str>,
 ) -> (String, Option<String>) {
     let remote_window_id = remote_connection_id
         .map(|_| crate::commands::remote_workspace::new_remote_window_instance_id());
-    let route = append_remote_context(route, remote_connection_id, remote_window_id.as_deref());
+    let route = append_remote_context(
+        route,
+        remote_connection_id,
+        remote_window_id.as_deref(),
+        config_revision,
+    );
     (route, remote_window_id)
 }
 
+#[derive(Clone)]
+struct RemotePopupContext {
+    window_id: String,
+    config_revision: Option<String>,
+}
+
+fn remote_popup_contexts() -> &'static Mutex<HashMap<String, RemotePopupContext>> {
+    static CONTEXTS: OnceLock<Mutex<HashMap<String, RemotePopupContext>>> = OnceLock::new();
+    CONTEXTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn remote_popup_context(window: &tauri::WebviewWindow) -> Option<RemotePopupContext> {
+    remote_popup_contexts()
+        .lock()
+        .ok()?
+        .get(window.label())
+        .cloned()
+}
+
 fn remote_window_id_from_window(window: &tauri::WebviewWindow) -> Option<String> {
-    window.url().ok()?.query_pairs().find_map(|(key, value)| {
-        if key == "remoteWindowId" && !value.is_empty() {
-            Some(value.into_owned())
-        } else {
-            None
-        }
-    })
+    remote_popup_context(window).map(|context| context.window_id)
+}
+
+// An existing form keeps its initiating destination, including before its
+// first connection lookup. A caller for another revision must close/reopen it.
+fn ensure_popup_revision(
+    expected_revision: Option<&str>,
+    existing_revision: Option<&str>,
+) -> Result<(), AppCommandError> {
+    if expected_revision.is_some() && expected_revision != existing_revision {
+        return Err(AppCommandError::configuration_invalid(
+            "Remote connection configuration changed; close and reopen this window",
+        ));
+    }
+    Ok(())
+}
+
+fn remote_popup_revision_from_window(window: &tauri::WebviewWindow) -> Option<String> {
+    remote_popup_context(window).and_then(|context| context.config_revision)
+}
+
+fn ensure_remote_popup_revision(
+    window: &tauri::WebviewWindow,
+    remote_connection_id: Option<i32>,
+    expected_revision: Option<&str>,
+) -> Result<(), AppCommandError> {
+    if remote_connection_id.is_some() {
+        let existing_revision = remote_popup_revision_from_window(window);
+        ensure_popup_revision(expected_revision, existing_revision.as_deref())?;
+    }
+    Ok(())
 }
 
 fn register_remote_window_cleanup(
     app: &AppHandle,
     window: &tauri::WebviewWindow,
     remote_window_id: Option<&str>,
+    config_revision: Option<&str>,
 ) {
     let Some(remote_window_id) = remote_window_id else {
         return;
     };
+    // Native URLs may not have a committed document yet. Keep the creation
+    // context in Rust so label reuse never reads a loading webview's URL or
+    // replaces the destination while its first frontend lookup is pending.
+    if let Ok(mut contexts) = remote_popup_contexts().lock() {
+        contexts.insert(
+            window.label().to_string(),
+            RemotePopupContext {
+                window_id: remote_window_id.to_string(),
+                config_revision: config_revision.map(str::to_string),
+            },
+        );
+    }
+    let label = window.label().to_string();
+    let instance_id = remote_window_id.to_string();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            if let Ok(mut contexts) = remote_popup_contexts().lock() {
+                if contexts
+                    .get(&label)
+                    .is_some_and(|context| context.window_id == instance_id)
+                {
+                    contexts.remove(&label);
+                }
+            }
+        }
+    });
     if let Some(proxy) =
         app.try_state::<std::sync::Arc<crate::commands::remote_proxy::RemoteProxyState>>()
     {
@@ -645,6 +730,7 @@ pub async fn open_folder_window(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[allow(clippy::too_many_arguments)]
 pub async fn open_commit_window(
     app: AppHandle,
     window: tauri::WebviewWindow,
@@ -653,6 +739,7 @@ pub async fn open_commit_window(
     folder_id: i32,
     locale: Option<crate::models::system::AppLocale>,
     remote_connection_id: Option<i32>,
+    config_revision: Option<String>,
 ) -> Result<(), AppCommandError> {
     let owner_label = window.label().to_string();
     let label = match remote_connection_id {
@@ -661,6 +748,7 @@ pub async fn open_commit_window(
     };
 
     if let Some(existing) = app.get_webview_window(&label) {
+        ensure_remote_popup_revision(&existing, remote_connection_id, config_revision.as_deref())?;
         state.set_owner(label.clone(), owner_label);
         let _ = existing.unminimize();
         existing
@@ -682,8 +770,11 @@ pub async fn open_commit_window(
             })?;
         format!("{} - {}", titles.commit, folder.name)
     };
-    let (url_str, remote_window_id) =
-        route_with_new_remote_window(format!("commit?folderId={folder_id}"), remote_connection_id);
+    let (url_str, remote_window_id) = route_with_new_remote_window(
+        format!("commit?folderId={folder_id}"),
+        remote_connection_id,
+        config_revision.as_deref(),
+    );
     let url = WebviewUrl::App(url_str.into());
     let builder = WebviewWindowBuilder::new(&app, &label, url)
         .title(window_title)
@@ -696,7 +787,12 @@ pub async fn open_commit_window(
     let commit_window = apply_platform_window_style(builder)
         .build()
         .map_err(|e| AppCommandError::window("Failed to open commit window", e.to_string()))?;
-    register_remote_window_cleanup(&app, &commit_window, remote_window_id.as_deref());
+    register_remote_window_cleanup(
+        &app,
+        &commit_window,
+        remote_window_id.as_deref(),
+        config_revision.as_deref(),
+    );
     post_window_setup(&commit_window);
     state.set_owner(label, owner_label);
     commit_window
@@ -717,6 +813,7 @@ pub async fn open_settings_window(
     agent_type: Option<String>,
     locale: Option<crate::models::system::AppLocale>,
     remote_connection_id: Option<i32>,
+    config_revision: Option<String>,
     state: tauri::State<'_, SettingsWindowState>,
 ) -> Result<(), AppCommandError> {
     let settings_label = match remote_connection_id {
@@ -725,8 +822,10 @@ pub async fn open_settings_window(
     };
     let owner_label = window.label().to_string();
     if let Some(existing) = app.get_webview_window(&settings_label) {
+        ensure_remote_popup_revision(&existing, remote_connection_id, config_revision.as_deref())?;
         post_window_setup(&existing);
         if section.is_some() || agent_type.is_some() || remote_connection_id.is_some() {
+            let existing_revision = remote_popup_revision_from_window(&existing);
             let existing_remote_window_id = remote_window_id_from_window(&existing);
             let generated_remote_window_id = remote_connection_id
                 .filter(|_| existing_remote_window_id.is_none())
@@ -735,12 +834,18 @@ pub async fn open_settings_window(
                 .as_deref()
                 .or(generated_remote_window_id.as_deref());
             if generated_remote_window_id.is_some() {
-                register_remote_window_cleanup(&app, &existing, remote_window_id);
+                register_remote_window_cleanup(
+                    &app,
+                    &existing,
+                    remote_window_id,
+                    existing_revision.as_deref(),
+                );
             }
             let target_route = append_remote_context(
                 resolve_settings_target(section.as_deref(), agent_type.as_deref()),
                 remote_connection_id,
                 remote_window_id,
+                existing_revision.as_deref(),
             );
             let target_path = format!("/{target_route}");
             let target_json = serde_json::to_string(&target_path).map_err(|e| {
@@ -764,6 +869,7 @@ pub async fn open_settings_window(
     let (target_route, remote_window_id) = route_with_new_remote_window(
         resolve_settings_target(section.as_deref(), agent_type.as_deref()),
         remote_connection_id,
+        config_revision.as_deref(),
     );
     let url = WebviewUrl::App(target_route.into());
     let builder = WebviewWindowBuilder::new(&app, &settings_label, url)
@@ -780,7 +886,12 @@ pub async fn open_settings_window(
     let settings_window = apply_platform_window_style(builder)
         .build()
         .map_err(|e| AppCommandError::window("Failed to open settings window", e.to_string()))?;
-    register_remote_window_cleanup(&app, &settings_window, remote_window_id.as_deref());
+    register_remote_window_cleanup(
+        &app,
+        &settings_window,
+        remote_window_id.as_deref(),
+        config_revision.as_deref(),
+    );
     post_window_setup(&settings_window);
     state.set_owner(settings_label, owner_label);
     settings_window
@@ -791,6 +902,7 @@ pub async fn open_settings_window(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[allow(clippy::too_many_arguments)]
 pub async fn open_import_sessions_window(
     app: AppHandle,
     window: tauri::WebviewWindow,
@@ -799,6 +911,7 @@ pub async fn open_import_sessions_window(
     focus_path: Option<String>,
     locale: Option<crate::models::system::AppLocale>,
     remote_connection_id: Option<i32>,
+    config_revision: Option<String>,
 ) -> Result<(), AppCommandError> {
     let owner_label = window.label().to_string();
     let label = match remote_connection_id {
@@ -812,12 +925,14 @@ pub async fn open_import_sessions_window(
         .filter(|p| !p.is_empty());
 
     if let Some(existing) = app.get_webview_window(&label) {
+        ensure_remote_popup_revision(&existing, remote_connection_id, config_revision.as_deref())?;
         // Re-anchor an already-open picker to the newly requested folder (the
         // folder context-menu entry passes its path) by navigating the existing
         // webview, mirroring the settings window's eval-nav on reuse. Preserve
         // the window's existing remote context. The global entry (no focus_path)
         // just refocuses so an in-progress selection is never reset.
         if let Some(path) = trimmed_focus {
+            let existing_revision = remote_popup_revision_from_window(&existing);
             let existing_remote_window_id = remote_window_id_from_window(&existing);
             let route = append_remote_context(
                 append_query_param(
@@ -827,13 +942,11 @@ pub async fn open_import_sessions_window(
                 ),
                 remote_connection_id,
                 existing_remote_window_id.as_deref(),
+                existing_revision.as_deref(),
             );
             let target_path = format!("/{route}");
             let target_json = serde_json::to_string(&target_path).map_err(|e| {
-                AppCommandError::window(
-                    "Failed to build import navigation target",
-                    e.to_string(),
-                )
+                AppCommandError::window("Failed to build import navigation target", e.to_string())
             })?;
             existing
                 .eval(format!("window.location.replace({target_json});"))
@@ -859,7 +972,8 @@ pub async fn open_import_sessions_window(
         // carry '&'/'#'/'?'-hostile characters — encode explicitly.
         route = append_query_param(route, "focusPath", &urlencoding::encode(path));
     }
-    let (url_str, remote_window_id) = route_with_new_remote_window(route, remote_connection_id);
+    let (url_str, remote_window_id) =
+        route_with_new_remote_window(route, remote_connection_id, config_revision.as_deref());
     let url = WebviewUrl::App(url_str.into());
     let builder = WebviewWindowBuilder::new(&app, &label, url)
         .title(titles.import_sessions)
@@ -871,7 +985,12 @@ pub async fn open_import_sessions_window(
     let import_window = apply_platform_window_style(builder).build().map_err(|e| {
         AppCommandError::window("Failed to open import sessions window", e.to_string())
     })?;
-    register_remote_window_cleanup(&app, &import_window, remote_window_id.as_deref());
+    register_remote_window_cleanup(
+        &app,
+        &import_window,
+        remote_window_id.as_deref(),
+        config_revision.as_deref(),
+    );
     post_window_setup(&import_window);
     state.set_owner(label, owner_label);
     import_window.set_focus().map_err(|e| {
@@ -987,6 +1106,7 @@ pub async fn open_merge_window(
     upstream_commit: Option<String>,
     locale: Option<crate::models::system::AppLocale>,
     remote_connection_id: Option<i32>,
+    config_revision: Option<String>,
 ) -> Result<(), AppCommandError> {
     let owner_label = window.label().to_string();
     let label = match remote_connection_id {
@@ -995,6 +1115,7 @@ pub async fn open_merge_window(
     };
 
     if let Some(existing) = app.get_webview_window(&label) {
+        ensure_remote_popup_revision(&existing, remote_connection_id, config_revision.as_deref())?;
         state.set_owner(label.clone(), owner_label);
         let _ = existing.unminimize();
         existing
@@ -1020,7 +1141,8 @@ pub async fn open_merge_window(
     if let Some(ref commit) = upstream_commit {
         url_str.push_str(&format!("&upstreamCommit={commit}"));
     }
-    let (url_str, remote_window_id) = route_with_new_remote_window(url_str, remote_connection_id);
+    let (url_str, remote_window_id) =
+        route_with_new_remote_window(url_str, remote_connection_id, config_revision.as_deref());
     let url = WebviewUrl::App(url_str.into());
     let builder = WebviewWindowBuilder::new(&app, &label, url)
         .title(window_title)
@@ -1033,7 +1155,12 @@ pub async fn open_merge_window(
     let merge_window = apply_platform_window_style(builder)
         .build()
         .map_err(|e| AppCommandError::window("Failed to open merge window", e.to_string()))?;
-    register_remote_window_cleanup(&app, &merge_window, remote_window_id.as_deref());
+    register_remote_window_cleanup(
+        &app,
+        &merge_window,
+        remote_window_id.as_deref(),
+        config_revision.as_deref(),
+    );
     post_window_setup(&merge_window);
     state.set_owner(label, owner_label);
     merge_window
@@ -1102,6 +1229,7 @@ pub async fn cleanup_dangling_merge(app: &AppHandle, merge_window_label: &str) {
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[allow(clippy::too_many_arguments)]
 pub async fn open_stash_window(
     app: AppHandle,
     window: tauri::WebviewWindow,
@@ -1110,6 +1238,7 @@ pub async fn open_stash_window(
     folder_id: i32,
     locale: Option<crate::models::system::AppLocale>,
     remote_connection_id: Option<i32>,
+    config_revision: Option<String>,
 ) -> Result<(), AppCommandError> {
     let owner_label = window.label().to_string();
     let label = match remote_connection_id {
@@ -1118,6 +1247,7 @@ pub async fn open_stash_window(
     };
 
     if let Some(existing) = app.get_webview_window(&label) {
+        ensure_remote_popup_revision(&existing, remote_connection_id, config_revision.as_deref())?;
         post_window_setup(&existing);
         state.set_owner(label.clone(), owner_label);
         let _ = existing.unminimize();
@@ -1140,8 +1270,11 @@ pub async fn open_stash_window(
             })?;
         format!("{} - {}", titles.stash, folder.name)
     };
-    let (url_str, remote_window_id) =
-        route_with_new_remote_window(format!("stash?folderId={folder_id}"), remote_connection_id);
+    let (url_str, remote_window_id) = route_with_new_remote_window(
+        format!("stash?folderId={folder_id}"),
+        remote_connection_id,
+        config_revision.as_deref(),
+    );
     let url = WebviewUrl::App(url_str.into());
     let builder = WebviewWindowBuilder::new(&app, &label, url)
         .title(window_title)
@@ -1151,7 +1284,12 @@ pub async fn open_stash_window(
     let stash_window = apply_platform_window_style(builder)
         .build()
         .map_err(|e| AppCommandError::window("Failed to open stash window", e.to_string()))?;
-    register_remote_window_cleanup(&app, &stash_window, remote_window_id.as_deref());
+    register_remote_window_cleanup(
+        &app,
+        &stash_window,
+        remote_window_id.as_deref(),
+        config_revision.as_deref(),
+    );
     post_window_setup(&stash_window);
     state.set_owner(label, owner_label);
 
@@ -1174,6 +1312,7 @@ pub async fn open_push_window(
     folder_id: i32,
     locale: Option<crate::models::system::AppLocale>,
     remote_connection_id: Option<i32>,
+    config_revision: Option<String>,
     branch: Option<String>,
 ) -> Result<(), AppCommandError> {
     let owner_label = window.label().to_string();
@@ -1184,6 +1323,7 @@ pub async fn open_push_window(
     let branch = branch.filter(|value| !value.trim().is_empty());
 
     if let Some(existing) = app.get_webview_window(&label) {
+        ensure_remote_popup_revision(&existing, remote_connection_id, config_revision.as_deref())?;
         post_window_setup(&existing);
         state.set_owner(label.clone(), owner_label);
         let _ = existing.unminimize();
@@ -1237,6 +1377,7 @@ pub async fn open_push_window(
     let (url_str, remote_window_id) = route_with_new_remote_window(
         format!("push?folderId={folder_id}{branch_param}"),
         remote_connection_id,
+        config_revision.as_deref(),
     );
     let url = WebviewUrl::App(url_str.into());
     let builder = WebviewWindowBuilder::new(&app, &label, url)
@@ -1250,7 +1391,12 @@ pub async fn open_push_window(
     let push_window = apply_platform_window_style(builder)
         .build()
         .map_err(|e| AppCommandError::window("Failed to open push window", e.to_string()))?;
-    register_remote_window_cleanup(&app, &push_window, remote_window_id.as_deref());
+    register_remote_window_cleanup(
+        &app,
+        &push_window,
+        remote_window_id.as_deref(),
+        config_revision.as_deref(),
+    );
     post_window_setup(&push_window);
     state.set_owner(label, owner_label);
 
@@ -1259,6 +1405,7 @@ pub async fn open_push_window(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[allow(clippy::too_many_arguments)]
 pub async fn open_project_boot_window(
     app: AppHandle,
     window: tauri::WebviewWindow,
@@ -1267,6 +1414,7 @@ pub async fn open_project_boot_window(
     source: Option<String>,
     locale: Option<crate::models::system::AppLocale>,
     remote_connection_id: Option<i32>,
+    config_revision: Option<String>,
 ) -> Result<(), AppCommandError> {
     let _ = source;
     let owner_label = window.label().to_string();
@@ -1275,6 +1423,7 @@ pub async fn open_project_boot_window(
         None => "project-boot".to_string(),
     };
     if let Some(existing) = app.get_webview_window(&label) {
+        ensure_remote_popup_revision(&existing, remote_connection_id, config_revision.as_deref())?;
         post_window_setup(&existing);
         state.set_owner(label.clone(), owner_label);
         let _ = existing.unminimize();
@@ -1285,8 +1434,11 @@ pub async fn open_project_boot_window(
     }
 
     let titles = resolve_window_titles(&db.conn, locale).await;
-    let (url_str, remote_window_id) =
-        route_with_new_remote_window("project-boot".to_string(), remote_connection_id);
+    let (url_str, remote_window_id) = route_with_new_remote_window(
+        "project-boot".to_string(),
+        remote_connection_id,
+        config_revision.as_deref(),
+    );
     let url = WebviewUrl::App(url_str.into());
     let builder = WebviewWindowBuilder::new(&app, &label, url)
         .title(titles.project_boot)
@@ -1296,7 +1448,12 @@ pub async fn open_project_boot_window(
     let boot_window = apply_platform_window_style(builder).build().map_err(|e| {
         AppCommandError::window("Failed to open project boot window", e.to_string())
     })?;
-    register_remote_window_cleanup(&app, &boot_window, remote_window_id.as_deref());
+    register_remote_window_cleanup(
+        &app,
+        &boot_window,
+        remote_window_id.as_deref(),
+        config_revision.as_deref(),
+    );
     post_window_setup(&boot_window);
     state.set_owner(label, owner_label);
 
@@ -1778,7 +1935,16 @@ pub async fn resize_pet_panel(app: AppHandle, height: f64) -> Result<(), AppComm
     let panel_h = height.clamp(PET_PANEL_MIN_HEIGHT, max_h);
 
     let (panel_x, panel_y) = compute_pet_panel_origin(
-        px, py, pw, ph, mon_x, mon_y, mon_w, mon_h, PET_PANEL_WIDTH, panel_h,
+        px,
+        py,
+        pw,
+        ph,
+        mon_x,
+        mon_y,
+        mon_w,
+        mon_h,
+        PET_PANEL_WIDTH,
+        panel_h,
     );
 
     // Size before reposition so the re-anchor uses the final height. Errors are
@@ -2257,10 +2423,7 @@ pub(crate) fn with_macos_fullscreen_drained(
 /// Exit native fullscreen and wait until the Space is gone, then run `then`
 /// on the main thread.
 #[cfg(target_os = "macos")]
-fn drain_macos_fullscreen_then(
-    window: tauri::WebviewWindow,
-    then: impl FnOnce() + Send + 'static,
-) {
+fn drain_macos_fullscreen_then(window: tauri::WebviewWindow, then: impl FnOnce() + Send + 'static) {
     let Some(generation) = claim_macos_fullscreen_drain() else {
         return;
     };
@@ -2621,7 +2784,10 @@ mod owner_window_tests {
         state.set_owner("settings".to_string(), "main".to_string());
         state.set_owner("settings".to_string(), "remote-workspace-3".to_string());
 
-        assert_eq!(state.take_owner("settings").as_deref(), Some("remote-workspace-3"));
+        assert_eq!(
+            state.take_owner("settings").as_deref(),
+            Some("remote-workspace-3")
+        );
     }
 
     // Same hand-back-once contract for the shared map, which stash, push,
@@ -2646,7 +2812,10 @@ mod owner_window_tests {
         state.set_owner("import-sessions".to_string(), "main".to_string());
 
         assert_eq!(state.take_owner("stash-7").as_deref(), Some("main"));
-        assert_eq!(state.take_owner("push-7").as_deref(), Some("remote-workspace-3"));
+        assert_eq!(
+            state.take_owner("push-7").as_deref(),
+            Some("remote-workspace-3")
+        );
         assert_eq!(state.take_owner("project-boot").as_deref(), Some("main"));
         assert_eq!(state.take_owner("import-sessions").as_deref(), Some("main"));
     }
@@ -2674,7 +2843,10 @@ mod owner_window_tests {
         state.set_owner("stash-7".to_string(), "main".to_string());
         state.set_owner("stash-7".to_string(), "remote-workspace-3".to_string());
 
-        assert_eq!(state.take_owner("stash-7").as_deref(), Some("remote-workspace-3"));
+        assert_eq!(
+            state.take_owner("stash-7").as_deref(),
+            Some("remote-workspace-3")
+        );
     }
 }
 
@@ -2707,7 +2879,11 @@ mod pet_panel_geometry_tests {
     fn places_above_and_aligns_right_edge() {
         // Pet low on screen: the panel sits above it, gap included.
         let (x, y) = origin(1000.0, 900.0, 380.0);
-        assert_eq!(y, 900.0 - 380.0 - PET_PANEL_GAP, "panel bottom hugs pet top");
+        assert_eq!(
+            y,
+            900.0 - 380.0 - PET_PANEL_GAP,
+            "panel bottom hugs pet top"
+        );
         // Right edges align: panel_x = pet_right - panel_w.
         assert_eq!(x, (1000.0 + PET_W) - PET_PANEL_WIDTH);
     }
@@ -2762,6 +2938,61 @@ mod pet_panel_geometry_tests {
             380.0,
         );
         assert_eq!(y, short_mon.1, "clamped to the monitor top, not above it");
+    }
+}
+
+#[cfg(test)]
+mod remote_popup_tests {
+    use super::{append_remote_context, ensure_popup_revision, route_with_new_remote_window};
+
+    #[test]
+    fn popup_routes_carry_the_launching_revision_and_window_instance() {
+        for route in [
+            "commit?folderId=1",
+            "merge?folderId=1&operation=merge",
+            "stash?folderId=1",
+            "push?folderId=1",
+            "settings/agents?agent=codex",
+            "import-sessions?focusPath=%2Frepo",
+            "project-boot",
+        ] {
+            let (route, window_id) =
+                route_with_new_remote_window(route.to_string(), Some(1), Some("A&?#/revision"));
+            let url = url::Url::parse(&format!("https://codeg.test/{route}")).unwrap();
+            let query: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+            assert_eq!(
+                query.get("remoteConnectionId").map(String::as_str),
+                Some("1")
+            );
+            assert_eq!(
+                query.get("remoteConfigRevision").map(String::as_str),
+                Some("A&?#/revision")
+            );
+            assert_eq!(query.get("remoteWindowId"), window_id.as_ref());
+        }
+    }
+
+    #[test]
+    fn local_and_old_revisionless_launches_remain_compatible() {
+        assert_eq!(
+            append_remote_context("commit?folderId=1".into(), None, None, Some("A")),
+            "commit?folderId=1"
+        );
+        assert_eq!(
+            append_remote_context("commit?folderId=1".into(), Some(1), Some("window-a"), None),
+            "commit?folderId=1&remoteConnectionId=1&remoteWindowId=window-a"
+        );
+        assert!(ensure_popup_revision(None, None).is_ok());
+        assert!(ensure_popup_revision(None, Some("A")).is_ok());
+    }
+
+    #[test]
+    fn label_reuse_cannot_replace_a_dirty_forms_initiating_revision() {
+        assert!(ensure_popup_revision(Some("A"), Some("A")).is_ok());
+        // URL revision is available even before the receiving gate's first get.
+        assert!(ensure_popup_revision(Some("B"), Some("A")).is_err());
+        // A revisionless old window must be closed, rather than retargeted.
+        assert!(ensure_popup_revision(Some("B"), None).is_err());
     }
 }
 

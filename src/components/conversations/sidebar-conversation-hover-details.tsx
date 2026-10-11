@@ -1,11 +1,13 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import type { ReactNode } from "react"
 import { useTranslations } from "next-intl"
 import type { DbConversationSummary } from "@/lib/types"
 import { formatConversationTitle } from "@/lib/conversation-title"
 import { cn } from "@/lib/utils"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import { Badge } from "@/components/ui/badge"
 import { FolderAliasLabel } from "./folder-alias-label"
 import { InfoItem, SessionIdentityChips } from "./session-details-content"
@@ -61,6 +63,9 @@ function LtrValue({
 export function SidebarConversationHoverDetails({
   conversation,
 }: SidebarConversationHoverDetailsProps) {
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
   const t = useTranslations("Folder.sessionDetails")
   const tSidebar = useTranslations("Folder.sidebar")
 

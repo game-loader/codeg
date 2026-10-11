@@ -40,6 +40,7 @@
  * window and application goes with it, and their own choices wait.
  */
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -120,10 +121,12 @@ interface AppGroup {
  *  or the same one asked for again — is a fresh component. Shown whole, as
  *  a window on a backdrop, whatever its shape. */
 function Thumbnail({ targetId }: { targetId: string }) {
+  const backendPlatform = useBackendPlatform()
+
   const [src, setSrc] = useState<string | null | undefined>(undefined)
   useEffect(() => {
     let cancelled = false
-    computerWindowThumbnail(targetId)
+    computerWindowThumbnail(targetId, backendPlatform)
       .then((url) => {
         if (!cancelled) setSrc(url)
       })
@@ -133,7 +136,7 @@ function Thumbnail({ targetId }: { targetId: string }) {
     return () => {
       cancelled = true
     }
-  }, [targetId])
+  }, [targetId, backendPlatform])
 
   return (
     <div className="relative aspect-video w-full bg-muted/60">
@@ -352,6 +355,8 @@ export function ComputerWindowPicker({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("ComputerUse.picker")
   const tComputer = useTranslations("ComputerUse")
   // Whether a window is shared is read from the live store, not from the list
@@ -417,7 +422,7 @@ export function ComputerWindowPicker({
     error: permissionError,
     request,
     requesting,
-  } = useComputerStatus(open && computerAvailable())
+  } = useComputerStatus(open && computerAvailable(backendPlatform))
   const permissions = status?.permissions
   const screenRecording = permissions?.required
     ? permissions.screenRecording
@@ -432,14 +437,14 @@ export function ComputerWindowPicker({
     const seq = ++loadSeqRef.current
     setError(null)
     try {
-      const listed = await computerListShareableWindows()
+      const listed = await computerListShareableWindows(backendPlatform)
       if (seq === loadSeqRef.current) setWindows(listed)
     } catch (e) {
       if (seq !== loadSeqRef.current) return
       setError(toErrorMessage(e))
       setWindows([])
     }
-  }, [])
+  }, [backendPlatform])
 
   useEffect(() => {
     if (open) {
@@ -507,7 +512,8 @@ export function ComputerWindowPicker({
       // A window shared with its whole application goes with it.
       const result = await computerShareWindows(
         shareable.filter((w) => !stateOf(w).wholeApp).map((w) => w.targetId),
-        next
+        next,
+        backendPlatform
       )
       setComputerSharedSince(result.shared, mark)
       if (result.skipped > 0) {
@@ -529,7 +535,7 @@ export function ComputerWindowPicker({
     setError(null)
     setNotice(null)
     try {
-      await computerRevokeAll()
+      await computerRevokeAll(backendPlatform)
       setComputerSharedSince([], mark)
     } catch (e) {
       setError(toErrorMessage(e))
@@ -552,7 +558,8 @@ export function ComputerWindowPicker({
       setComputerStateSince(
         await computerShareApp(
           appId ? { appId } : { targetId: first.targetId },
-          next
+          next,
+          backendPlatform
         ),
         mark
       )
@@ -569,7 +576,10 @@ export function ComputerWindowPicker({
     setBusyScreen(next)
     setError(null)
     try {
-      setComputerStateSince(await computerShareScreen(next), mark)
+      setComputerStateSince(
+        await computerShareScreen(next, backendPlatform),
+        mark
+      )
     } catch (e) {
       setError(toErrorMessage(e))
     } finally {
@@ -583,7 +593,7 @@ export function ComputerWindowPicker({
     setError(null)
     try {
       setComputerSharedSince(
-        await computerShareWindow(item.targetId, next),
+        await computerShareWindow(item.targetId, next, backendPlatform),
         mark
       )
     } catch (e) {

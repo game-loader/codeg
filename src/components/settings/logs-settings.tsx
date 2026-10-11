@@ -1,6 +1,10 @@
 "use client"
 
 import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
+import {
   Fragment,
   memo,
   useCallback,
@@ -34,17 +38,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import {
-  getLogSettings,
-  getRecentLogs,
-  listLogFiles,
-  openLogsDir,
-  readLogFile,
-  setLogSettings,
-  subscribeLogAppended,
-  subscribeLogSettingsChanged,
-} from "@/lib/api"
-import { isDesktop, revealItemInDir } from "@/lib/platform"
+
+import { isDesktop } from "@/lib/platform"
 import { toErrorMessage } from "@/lib/app-error"
 import type {
   LogFileInfo,
@@ -270,6 +265,9 @@ const LogRow = memo(function LogRow({
 })
 
 export function LogsSettings() {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("LogsSettings")
   const desktop = isDesktop()
 
@@ -355,18 +353,20 @@ export function LogsSettings() {
   }, [])
 
   const refreshLogs = useCallback(async () => {
-    const recent = await getRecentLogs({ limit: DISPLAY_LIMIT })
+    const recent = await backendApi.getRecentLogs({ limit: DISPLAY_LIMIT })
     setRecords(recent)
-  }, [])
+  }, [backendApi])
 
   const loadInitial = useCallback(async () => {
     setLoading(true)
     setLoadError(null)
     try {
       const [settings, recent, files] = await Promise.all([
-        getLogSettings(),
-        getRecentLogs({ limit: DISPLAY_LIMIT }),
-        desktop ? Promise.resolve<LogFileInfo[]>([]) : listLogFiles(),
+        backendApi.getLogSettings(),
+        backendApi.getRecentLogs({ limit: DISPLAY_LIMIT }),
+        desktop
+          ? Promise.resolve<LogFileInfo[]>([])
+          : backendApi.listLogFiles(),
       ])
       setCaptureLevel(settings.level)
       setTargets(settings.targets ?? [])
@@ -382,7 +382,7 @@ export function LogsSettings() {
     } finally {
       setLoading(false)
     }
-  }, [desktop])
+  }, [desktop, backendApi])
 
   useEffect(() => {
     loadInitial().catch((err) => {
@@ -395,7 +395,7 @@ export function LogsSettings() {
     let disposed = false
     let unlisten: (() => void) | undefined
     void (async () => {
-      const dispose = await subscribeLogSettingsChanged((s) => {
+      const dispose = await backendApi.subscribeLogSettingsChanged((s) => {
         setCaptureLevel(s.level)
         setTargets(s.targets ?? [])
         settingsRef.current = { level: s.level, targets: s.targets ?? [] }
@@ -407,7 +407,7 @@ export function LogsSettings() {
       disposed = true
       unlisten?.()
     }
-  }, [])
+  }, [backendApi])
 
   // Live tail: coalesce incoming records via requestAnimationFrame so a burst of
   // events becomes one state update instead of one setState per record. The
@@ -427,7 +427,7 @@ export function LogsSettings() {
     }
 
     void (async () => {
-      const dispose = await subscribeLogAppended((record) => {
+      const dispose = await backendApi.subscribeLogAppended((record) => {
         pendingRef.current.push(record)
         if (rafRef.current == null) {
           rafRef.current = requestAnimationFrame(flush)
@@ -446,7 +446,7 @@ export function LogsSettings() {
       }
       pendingRef.current = []
     }
-  }, [liveTail])
+  }, [liveTail, backendApi])
 
   const visible = useMemo(
     () => records.filter((r) => matchesFilter(r, viewLevel, search)),
@@ -531,7 +531,7 @@ export function LogsSettings() {
     setSavingLevel(true)
     saveChainRef.current = saveChainRef.current.then(async () => {
       try {
-        await setLogSettings({
+        await backendApi.setLogSettings({
           level: settingsRef.current.level,
           targets: validTargets(settingsRef.current.targets),
         })
@@ -542,7 +542,7 @@ export function LogsSettings() {
         if (inFlightRef.current === 0) setSavingLevel(false)
       }
     })
-  }, [t])
+  }, [t, backendApi])
 
   const handleLevelChange = useCallback(
     (value: string) => {
@@ -602,20 +602,20 @@ export function LogsSettings() {
 
   const handleOpenFolder = useCallback(async () => {
     try {
-      const path = await openLogsDir()
+      const path = await backendApi.openLogsDir()
       // `revealItemInDir` (not `openPath`): the opener plugin's path scope
       // rejects the hidden `~/.codeg/logs` path under its require-literal-
       // leading-dot Unix default, whereas reveal is not scope-checked.
-      await revealItemInDir(path)
+      await backendPlatform.revealItemInDir(path)
     } catch (err) {
       toast.error(t("openFolderFailed"), { description: toErrorMessage(err) })
     }
-  }, [t])
+  }, [t, backendApi, backendPlatform])
 
   const handleDownload = useCallback(
     async (file: LogFileInfo) => {
       try {
-        const content = await readLogFile(file.name)
+        const content = await backendApi.readLogFile(file.name)
         // Files past the backend read cap come back as the newest slice only;
         // mark the download name and warn so a tail is never mistaken for the
         // full log (the complete file stays in the logs directory on disk).
@@ -641,7 +641,7 @@ export function LogsSettings() {
         toast.error(t("downloadFailed"), { description: toErrorMessage(err) })
       }
     },
-    [t]
+    [t, backendApi]
   )
 
   if (loading) {

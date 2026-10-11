@@ -1,7 +1,8 @@
 "use client"
 
+import { useTabStore as legacyTabs } from "@/contexts/tab-context"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { createPortal } from "react-dom"
-import { useTabStore } from "@/contexts/tab-context"
 
 /**
  * Floating chip that follows the pointer while a conversation tab is dragged
@@ -18,6 +19,9 @@ import { useTabStore } from "@/contexts/tab-context"
  * that produce a ghost, so `TabItem` holds it via `drag-selection-guard`.
  */
 export function TabDragGhost() {
+  const backendStores = useBackendStores({ tabs: legacyTabs })
+  const useTabStore = backendStores.tabs
+
   const drag = useTabStore((s) => s.tabDrag)
   if (!drag || drag.overGroupId == null) return null
   return createPortal(

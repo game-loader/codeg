@@ -1,5 +1,12 @@
 "use client"
 
+import { defaultBackendStoreStorage as legacyStorage } from "@/stores/backend-store-storage"
+import { useTabStore as legacyTabs } from "@/contexts/tab-context"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import {
   createContext,
   useCallback,
@@ -13,14 +20,14 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react"
-import { revealItemInDir, subscribe } from "@/lib/platform"
+
 import ignore from "ignore"
 import { Check, ChevronRight, Link2 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
-import { useTabStore } from "@/contexts/tab-context"
+
 import { useTerminalContext } from "@/contexts/terminal-context"
 import { useIsMobile } from "@/hooks/use-mobile"
 import {
@@ -35,25 +42,8 @@ import { WorkspaceDegradedBanner } from "@/components/layout/workspace-degraded-
 import { WorkspaceUploadDialog } from "@/components/layout/workspace-upload-dialog"
 import { OpenInSubContent } from "@/components/layout/open-in-menu"
 import { RowMoreButton } from "@/components/layout/row-more-button"
-import {
-  createFileTreeEntry,
-  deleteFileTreeEntry,
-  downloadWorkspaceDir,
-  downloadWorkspaceFile,
-  gitAddFiles,
-  getFileTree,
-  getGitBranch,
-  gitListAllBranches,
-  gitRollbackFile,
-  gitStatus,
-  moveFileTreeEntry,
-  readFilePreview,
-  openCommitWindow,
-  openInCode,
-  renameFileTreeEntry,
-  WORKSPACE_DOWNLOAD_CANCELLED,
-} from "@/lib/api"
-import { isDesktop, isRemoteDesktopMode } from "@/lib/transport"
+import { WORKSPACE_DOWNLOAD_CANCELLED } from "@/lib/api"
+import { isDesktop } from "@/lib/transport"
 import { FileTreeCopySubContent } from "@/components/layout/file-tree-copy-menu"
 import { emitAttachFileToSession } from "@/lib/session-attachment-events"
 import {
@@ -669,6 +659,11 @@ function RenderNode({
   onRequestDownloadDir,
   onRefresh,
 }: RenderNodeProps) {
+  const backendStores = useBackendStores({ storage: legacyStorage })
+
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Folder.fileTreeTab")
   const tCommon = useTranslations("Folder.common")
   // `dragging` dims this row while it is the drag source; `dropActive` lights a
@@ -706,6 +701,7 @@ function RenderNode({
     const handleAttachToSession = () => {
       if (!activeSessionTabId) return
       emitAttachFileToSession({
+        backendKey: backendStores.storage.backendKey,
         tabId: activeSessionTabId,
         path: absolutePath,
       })
@@ -713,7 +709,7 @@ function RenderNode({
 
     const handleOpenInSystemExplorer = async () => {
       try {
-        await revealItemInDir(absolutePath)
+        await backendPlatform.revealItemInDir(absolutePath)
       } catch (error) {
         const message = toErrorMessage(error)
         toast.error(t("toasts.openDirectoryFailed"), { description: message })
@@ -722,7 +718,7 @@ function RenderNode({
 
     const handleOpenInCode = async () => {
       try {
-        await openInCode(absolutePath)
+        await backendApi.openInCode(absolutePath)
       } catch (error) {
         toast.error(t("toasts.openInCodeFailed"), {
           description: toErrorMessage(error),
@@ -894,6 +890,7 @@ function RenderNode({
   const handleAttachDirToSession = () => {
     if (!activeSessionTabId) return
     emitAttachFileToSession({
+      backendKey: backendStores.storage.backendKey,
       tabId: activeSessionTabId,
       path: absolutePath,
     })
@@ -901,7 +898,7 @@ function RenderNode({
 
   const handleOpenDirInSystemExplorer = async () => {
     try {
-      await revealItemInDir(absolutePath)
+      await backendPlatform.revealItemInDir(absolutePath)
     } catch (error) {
       const message = toErrorMessage(error)
       toast.error(t("toasts.openDirectoryFailed"), { description: message })
@@ -910,7 +907,7 @@ function RenderNode({
 
   const handleOpenInCode = async () => {
     try {
-      await openInCode(absolutePath)
+      await backendApi.openInCode(absolutePath)
     } catch (error) {
       toast.error(t("toasts.openInCodeFailed"), {
         description: toErrorMessage(error),
@@ -1134,6 +1131,15 @@ function RenderNode({
 }
 
 export function FileTreeTab() {
+  const backendStores = useBackendStores({
+    storage: legacyStorage,
+    tabs: legacyTabs,
+  })
+  const useTabStore = backendStores.tabs
+
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Folder.fileTreeTab")
   const tCommon = useTranslations("Folder.common")
   const {
@@ -1314,7 +1320,7 @@ export function FileTreeTab() {
     let disposed = false
     let unlisten: (() => void) | undefined
     void (async () => {
-      const dispose = await subscribe<FolderLinksChanged>(
+      const dispose = await backendPlatform.subscribe<FolderLinksChanged>(
         FOLDER_LINKS_CHANGED_EVENT,
         (payload) => {
           if (payload.folder_id !== folderId) return
@@ -1328,7 +1334,7 @@ export function FileTreeTab() {
       disposed = true
       unlisten?.()
     }
-  }, [folderId])
+  }, [folderId, backendPlatform])
 
   // Derive the tree's focus from the externally-active file: opening a file from
   // another surface (search, a file tab) — or clicking one here, which opens it —
@@ -1469,7 +1475,7 @@ export function FileTreeTab() {
 
       lazyLoadingDirPathsRef.current.add(normalizedDirPath)
       try {
-        const subtree = await getFileTree(
+        const subtree = await backendApi.getFileTree(
           joinFsPath(rootPath, normalizedDirPath),
           1
         )
@@ -1484,7 +1490,7 @@ export function FileTreeTab() {
         lazyLoadingDirPathsRef.current.delete(normalizedDirPath)
       }
     },
-    [folder?.path]
+    [folder?.path, backendApi]
   )
 
   useEffect(() => {
@@ -1665,7 +1671,10 @@ export function FileTreeTab() {
         if (!gitignoreNode || gitignoreNode.kind !== "file") continue
 
         try {
-          const result = await readFilePreview(folder.path, gitignoreNode.path)
+          const result = await backendApi.readFilePreview(
+            folder.path,
+            gitignoreNode.path
+          )
           const matcher = ignore().add(result.content)
 
           // Collect all descendant nodes so multi-level patterns like
@@ -1710,7 +1719,7 @@ export function FileTreeTab() {
     return () => {
       canceled = true
     }
-  }, [dirChildrenByPath, expandedDirPaths, folder?.path])
+  }, [dirChildrenByPath, expandedDirPaths, folder?.path, backendApi])
 
   const gitChangedDirPaths = useMemo(() => {
     const dirs = new Set<string>()
@@ -1854,7 +1863,7 @@ export function FileTreeTab() {
       const rootPath = folder?.path
       if (!rootPath) return
       try {
-        await moveFileTreeEntry(rootPath, sourcePath, destDir)
+        await backendApi.moveFileTreeEntry(rootPath, sourcePath, destDir)
         // Reveal the destination so the moved entry is visible after the tree
         // refreshes (its ancestors are already expanded — it was a drop target).
         if (destDir) {
@@ -1872,7 +1881,7 @@ export function FileTreeTab() {
         })
       }
     },
-    [folder?.path, fetchTree, t]
+    [folder?.path, fetchTree, t, backendApi]
   )
 
   const onEntryDragStart = useCallback(
@@ -2016,12 +2025,13 @@ export function FileTreeTab() {
         }
       } else {
         emitAttachFileToSession({
+          backendKey: backendStores.storage.backendKey,
           tabId: zone.tabId,
           path: joinFsPath(rootPath, src.relPath),
         })
       }
     },
-    [folder?.path, handleMoveEntry]
+    [folder?.path, handleMoveEntry, backendStores]
   )
   // Read at event time so the Tauri listener can subscribe once (below) yet
   // always see the latest folder / move handler.
@@ -2129,13 +2139,13 @@ export function FileTreeTab() {
 
   const handleOpenCommitWindow = useCallback(() => {
     if (!folder) return
-    openCommitWindow(folder.id).catch((error) => {
+    backendApi.openCommitWindow(folder.id).catch((error) => {
       const message = toErrorMessage(error)
       toast.error(t("toasts.openCommitWindowFailed"), {
         description: message,
       })
     })
-  }, [folder, t])
+  }, [folder, t, backendApi])
 
   const handleRequestCreate = useCallback(
     (parentPath: string, kind: "file" | "dir") => {
@@ -2176,11 +2186,11 @@ export function FileTreeTab() {
     // *destination/source* filesystem". That's true in pure-web mode
     // AND in remote-desktop mode (where the workspace lives on the
     // remote server, not on the local disk the OS dialog would target).
-    setWebMode(!isDesktop() || isRemoteDesktopMode())
+    setWebMode(!isDesktop() || backendPlatform.isRemoteDesktopMode())
     setFolderUploadSupported(
       "webkitdirectory" in document.createElement("input")
     )
-  }, [])
+  }, [backendPlatform])
 
   const handleRequestUpload = useCallback((targetPath: string) => {
     setUploadDialogTarget(targetPath)
@@ -2196,7 +2206,7 @@ export function FileTreeTab() {
       const folderPath = folder?.path
       if (!folderPath) return
       try {
-        const result = await downloadWorkspaceFile(
+        const result = await backendApi.downloadWorkspaceFile(
           folderPath,
           target.path,
           target.name
@@ -2217,7 +2227,7 @@ export function FileTreeTab() {
         })
       }
     },
-    [folder?.path, t]
+    [folder?.path, t, backendApi]
   )
 
   const handleRequestDownloadDir = useCallback(
@@ -2226,7 +2236,11 @@ export function FileTreeTab() {
       if (!folderPath) return
       const name = target.name || baseName(folderPath) || "workspace"
       try {
-        const result = await downloadWorkspaceDir(folderPath, target.path, name)
+        const result = await backendApi.downloadWorkspaceDir(
+          folderPath,
+          target.path,
+          name
+        )
         if (result.status === "started") return
         if (result.status === WORKSPACE_DOWNLOAD_CANCELLED) return
         if (result.savedPath) {
@@ -2241,7 +2255,7 @@ export function FileTreeTab() {
         })
       }
     },
-    [folder?.path, t]
+    [folder?.path, t, backendApi]
   )
 
   const resetDirectoryGitActionDialog = useCallback(() => {
@@ -2293,7 +2307,7 @@ export function FileTreeTab() {
       setDirectoryGitLoading(true)
 
       try {
-        const statusEntries = await gitStatus(folder.path)
+        const statusEntries = await backendApi.gitStatus(folder.path)
         // Bail if the folder switched while this request was in flight — writing
         // now would clobber (or, on an empty result, close) a dialog reopened
         // under the new folder.
@@ -2333,7 +2347,7 @@ export function FileTreeTab() {
         if (gen === loadGenRef.current) setDirectoryGitLoading(false)
       }
     },
-    [folder?.path, resetDirectoryGitActionDialog, t]
+    [folder?.path, resetDirectoryGitActionDialog, t, backendApi]
   )
 
   const handleRequestRollback = useCallback(
@@ -2355,7 +2369,7 @@ export function FileTreeTab() {
       }
       if (!folder?.path) return
       try {
-        await gitAddFiles(folder.path, [target.path])
+        await backendApi.gitAddFiles(folder.path, [target.path])
         toast.success(t("toasts.addedToVcs", { name: target.name }))
         await fetchTree()
       } catch (error) {
@@ -2363,7 +2377,7 @@ export function FileTreeTab() {
         toast.error(t("toasts.addToVcsFailed"), { description: message })
       }
     },
-    [fetchTree, folder?.path, openDirectoryGitActionDialog, t]
+    [fetchTree, folder?.path, openDirectoryGitActionDialog, t, backendApi]
   )
 
   const loadCompareBranches = useCallback(async () => {
@@ -2381,8 +2395,8 @@ export function FileTreeTab() {
     setCompareBranchLoading(true)
     try {
       const [branchesResult, currentBranchResult] = await Promise.allSettled([
-        gitListAllBranches(folder.path),
-        getGitBranch(folder.path),
+        backendApi.gitListAllBranches(folder.path),
+        backendApi.getGitBranch(folder.path),
       ])
       // Bail if the folder switched mid-flight — writing folder-A branches into a
       // compare dialog reopened under folder B would let the user diff against the
@@ -2427,7 +2441,7 @@ export function FileTreeTab() {
     } finally {
       if (gen === loadGenRef.current) setCompareBranchLoading(false)
     }
-  }, [folder?.path, t])
+  }, [folder?.path, t, backendApi])
 
   const handleRequestCompareWithBranch = useCallback(
     (target: FileActionTarget) => {
@@ -2681,7 +2695,7 @@ export function FileTreeTab() {
 
     setCreating(true)
     try {
-      await createFileTreeEntry(
+      await backendApi.createFileTreeEntry(
         folder.path,
         createParentPath,
         trimmedName,
@@ -2696,7 +2710,15 @@ export function FileTreeTab() {
     } finally {
       setCreating(false)
     }
-  }, [createKind, createName, createParentPath, fetchTree, folder?.path, t])
+  }, [
+    createKind,
+    createName,
+    createParentPath,
+    fetchTree,
+    folder?.path,
+    t,
+    backendApi,
+  ])
 
   const handleRenameConfirm = useCallback(async () => {
     if (!folder?.path || !renameTarget) return
@@ -2708,7 +2730,11 @@ export function FileTreeTab() {
 
     setRenaming(true)
     try {
-      await renameFileTreeEntry(folder.path, renameTarget.path, nextName)
+      await backendApi.renameFileTreeEntry(
+        folder.path,
+        renameTarget.path,
+        nextName
+      )
       setRenameTarget(null)
       setRenameValue("")
       await fetchTree()
@@ -2718,13 +2744,13 @@ export function FileTreeTab() {
     } finally {
       setRenaming(false)
     }
-  }, [fetchTree, folder?.path, renameTarget, renameValue, t])
+  }, [fetchTree, folder?.path, renameTarget, renameValue, t, backendApi])
 
   const handleDeleteConfirm = useCallback(async () => {
     if (!folder?.path || !deleteTarget) return
     setDeleting(true)
     try {
-      await deleteFileTreeEntry(folder.path, deleteTarget.path)
+      await backendApi.deleteFileTreeEntry(folder.path, deleteTarget.path)
       setDeleteTarget(null)
       await fetchTree()
     } catch (error) {
@@ -2733,13 +2759,13 @@ export function FileTreeTab() {
     } finally {
       setDeleting(false)
     }
-  }, [deleteTarget, fetchTree, folder?.path, t])
+  }, [deleteTarget, fetchTree, folder?.path, t, backendApi])
 
   const handleRollbackConfirm = useCallback(async () => {
     if (!folder?.path || !rollbackTarget) return
     setRollingBack(true)
     try {
-      await gitRollbackFile(folder.path, rollbackTarget.path)
+      await backendApi.gitRollbackFile(folder.path, rollbackTarget.path)
       toast.success(t("toasts.rolledBack", { name: rollbackTarget.name }))
       setRollbackTarget(null)
       await fetchTree()
@@ -2749,7 +2775,7 @@ export function FileTreeTab() {
     } finally {
       setRollingBack(false)
     }
-  }, [fetchTree, folder?.path, rollbackTarget, t])
+  }, [fetchTree, folder?.path, rollbackTarget, t, backendApi])
 
   const handleDirectoryGitActionConfirm = useCallback(async () => {
     if (!folder?.path || !directoryGitActionType) return
@@ -2761,7 +2787,7 @@ export function FileTreeTab() {
 
     try {
       if (directoryGitActionType === "add") {
-        await gitAddFiles(folder.path, selectedPaths)
+        await backendApi.gitAddFiles(folder.path, selectedPaths)
         toast.success(
           t("toasts.addedFilesToVcs", {
             count: selectedPaths.length,
@@ -2769,7 +2795,7 @@ export function FileTreeTab() {
         )
       } else {
         for (const filePath of selectedPaths) {
-          await gitRollbackFile(folder.path, filePath)
+          await backendApi.gitRollbackFile(folder.path, filePath)
         }
         toast.success(
           t("toasts.rolledBackFiles", {
@@ -2801,6 +2827,7 @@ export function FileTreeTab() {
     folder?.path,
     resetDirectoryGitActionDialog,
     t,
+    backendApi,
   ])
 
   const handleCompareBranchClick = useCallback(
@@ -3051,7 +3078,7 @@ export function FileTreeTab() {
                           terminalLabel={t("openInTerminal")}
                           codeLabel={t("openInCode")}
                           onOpenExplorer={() => {
-                            void revealItemInDir(folder.path)
+                            void backendPlatform.revealItemInDir(folder.path)
                           }}
                           onOpenTerminal={() => {
                             void handleOpenDirInTerminal(
@@ -3060,11 +3087,13 @@ export function FileTreeTab() {
                             )
                           }}
                           onOpenCode={() => {
-                            void openInCode(folder.path).catch((error) => {
-                              toast.error(t("toasts.openInCodeFailed"), {
-                                description: toErrorMessage(error),
+                            void backendApi
+                              .openInCode(folder.path)
+                              .catch((error) => {
+                                toast.error(t("toasts.openInCodeFailed"), {
+                                  description: toErrorMessage(error),
+                                })
                               })
-                            })
                           }}
                         />
                       </ContextMenuSub>

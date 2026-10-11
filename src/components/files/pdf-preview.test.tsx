@@ -100,7 +100,11 @@ describe("PdfPreview", () => {
       expect(mocks.download).toHaveBeenCalledWith(
         tab.path,
         content,
-        "paper.pdf"
+        "paper.pdf",
+        expect.objectContaining({
+          downloadWorkspaceFile: expect.any(Function),
+        }),
+        expect.objectContaining({ isLocalDesktop: expect.any(Function) })
       )
     )
   })

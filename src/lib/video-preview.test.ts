@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { openVideoPreview } from "./video-preview"
+import { defaultBackendPlatform } from "./backend/defaults"
 
 const mocks = vi.hoisted(() => ({
   remote: vi.fn(),
@@ -67,6 +68,29 @@ describe("video preview transport", () => {
     )
     expect(mocks.remote).toHaveBeenLastCalledWith("stop_video_preview", {
       token: "remote",
+    })
+  })
+  it("fences a relay with the initiating revision after a delayed capability request", async () => {
+    mocks.connectionId = 42
+    let resolve!: (value: unknown) => void
+    mocks.remote.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done
+        })
+    )
+    const pending = openVideoPreview(
+      "/repo/demo.mp4",
+      defaultBackendPlatform,
+      "old-revision"
+    )
+    mocks.connectionId = 99
+    resolve({ token: "old-capability", url: "/api/video-preview/old" })
+    await pending
+    expect(mocks.shell).toHaveBeenCalledWith("relay_video_preview", {
+      connectionId: 42,
+      configRevision: "old-revision",
+      token: "old-capability",
     })
   })
 })

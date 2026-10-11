@@ -1,14 +1,17 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { memo, useState } from "react"
 import { NodeResizer, type Node, type NodeProps } from "@xyflow/react"
 import { ChevronDown, Folder, Layers, Sparkles, Unlink } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { AgentIcon } from "@/components/agent-icon"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import { formatFolderLabelWithAlias } from "@/lib/folder-display"
 import { cn } from "@/lib/utils"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import {
   REGION_FOOTER_HEIGHT,
   REGION_HEADER_HEIGHT,
@@ -35,6 +38,11 @@ export const RegionNode = memo(function RegionNode({
   data,
   selected,
 }: NodeProps<RegionFlowNode>) {
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
   const t = useTranslations("Canvas")
   const { dbNode, memberTotal, visibleCount, runningCount, unresolved } = data
   const {

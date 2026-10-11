@@ -1,5 +1,9 @@
 "use client"
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import type { ReactNode } from "react"
 import { useMemo } from "react"
 import { useTranslations } from "next-intl"
@@ -13,11 +17,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { useActiveFolder } from "@/contexts/active-folder-context"
-import {
-  downloadWorkspaceFile,
-  isWorkspaceFileApiAvailable,
-  WORKSPACE_DOWNLOAD_CANCELLED,
-} from "@/lib/api"
+import { WORKSPACE_DOWNLOAD_CANCELLED } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import {
   expandHomePath,
@@ -29,7 +29,7 @@ import {
   toAbsoluteFilePath,
   toFolderRelativePath,
 } from "@/lib/file-path-display"
-import { isLocalDesktop, revealItemInDir } from "@/lib/platform"
+
 import { copyTextFromMenu } from "@/lib/utils"
 
 /** The two path forms offered by the badge's action menu. */
@@ -107,6 +107,9 @@ export function systemFileManagerLabelKey():
  * resolution, nor a translator.
  */
 function FileReferenceActionsMenu({ target }: { target: string }) {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Folder.chat.fileActions")
   const { activeFolder } = useActiveFolder()
   // Resolved the way the opener resolves it, so the relative path below and
@@ -124,9 +127,9 @@ function FileReferenceActionsMenu({ target }: { target: string }) {
     void (async () => {
       try {
         const absolute = isHomeRelativePath(paths.absolute)
-          ? await expandHomePath(paths.absolute)
+          ? await expandHomePath(paths.absolute, backendApi)
           : paths.absolute
-        await revealItemInDir(absolute)
+        await backendPlatform.revealItemInDir(absolute)
       } catch (error) {
         toast.error(t("openFailed"), { description: toErrorMessage(error) })
       }
@@ -157,7 +160,7 @@ function FileReferenceActionsMenu({ target }: { target: string }) {
           // Outside the active folder, the backend accepts the containing
           // directory as the root, just like the file opener's IO contract.
           const absolute = isHomeRelativePath(paths.absolute)
-            ? await expandHomePath(paths.absolute)
+            ? await expandHomePath(paths.absolute, backendApi)
             : paths.absolute
           const split = splitAbsPath(absolute)
           if (!split) {
@@ -167,7 +170,11 @@ function FileReferenceActionsMenu({ target }: { target: string }) {
           ioPath = split.ioPath
         }
         name = ioPath.split("/").pop() || ioPath
-        const result = await downloadWorkspaceFile(rootPath, ioPath, name)
+        const result = await backendApi.downloadWorkspaceFile(
+          rootPath,
+          ioPath,
+          name
+        )
         // Web hands off to the browser's download manager ("started"), which
         // shows its own progress — a toast there would just be noise. Only the
         // remote-desktop save-dialog path has an outcome worth reporting.
@@ -190,7 +197,7 @@ function FileReferenceActionsMenu({ target }: { target: string }) {
     <>
       {/* `revealItemInDir` is a no-op in web mode and for a desktop window
           bound to a remote workspace, so the row is hidden rather than dead. */}
-      {isLocalDesktop() && (
+      {backendPlatform.isLocalDesktop() && (
         <ContextMenuItem disabled={!paths} onSelect={handleReveal}>
           {t(systemFileManagerLabelKey())}
         </ContextMenuItem>
@@ -211,7 +218,7 @@ function FileReferenceActionsMenu({ target }: { target: string }) {
           holds the file, so downloading is how the byte stream gets to the
           user — mirroring the file tree's own row. A local desktop window can
           just open it, so the row is hidden rather than dead. */}
-      {isWorkspaceFileApiAvailable() && (
+      {backendApi.isWorkspaceFileApiAvailable() && (
         <ContextMenuItem disabled={!paths} onSelect={handleDownload}>
           {t("download")}
         </ContextMenuItem>

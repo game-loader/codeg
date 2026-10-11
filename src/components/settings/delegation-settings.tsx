@@ -20,6 +20,10 @@
  * `/settings/agents`.
  */
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { AlertTriangle, Bubbles, Gauge, HardDrive, Power } from "lucide-react"
@@ -34,14 +38,9 @@ import {
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import {
-  acpListAgents,
-  type DelegationSettings,
-  getDelegationSettings,
-  setDelegationSettings,
-} from "@/lib/api"
+import { type DelegationSettings } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
-import { subscribe } from "@/lib/platform"
+
 import { DELEGATION_SETTINGS_CHANGED_EVENT } from "@/lib/types"
 import type { AgentDelegationDefaults, AgentType } from "@/lib/types"
 import { DelegationAgentDefaultsPanel } from "./delegation-agent-defaults"
@@ -64,6 +63,9 @@ function clampCacheMb(n: number): number {
 }
 
 export function DelegationSettingsSection() {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("AcpAgentSettings.multiAgent")
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -89,7 +91,8 @@ export function DelegationSettingsSection() {
   useEffect(() => {
     let cancelled = false
     const gen = remoteGenRef.current
-    void getDelegationSettings()
+    void backendApi
+      .getDelegationSettings()
       .then((s) => {
         if (cancelled) return
         if (remoteGenRef.current === gen) {
@@ -112,7 +115,7 @@ export function DelegationSettingsSection() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [backendApi])
 
   // The switch above is not the only thing that decides whether an agent gets
   // `delegate_to_agent`: the per-agent "the agent handles files and commands
@@ -127,7 +130,8 @@ export function DelegationSettingsSection() {
   // silently lost delegation.
   useEffect(() => {
     let cancelled = false
-    void acpListAgents()
+    void backendApi
+      .acpListAgents()
       .then((agents) => {
         if (cancelled) return
         setWithheldAgents(
@@ -144,7 +148,7 @@ export function DelegationSettingsSection() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [backendApi])
 
   /**
    * Converge on a delegation write that happened elsewhere.
@@ -160,24 +164,25 @@ export function DelegationSettingsSection() {
   useEffect(() => {
     let disposed = false
     let unsubscribe: (() => void) | undefined
-    void subscribe<DelegationSettings>(
-      DELEGATION_SETTINGS_CHANGED_EVENT,
-      (remote) => {
-        remoteGenRef.current += 1
-        // Snapshot the old baseline before overwriting it, rather than reading
-        // the ref from inside the updater. React usually computes an updater
-        // eagerly, which would read it before the line below — but only while
-        // the fiber has no pending work; once it defers, the updater would see
-        // the NEW baseline, conclude an untouched switch had been edited, and
-        // refuse the broadcast, which is the one case this exists for. Reading
-        // it here is correct under both schedules.
-        const previousBaseline = baselineEnabledRef.current
-        baselineEnabledRef.current = remote.enabled
-        setEnabled((current) =>
-          current === previousBaseline ? remote.enabled : current
-        )
-      }
-    )
+    void backendPlatform
+      .subscribe<DelegationSettings>(
+        DELEGATION_SETTINGS_CHANGED_EVENT,
+        (remote) => {
+          remoteGenRef.current += 1
+          // Snapshot the old baseline before overwriting it, rather than reading
+          // the ref from inside the updater. React usually computes an updater
+          // eagerly, which would read it before the line below — but only while
+          // the fiber has no pending work; once it defers, the updater would see
+          // the NEW baseline, conclude an untouched switch had been edited, and
+          // refuse the broadcast, which is the one case this exists for. Reading
+          // it here is correct under both schedules.
+          const previousBaseline = baselineEnabledRef.current
+          baselineEnabledRef.current = remote.enabled
+          setEnabled((current) =>
+            current === previousBaseline ? remote.enabled : current
+          )
+        }
+      )
       .then((fn) => {
         if (disposed) fn()
         else unsubscribe = fn
@@ -189,7 +194,7 @@ export function DelegationSettingsSection() {
       disposed = true
       unsubscribe?.()
     }
-  }, [])
+  }, [backendPlatform])
 
   const save = useCallback(async () => {
     const payload: DelegationSettings = {
@@ -200,7 +205,7 @@ export function DelegationSettingsSection() {
     }
     setSaving(true)
     try {
-      const applied = await setDelegationSettings(payload)
+      const applied = await backendApi.setDelegationSettings(payload)
       // Mirror any server-side clamps / filter passes back into the UI so the
       // inputs reflect what was actually persisted.
       setEnabled(applied.enabled)
@@ -216,7 +221,7 @@ export function DelegationSettingsSection() {
     } finally {
       setSaving(false)
     }
-  }, [enabled, depth, cacheMb, agentDefaults, t])
+  }, [enabled, depth, cacheMb, agentDefaults, t, backendApi])
 
   return (
     <SettingsSection

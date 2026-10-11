@@ -1,6 +1,8 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
+import { useOptionalBackendClient } from "@/contexts/backend-client-context"
+import type { BackendClient } from "@/lib/backend/types"
 
 import {
   useWorkspaceActions,
@@ -14,6 +16,7 @@ import {
 } from "@/lib/browser/browser-prefs"
 import {
   readPersistedBrowserTabs,
+  browserTabsStorageKey,
   samePersistedBrowserTabs,
   snapshotBrowserTabs,
   writePersistedBrowserTabs,
@@ -33,10 +36,14 @@ const SAVE_DEBOUNCE_MS = 400
 // double effect and a re-mount of the workspace providers within one
 // document; a new document (reload, relaunch) starts empty and restores.
 const restoredWindows = new Set<string>()
+// A new client is a new runtime generation with new tab records. It must
+// restore again; StrictMode and remounts of the same generation must not.
+let restoredClients = new WeakMap<BackendClient, Set<string>>()
 
 /** Tests only. */
 export function resetBrowserTabsPersistenceForTests(): void {
   restoredWindows.clear()
+  restoredClients = new WeakMap()
 }
 
 /**
@@ -51,27 +58,37 @@ export function resetBrowserTabsPersistenceForTests(): void {
  * unlikely but possible) is left alone.
  */
 export function BrowserTabsPersistence() {
+  const client = useOptionalBackendClient()
   const { restoreBrowserTabs } = useWorkspaceActions()
   const { fileTabs } = useWorkspaceFileTabs()
-  const [ready, setReady] = useState(false)
+  const scope = client ?? "standalone"
+  const label = getCurrentWindowLabel()
+  const key = browserTabsStorageKey(label, client?.key)
+  const [readyScope, setReadyScope] = useState<typeof scope | null>(null)
   // Latest-state mirror for the timers below (synced post-commit, like the
   // workspace provider does for its own action callbacks).
-  const fileTabsRef = useRef(fileTabs)
+  const fileTabsRef = useRef({ scope, fileTabs })
   useEffect(() => {
-    fileTabsRef.current = fileTabs
-  }, [fileTabs])
-  const lastWrittenRef = useRef<PersistedBrowserTab[] | null>(null)
+    fileTabsRef.current = { scope, fileTabs }
+  }, [scope, fileTabs])
+  const lastWrittenRef = useRef<{
+    scope: typeof scope
+    tabs: PersistedBrowserTab[]
+  } | null>(null)
 
-  // Restore once per document, then open the gate for writes.
+  // Restore once per runtime generation (or standalone document), then write.
   useEffect(() => {
     let cancelled = false
     void browserCapabilities().then((caps) => {
       if (cancelled || !caps.available) return
-      const label = getCurrentWindowLabel()
-      if (!restoredWindows.has(label)) {
-        restoredWindows.add(label)
-        const entries = readPersistedBrowserTabs(label)
-        lastWrittenRef.current = entries
+      let restored = restoredWindows
+      if (client) {
+        restored = restoredClients.get(client) ?? new Set<string>()
+        restoredClients.set(client, restored)
+      }
+      if (!restored.has(key)) {
+        const entries = readPersistedBrowserTabs(label, client?.key)
+        lastWrittenRef.current = { scope, tabs: entries }
         // A profile deleted since the last run has no store any more; its
         // tabs come back in the default one rather than not at all.
         const prefs = getBrowserPrefs()
@@ -81,13 +98,14 @@ export function BrowserTabsPersistence() {
             : { ...entry, profile: DEFAULT_BROWSER_PROFILE_ID }
         )
         if (restorable.length > 0) restoreBrowserTabs(restorable)
+        restored.add(key)
       }
-      setReady(true)
+      setReadyScope(scope)
     })
     return () => {
       cancelled = true
     }
-  }, [restoreBrowserTabs])
+  }, [restoreBrowserTabs, client, key, label, scope])
 
   // What the strip looks like as far as persistence is concerned: browser
   // records, their order, and the three fields a record itself carries. File
@@ -106,21 +124,23 @@ export function BrowserTabsPersistence() {
   )
 
   useEffect(() => {
-    if (!ready) return
+    if (readyScope !== scope) return
     let timer: number | null = null
     const save = () => {
+      if (fileTabsRef.current.scope !== scope) return
       const snapshot = snapshotBrowserTabs(
-        fileTabsRef.current,
+        fileTabsRef.current.fileTabs,
         getBrowserTabState
       )
       if (
         lastWrittenRef.current &&
-        samePersistedBrowserTabs(lastWrittenRef.current, snapshot)
+        lastWrittenRef.current.scope === scope &&
+        samePersistedBrowserTabs(lastWrittenRef.current.tabs, snapshot)
       ) {
         return
       }
-      lastWrittenRef.current = snapshot
-      writePersistedBrowserTabs(snapshot)
+      lastWrittenRef.current = { scope, tabs: snapshot }
+      writePersistedBrowserTabs(snapshot, label, client?.key)
     }
     const schedule = () => {
       if (timer !== null) return
@@ -147,7 +167,7 @@ export function BrowserTabsPersistence() {
       // an unmount; the refs hold the latest inputs either way.
       flush()
     }
-  }, [ready, signature])
+  }, [readyScope, scope, signature, label, client])
 
   return null
 }

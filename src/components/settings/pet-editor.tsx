@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Upload } from "lucide-react"
@@ -31,6 +32,8 @@ interface PetEditorProps {
 }
 
 export function PetEditor({ open, target, onClose, onSaved }: PetEditorProps) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Pet.manager")
   const [id, setId] = useState("")
   const [displayName, setDisplayName] = useState("")
@@ -90,12 +93,15 @@ export function PetEditor({ open, target, onClose, onSaved }: PetEditorProps) {
       }
       setSubmitting(true)
       try {
-        await addPet({
-          id: id.trim(),
-          displayName: displayName.trim(),
-          description: description.trim() || null,
-          spritesheetBase64: spritesheet.base64,
-        })
+        await addPet(
+          {
+            id: id.trim(),
+            displayName: displayName.trim(),
+            description: description.trim() || null,
+            spritesheetBase64: spritesheet.base64,
+          },
+          backendPlatform
+        )
         await onSaved()
       } catch (err) {
         setError(toMessage(err))
@@ -109,12 +115,16 @@ export function PetEditor({ open, target, onClose, onSaved }: PetEditorProps) {
       }
       setSubmitting(true)
       try {
-        await updatePetMeta(target.id, {
-          displayName: displayName.trim(),
-          description: description.trim() ? description.trim() : null,
-        })
+        await updatePetMeta(
+          target.id,
+          {
+            displayName: displayName.trim(),
+            description: description.trim() ? description.trim() : null,
+          },
+          backendPlatform
+        )
         if (spritesheet) {
-          await replacePetSprite(target.id, spritesheet.base64)
+          await replacePetSprite(target.id, spritesheet.base64, backendPlatform)
         }
         await onSaved()
       } catch (err) {

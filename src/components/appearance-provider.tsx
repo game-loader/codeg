@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import {
   createContext,
   useCallback,
@@ -344,6 +345,8 @@ export function AppearanceProvider({
 }: {
   children: React.ReactNode
 }) {
+  const backendPlatform = useBackendPlatform()
+
   // 初始值从 DOM 读取（appearance-script.ts 在 hydration 前已经写好），
   // 而不是从 localStorage 读 —— 避免 SSR 与 CSR 不一致导致的双闪烁。
   const [themeColor, setThemeColorState] = useState<ThemeColor>(() => {
@@ -675,7 +678,7 @@ export function AppearanceProvider({
   const reloadWorkspaceBackgroundImage = useCallback(async () => {
     const gen = ++reloadGenRef.current
     try {
-      const asset = await readWorkspaceBackground()
+      const asset = await readWorkspaceBackground(backendPlatform)
       // 期间有更新的请求（写/清空/更晚的 reload）→ 丢弃本次过期结果，也不建 blob。
       if (gen !== reloadGenRef.current) return
       setWorkspaceBgImageUrlState((prev) => {
@@ -685,11 +688,11 @@ export function AppearanceProvider({
     } catch {
       // 读盘失败静默（无背景即可）。
     }
-  }, [])
+  }, [backendPlatform])
 
   const setWorkspaceBackgroundImage = useCallback(
     async (imageBase64: string) => {
-      await setWorkspaceBackground(imageBase64)
+      await setWorkspaceBackground(imageBase64, backendPlatform)
       // 本地图覆盖市场图 → 「使用中」来源标记失效。
       clearWorkspaceBgSourceUrl()
       // 写盘持久化后立即广播版本戳（不等本地 readback）：避免设置窗口在读回大图
@@ -697,14 +700,14 @@ export function AppearanceProvider({
       persist(STORAGE_KEY_WORKSPACE_BG_IMAGE_VERSION, String(Date.now()))
       await reloadWorkspaceBackgroundImage()
     },
-    [clearWorkspaceBgSourceUrl, reloadWorkspaceBackgroundImage]
+    [clearWorkspaceBgSourceUrl, reloadWorkspaceBackgroundImage, backendPlatform]
   )
 
   // 壁纸市场下载：字节直接由后端落盘（不走前端 base64 往返），成功后与本地选图
   // 共用同一套失效广播 + 重读盘，保证所有窗口一致换图。
   const downloadMarketWorkspaceBackground = useCallback(
     async (url: string, sourceUrl: string) => {
-      await downloadWorkspaceBgMarket(url, sourceUrl)
+      await downloadWorkspaceBgMarket(url, sourceUrl, backendPlatform)
       try {
         localStorage.setItem(STORAGE_KEY_WORKSPACE_BG_SOURCE_URL, sourceUrl)
       } catch {
@@ -714,11 +717,11 @@ export function AppearanceProvider({
       persist(STORAGE_KEY_WORKSPACE_BG_IMAGE_VERSION, String(Date.now()))
       await reloadWorkspaceBackgroundImage()
     },
-    [reloadWorkspaceBackgroundImage]
+    [reloadWorkspaceBackgroundImage, backendPlatform]
   )
 
   const removeWorkspaceBackground = useCallback(async () => {
-    await clearWorkspaceBackground()
+    await clearWorkspaceBackground(backendPlatform)
     clearWorkspaceBgSourceUrl()
     // 使任何在途 reload 失效（否则先前发起的旧读可能在清空后完成、恢复已删的图），
     // 立即广播失效戳，再置空本地预览。
@@ -728,7 +731,7 @@ export function AppearanceProvider({
       revokeBackgroundObjectUrl(prev)
       return null
     })
-  }, [clearWorkspaceBgSourceUrl])
+  }, [clearWorkspaceBgSourceUrl, backendPlatform])
 
   // Sync traffic-light position and appearance mode on mount
   useEffect(() => {

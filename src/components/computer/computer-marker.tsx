@@ -11,10 +11,10 @@
  * again rather than being taken for the first.
  */
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useEffect, useState } from "react"
 import { MousePointer2, TextCursor } from "lucide-react"
 
-import { subscribe } from "@/lib/platform"
 import {
   COMPUTER_MARKER_EVENT,
   type ComputerAction,
@@ -31,12 +31,15 @@ const WRITES: ReadonlySet<ComputerAction> = new Set([
 ])
 
 export function ComputerMarker() {
+  const backendPlatform = useBackendPlatform()
+
   const [mark, setMark] = useState<ComputerMarkerPayload | null>(null)
 
   useEffect(() => {
     let disposed = false
     let unsubscribe: (() => void) | undefined
-    void subscribe<ComputerMarkerPayload>(COMPUTER_MARKER_EVENT, setMark)
+    void backendPlatform
+      .subscribe<ComputerMarkerPayload>(COMPUTER_MARKER_EVENT, setMark)
       .then((fn) => {
         if (disposed) fn()
         else unsubscribe = fn
@@ -46,7 +49,7 @@ export function ComputerMarker() {
       disposed = true
       unsubscribe?.()
     }
-  }, [])
+  }, [backendPlatform])
 
   const Glyph = mark && WRITES.has(mark.action) ? TextCursor : MousePointer2
 

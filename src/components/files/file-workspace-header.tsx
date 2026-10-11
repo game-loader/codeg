@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import {
   AppWindow,
   Code,
@@ -15,7 +16,7 @@ import {
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import { openPath } from "@/lib/platform"
+
 import { isHtmlPreviewable } from "@/lib/language-detect"
 import {
   useWorkspaceActions,
@@ -60,6 +61,8 @@ import { cn, copyTextFromMenu } from "@/lib/utils"
  * diff / image / office), so it wraps them all uniformly.
  */
 export function FileWorkspaceHeader() {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Folder.fileWorkspace")
   // Copying a path is the file tree's own menu row, word for word — same
   // action, same wording, no second set of strings to keep in step.
@@ -218,7 +221,7 @@ export function FileWorkspaceHeader() {
                 <DropdownMenuItem
                   onSelect={() => {
                     // File tab paths are absolute — hand it straight to the OS.
-                    openPath(path).catch(() => {})
+                    backendPlatform.openPath(path).catch(() => {})
                   }}
                 >
                   <ExternalLink />

@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import {
   useState,
   useEffect,
@@ -34,7 +35,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useImeGuard } from "@/hooks/use-ime-guard"
 import { cn } from "@/lib/utils"
-import { getHomeDirectory, listDirectoryEntries } from "@/lib/api"
+
 import { parentFsPath } from "@/lib/path-utils"
 import type { DirectoryEntry } from "@/lib/types"
 
@@ -126,6 +127,8 @@ export const DirectoryBrowser = forwardRef<
   },
   ref
 ) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("DirectoryBrowser")
   const ime = useImeGuard()
 
@@ -182,7 +185,7 @@ export const DirectoryBrowser = forwardRef<
       setLoading((prev) => new Set(prev).add(path))
       setError(null)
       try {
-        const result = await listDirectoryEntries(path)
+        const result = await backendApi.listDirectoryEntries(path)
         // Skip writes if a hide/show happened mid-flight — they belong to a
         // session that no longer exists and would surface stale data.
         if (gen === sessionGen.current) {
@@ -202,7 +205,7 @@ export const DirectoryBrowser = forwardRef<
         }
       }
     },
-    [entries, t]
+    [entries, t, backendApi]
   )
 
   const navigateTo = useCallback(
@@ -246,7 +249,7 @@ export const DirectoryBrowser = forwardRef<
 
     const init = async () => {
       try {
-        const startPath = initialPath || (await getHomeDirectory())
+        const startPath = initialPath || (await backendApi.getHomeDirectory())
         // Drop these writes if a hide/show superseded this init, or the user
         // already navigated somewhere else while the start dir was loading.
         if (gen !== sessionGen.current || seq !== navSeq.current) return
@@ -254,7 +257,7 @@ export const DirectoryBrowser = forwardRef<
         onValueChange(startPath)
         setLoading(new Set([startPath]))
 
-        const result = await listDirectoryEntries(startPath)
+        const result = await backendApi.listDirectoryEntries(startPath)
         if (gen !== sessionGen.current || seq !== navSeq.current) return
         setEntries(new Map([[startPath, result]]))
         setLoading(new Set())
@@ -268,7 +271,7 @@ export const DirectoryBrowser = forwardRef<
     // `onValueChange` is intentionally omitted: it changes identity on every
     // host render and re-running init would restart browsing mid-session.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, initialPath, t])
+  }, [active, initialPath, t, backendApi])
 
   const handleToggleExpand = useCallback(
     async (path: string) => {
@@ -325,14 +328,14 @@ export const DirectoryBrowser = forwardRef<
   const handleGoHome = useCallback(async () => {
     const gen = sessionGen.current
     try {
-      const home = await getHomeDirectory()
+      const home = await backendApi.getHomeDirectory()
       if (gen !== sessionGen.current) return
       navigateTo(home)
     } catch {
       if (gen !== sessionGen.current) return
       setError(t("errorLoadingDir"))
     }
-  }, [navigateTo, t])
+  }, [navigateTo, t, backendApi])
 
   const handlePathInputKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

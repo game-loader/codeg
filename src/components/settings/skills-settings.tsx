@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   BookOpenText,
@@ -49,15 +50,7 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import { parseYamlFrontMatter } from "@/lib/skill-frontmatter"
-import {
-  acpDeleteAgentSkill,
-  acpListAgents,
-  acpListAgentSkills,
-  loadFolderHistory,
-  openFolder,
-  acpReadAgentSkill,
-  acpSaveAgentSkill,
-} from "@/lib/api"
+
 import { invalidateAgentSkillsCache } from "@/hooks/use-agent-skills"
 import { piUsesCustomAgentDir } from "@/lib/pi-config"
 import type {
@@ -163,6 +156,8 @@ function toPercent(pixels: number, totalPixels: number): number {
 }
 
 export function SkillsSettings() {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("SkillsSettings")
   const skillsT = t as unknown as SkillsTranslator
   const panelContainerRef = useRef<HTMLDivElement | null>(null)
@@ -305,7 +300,7 @@ export function SkillsSettings() {
     ) => {
       setSkillReading(true)
       try {
-        const detail = await acpReadAgentSkill({
+        const detail = await backendApi.acpReadAgentSkill({
           agentType,
           scope: skill.scope,
           skillId: skill.id,
@@ -324,7 +319,7 @@ export function SkillsSettings() {
         setSkillReading(false)
       }
     },
-    [t, workspacePathForRequest]
+    [t, workspacePathForRequest, backendApi]
   )
 
   const loadSkills = useCallback(
@@ -344,7 +339,7 @@ export function SkillsSettings() {
       setSkillsError(null)
 
       try {
-        const result = await acpListAgentSkills({
+        const result = await backendApi.acpListAgentSkills({
           agentType,
           workspacePath: workspacePathForRequest,
         })
@@ -369,7 +364,7 @@ export function SkillsSettings() {
         setSkillsLoading(false)
       }
     },
-    [backendScope, skillsScope, workspacePathForRequest]
+    [backendScope, skillsScope, workspacePathForRequest, backendApi]
   )
 
   const refreshAgents = useCallback(async () => {
@@ -377,10 +372,10 @@ export function SkillsSettings() {
     setLoadingError(null)
 
     try {
-      const next = await acpListAgents()
+      const next = await backendApi.acpListAgents()
       const supportChecks = await Promise.allSettled(
         next.map(async (agent) => {
-          const result = await acpListAgentSkills({
+          const result = await backendApi.acpListAgentSkills({
             agentType: agent.agent_type,
           })
           return result.supported ? agent.agent_type : null
@@ -410,7 +405,7 @@ export function SkillsSettings() {
     } finally {
       setLoadingAgents(false)
     }
-  }, [])
+  }, [backendApi])
 
   const handleCreateDraft = useCallback(() => {
     if (!selectedAgent) return
@@ -438,13 +433,13 @@ export function SkillsSettings() {
     async (skill: AgentSkillItem) => {
       const dirPath = skillDirectoryPath(skill)
       try {
-        await openFolder(dirPath)
+        await backendApi.openFolder(dirPath)
       } catch (err) {
         const message = toErrorMessage(err)
         toast.error(t("toasts.openFolderFailed"), { description: message })
       }
     },
-    [t]
+    [t, backendApi]
   )
 
   const handleRequestDeleteSkill = useCallback((skill: AgentSkillItem) => {
@@ -489,7 +484,7 @@ export function SkillsSettings() {
 
     setSkillSaving(true)
     try {
-      const saved = await acpSaveAgentSkill({
+      const saved = await backendApi.acpSaveAgentSkill({
         agentType: selectedAgent.agent_type,
         scope: backendScope,
         skillId: trimmedId,
@@ -500,7 +495,7 @@ export function SkillsSettings() {
 
       // Drop any stale in-memory skill list so running sessions (message
       // input $ autocomplete) pick up the change on next focus/fetch.
-      invalidateAgentSkillsCache(selectedAgent.agent_type)
+      invalidateAgentSkillsCache(selectedAgent.agent_type, backendApi)
       await loadSkills(selectedAgent.agent_type)
       await openSkill(
         selectedAgent.agent_type,
@@ -529,6 +524,7 @@ export function SkillsSettings() {
     isContentEditing,
     t,
     workspacePathForRequest,
+    backendApi,
   ])
 
   const handleDeleteSkill = useCallback(
@@ -539,7 +535,7 @@ export function SkillsSettings() {
       setSkillDeletingId(skill.id)
 
       try {
-        await acpDeleteAgentSkill({
+        await backendApi.acpDeleteAgentSkill({
           agentType: selectedAgent.agent_type,
           scope: skill.scope,
           skillId: skill.id,
@@ -547,7 +543,7 @@ export function SkillsSettings() {
             skill.scope === "project" ? workspacePathForRequest : null,
         })
 
-        invalidateAgentSkillsCache(selectedAgent.agent_type)
+        invalidateAgentSkillsCache(selectedAgent.agent_type, backendApi)
         const latest = await loadSkills(selectedAgent.agent_type)
         toast.success(t("toasts.deleted"))
 
@@ -584,6 +580,7 @@ export function SkillsSettings() {
       selectedSkillId,
       t,
       workspacePathForRequest,
+      backendApi,
     ]
   )
 
@@ -715,7 +712,8 @@ export function SkillsSettings() {
     if (skillsScope !== "folder") return
     if (folderList.length > 0) return
     let cancelled = false
-    loadFolderHistory()
+    backendApi
+      .loadFolderHistory()
       .then((list) => {
         if (cancelled) return
         setFolderList(list)
@@ -726,7 +724,7 @@ export function SkillsSettings() {
     return () => {
       cancelled = true
     }
-  }, [skillsScope, folderList.length])
+  }, [skillsScope, folderList.length, backendApi])
 
   if (loadingAgents) {
     return (

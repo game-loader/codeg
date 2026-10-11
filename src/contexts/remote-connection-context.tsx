@@ -15,7 +15,10 @@ import { useTranslations } from "next-intl"
 import {
   clearRemoteDesktopTransport,
   configureRemoteDesktopTransport,
+  getTransport,
+  invalidateRemoteDesktopTransport,
 } from "@/lib/transport"
+import { REMOTE_CONFIGURATION_CHANGED_MESSAGE } from "@/lib/transport/remote-errors"
 import { resetBackendScopedStores } from "@/stores/backend-scoped-store-reset"
 import { getRemoteWorkspaceConnection } from "@/lib/remote-workspace"
 import { toErrorMessage } from "@/lib/app-error"
@@ -49,6 +52,32 @@ export function useRemoteConnection() {
   return useContext(RemoteConnectionContext)
 }
 
+/** Fixed runtime context; it never configures the realm's legacy transport. */
+export function ScopedRemoteConnectionProvider({
+  connection,
+  expired = false,
+  children,
+}: {
+  connection: RemoteWorkspaceConnection | null
+  expired?: boolean
+  children: ReactNode
+}) {
+  const [markedExpired, setMarkedExpired] = useState(false)
+  const value = useMemo(
+    () => ({
+      connection,
+      expired: expired || markedExpired,
+      markExpired: () => setMarkedExpired(true),
+    }),
+    [connection, expired, markedExpired]
+  )
+  return (
+    <RemoteConnectionContext.Provider value={value}>
+      {children}
+    </RemoteConnectionContext.Provider>
+  )
+}
+
 /**
  * Best-effort reset of the backend-scoped module stores when the realm's backend
  * identity changes. A PASSIVE post-render effect (fires after commit, not a
@@ -74,13 +103,27 @@ export function RemoteConnectionGate({ children }: { children: ReactNode }) {
   const t = useTranslations("RemoteWorkspace")
   const searchParams = useSearchParams()
   const rawId = searchParams.get("remoteConnectionId")
-  const remoteConnectionId = rawId ? Number(rawId) : null
+  const remoteConnectionId = rawId !== null ? Number(rawId) : null
   const fallbackRemoteWindowId = useMemo(
     () => createFallbackRemoteWindowId(),
     []
   )
   const remoteWindowId =
     searchParams.get("remoteWindowId") || fallbackRemoteWindowId
+  const expectedRevision = searchParams.get("remoteConfigRevision")
+  const [initialIdentity] = useState(() => ({
+    rawId,
+    remoteWindowId,
+    expectedRevision,
+  }))
+  const boundRevision = useRef<string | null>(null)
+  const retired = useRef(false)
+  const identityChanged =
+    initialIdentity.rawId !== rawId ||
+    initialIdentity.remoteWindowId !== remoteWindowId ||
+    initialIdentity.expectedRevision !== expectedRevision
+  const [invalidIdentity, setInvalidIdentity] = useState(false)
+  if (identityChanged && !invalidIdentity) setInvalidIdentity(true)
   const [state, setState] = useState<RemoteConnectionState>({
     connection: null,
     loadedId: null,
@@ -90,25 +133,71 @@ export function RemoteConnectionGate({ children }: { children: ReactNode }) {
   })
 
   useEffect(() => {
-    if (remoteConnectionId === null || !Number.isFinite(remoteConnectionId)) {
+    if (invalidIdentity || retired.current) {
+      retired.current = true
+      invalidateRemoteDesktopTransport()
+      return
+    }
+    if (rawId === null) {
       clearRemoteDesktopTransport()
       return
     }
 
     let cancelled = false
-    clearRemoteDesktopTransport()
+    let unsubscribe: (() => void) | undefined
+    // Block compatibility calls while loading or after an error; never make a
+    // remote operation window fall back to the local shell API.
+    invalidateRemoteDesktopTransport()
+    const retire = () => {
+      if (cancelled) return
+      retired.current = true
+      invalidateRemoteDesktopTransport()
+      setState((prev) => ({
+        ...prev,
+        error: REMOTE_CONFIGURATION_CHANGED_MESSAGE,
+      }))
+    }
 
-    getRemoteWorkspaceConnection(remoteConnectionId)
+    const load = async () => {
+      if (
+        remoteConnectionId === null ||
+        !Number.isInteger(remoteConnectionId) ||
+        remoteConnectionId <= 0
+      ) {
+        throw new Error("Invalid remote connection ID")
+      }
+      const next = await getRemoteWorkspaceConnection(remoteConnectionId)
+      if (cancelled) return
+      const revision = expectedRevision ?? boundRevision.current
+      if (
+        next.id !== remoteConnectionId ||
+        !next.config_revision ||
+        (revision !== null && revision !== next.config_revision)
+      ) {
+        throw new Error(REMOTE_CONFIGURATION_CHANGED_MESSAGE)
+      }
+      // Older popup URLs have no revision. Bind their first lookup once, then
+      // use the same fencing as upgraded launchers for every subsequent call.
+      boundRevision.current = next.config_revision
+      return next
+    }
+
+    load()
       .then((next) => {
-        if (cancelled) return
+        if (cancelled || !next) return
         configureRemoteDesktopTransport({
           id: next.id,
           name: next.name,
           baseUrl: next.base_url,
           token: next.token,
           windowInstanceId: remoteWindowId,
-          onUnauthorized: () =>
-            setState((prev) => ({ ...prev, expired: true })),
+          configRevision: next.config_revision,
+          onUnauthorized: () => {
+            if (!cancelled) {
+              setState((prev) => ({ ...prev, expired: true }))
+            }
+          },
+          onConfigurationChanged: retire,
         })
         setState({
           connection: next,
@@ -117,10 +206,24 @@ export function RemoteConnectionGate({ children }: { children: ReactNode }) {
           error: null,
           expired: false,
         })
+        // Observe invalidation even when this form has no event consumers yet.
+        void getTransport()
+          .subscribe("__configuration_changed__", () => {})
+          .then((unlisten) => {
+            if (cancelled) unlisten()
+            else unsubscribe = unlisten
+          })
+          .catch((err) => {
+            if (cancelled) return
+            retired.current = true
+            invalidateRemoteDesktopTransport()
+            setState((prev) => ({ ...prev, error: toErrorMessage(err) }))
+          })
       })
       .catch((err) => {
         if (cancelled) return
-        clearRemoteDesktopTransport()
+        retired.current = true
+        invalidateRemoteDesktopTransport()
         setState({
           connection: null,
           loadedId: remoteConnectionId,
@@ -132,34 +235,24 @@ export function RemoteConnectionGate({ children }: { children: ReactNode }) {
 
     return () => {
       cancelled = true
+      unsubscribe?.()
+      invalidateRemoteDesktopTransport()
     }
-  }, [remoteConnectionId, remoteWindowId])
+  }, [
+    rawId,
+    remoteConnectionId,
+    remoteWindowId,
+    expectedRevision,
+    invalidIdentity,
+  ])
 
-  // ── Backend-identity invariant ─────────────────────────────────────────────
-  // A workspace realm's backend identity — (remoteConnectionId, remoteWindowId),
-  // both born from the URL — does not change for the realm's lifetime via any
-  // SUPPORTED navigation path. It is enforced structurally, not asserted:
-  // `open_remote_workspace` opens/focuses a distinct `remote-workspace-{id}`
-  // window per connection (each its own JS realm), the main window is always
-  // local, the web build hides the remote-workspace UI (isDesktop gate), and
-  // `DeepLinkBootstrap` strips only deep-link params (folderId / conversationId),
-  // which never coexist with the remote identity params in a `workspace?…` URL.
-  // (settings / git windows are separate labels per remote id — different realms,
-  // not in-place switches.) So the backend-scoped module singletons (workspace /
-  // tab / conversation-runtime stores, and the remote transport itself) are
-  // correctly scoped per realm — the old per-window Providers relied on exactly
-  // this same window boundary.
-  //
-  // The guard below makes that invariant EXPLICIT: if the identity ever changes
-  // within a live realm it best-effort resets the backend-scoped store STATE. It
-  // is a TRIPWIRE, not a complete live-switch solution — it never fires today. A
-  // real in-place backend switcher would additionally need to: epoch-invalidate
-  // in-flight store fetches (this reset clears state but can't stop an in-flight
-  // backend-A fetch from re-committing — see `resetConversationRuntimeStore` and
-  // app-workspace `fetchFolders` / `refreshConversations`), reconfigure the
-  // transport, handle the acp-agents refcount, and gate rendering (this is a
-  // passive post-render effect, so a remote→local switch — which shows no loading
-  // gate — would paint one stale commit before the reset runs).
+  // This gate owns the legacy single-backend Web/URL-remote workspace only.
+  // Its URL identity remains fixed for that realm's lifetime. The main desktop
+  // multi-host shell bypasses this gate and supplies fixed scoped providers,
+  // clients and stores instead of reconfiguring this compatibility transport.
+  // The reset below remains a best-effort tripwire for unsupported identity
+  // changes in legacy windows; it does not fence in-flight requests or implement
+  // live backend switching.
   const backendKey = `${remoteConnectionId ?? "local"}::${remoteWindowId}`
   useResetBackendScopedStoresOnIdentityChange(backendKey)
 
@@ -172,20 +265,22 @@ export function RemoteConnectionGate({ children }: { children: ReactNode }) {
     [state.connection, state.expired]
   )
 
-  const hasRemoteConnection =
-    remoteConnectionId !== null && Number.isFinite(remoteConnectionId)
+  const hasRemoteConnection = rawId !== null
   const loadedCurrentRemoteWindow =
-    state.loadedId === remoteConnectionId &&
+    Object.is(state.loadedId, remoteConnectionId) &&
     state.loadedWindowId === remoteWindowId
   const loading = hasRemoteConnection && !loadedCurrentRemoteWindow
-  const error =
-    hasRemoteConnection && loadedCurrentRemoteWindow ? state.error : null
+  const error = invalidIdentity
+    ? REMOTE_CONFIGURATION_CHANGED_MESSAGE
+    : hasRemoteConnection && loadedCurrentRemoteWindow
+      ? state.error
+      : null
   const expired =
     hasRemoteConnection && loadedCurrentRemoteWindow ? state.expired : false
   const connection =
     hasRemoteConnection && loadedCurrentRemoteWindow ? state.connection : null
 
-  if (loading) {
+  if (loading && !error) {
     return (
       <div className="flex h-screen items-center justify-center bg-background text-sm text-muted-foreground">
         <Loader2 className="mr-2 h-4 w-4 animate-spin" />

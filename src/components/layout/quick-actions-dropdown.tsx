@@ -1,5 +1,9 @@
 "use client"
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useCallback, useState } from "react"
 import {
   FolderGit2,
@@ -34,7 +38,7 @@ import { useTasksView } from "@/contexts/tasks-view-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useOptionalWorkspaceActions } from "@/contexts/workspace-context"
 import { useRemoteWorkspaceConnections } from "@/hooks/use-remote-workspace-connections"
-import { openProjectBootWindow } from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import { BLANK_PAGE_URL } from "@/lib/browser/browser-url"
 import { useBrowserCapabilities } from "@/lib/browser/use-browser-capabilities"
@@ -68,6 +72,9 @@ import { WorkspaceFolderDialog } from "./workspace-folder-dialog"
  * unmounts its content on close, which would take a nested dialog with it.
  */
 export function QuickActionsDropdown() {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Folder.statusBar.quickActions")
   const tFolderDropdown = useTranslations("Folder.folderNameDropdown")
   const tSidebar = useTranslations("Folder.sidebar")
@@ -97,10 +104,10 @@ export function QuickActionsDropdown() {
   } = useRemoteWorkspaceConnections()
 
   const handleProjectBoot = useCallback(() => {
-    openProjectBootWindow().catch((err) => {
+    backendApi.openProjectBootWindow().catch((err) => {
       console.error("[QuickActionsDropdown] failed to open project boot:", err)
     })
-  }, [])
+  }, [backendApi])
 
   // The file column — where browser tabs live — only exists on the
   // conversations route; every other workbench route is rendered in its place.
@@ -115,12 +122,12 @@ export function QuickActionsDropdown() {
   // rather than opening an empty window), so surface that instead of a silent
   // no-op — the fix lives in Settings › Appearance › Pets.
   const handleShowPet = useCallback(() => {
-    openPetWindow().catch((err) => {
+    openPetWindow(backendPlatform).catch((err) => {
       toast.error(tPet("errors.summonFailed"), {
         description: toErrorMessage(err),
       })
     })
-  }, [tPet])
+  }, [tPet, backendPlatform])
 
   return (
     <>

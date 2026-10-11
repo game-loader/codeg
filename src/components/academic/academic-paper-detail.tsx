@@ -1,5 +1,17 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { defaultBackendStoreStorage as legacyStorage } from "@/stores/backend-store-storage"
+
+import { useAcademicStore as legacyAcademic } from "@/stores/academic-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import {
+  useBackendAcademicApi,
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useState } from "react"
 import {
   BookOpen,
@@ -11,20 +23,29 @@ import {
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
-import { useTabActions } from "@/contexts/tab-context"
+
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
-import {
-  academicCancel,
-  academicOpenTarget,
-  academicPrepare,
-  isAcademicBusy,
-  type AcademicPaper,
-} from "@/lib/academic"
+import { isAcademicBusy, type AcademicPaper } from "@/lib/academic"
 import { openAcademicConversation } from "@/lib/academic-conversation"
-import { isLocalDesktop, openPath, openUrl } from "@/lib/platform"
-import { useAcademicStore } from "@/stores/academic-store"
+import { openUrl } from "@/lib/platform"
 
 export function AcademicPaperDetail({ paper }: { paper: AcademicPaper }) {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({
+    workspace: legacyWorkspace,
+    storage: legacyStorage,
+    academic: legacyAcademic,
+  })
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+  const useAcademicStore = backendStores.academic
+
+  const backendAcademic = useBackendAcademicApi()
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Academic")
   const { openTab } = useTabActions()
   const { openConversations } = useWorkbenchRoute()
@@ -51,13 +72,25 @@ export function AcademicPaperDetail({ paper }: { paper: AcademicPaper }) {
   }
 
   async function start(withoutCode: boolean) {
-    const target = await academicOpenTarget(paper.id, withoutCode)
-    await openAcademicConversation(target)
+    const target = await backendAcademic.academicOpenTarget(
+      paper.id,
+      withoutCode
+    )
+    if (backendStoreSelection) {
+      await openAcademicConversation(
+        target,
+        backendApi,
+        backendPlatform,
+        backendStores
+      )
+    } else {
+      await openAcademicConversation(target, backendApi, backendPlatform)
+    }
     openConversations()
   }
 
   async function prepare(arxivId?: string, repoUrl?: string) {
-    await academicPrepare(paper.id, arxivId, repoUrl)
+    await backendAcademic.academicPrepare(paper.id, arxivId, repoUrl)
     await useAcademicStore.getState().refreshPaper(paper.id)
   }
 
@@ -138,7 +171,7 @@ export function AcademicPaperDetail({ paper }: { paper: AcademicPaper }) {
             disabled={pending}
             onClick={() =>
               void perform(async () => {
-                await academicCancel(paper.id)
+                await backendAcademic.academicCancel(paper.id)
                 await useAcademicStore.getState().refreshPaper(paper.id)
               })
             }
@@ -157,18 +190,20 @@ export function AcademicPaperDetail({ paper }: { paper: AcademicPaper }) {
             {t("prepareAgain")}
           </Button>
         )}
-        {paper.pdf_path && isLocalDesktop() && (
+        {paper.pdf_path && backendPlatform.isLocalDesktop() && (
           <Button
             size="sm"
             variant="outline"
-            onClick={() => void perform(() => openPath(paper.pdf_path!))}
+            onClick={() =>
+              void perform(() => backendPlatform.openPath(paper.pdf_path!))
+            }
           >
             <ExternalLink />
             {t("openPdf")}
           </Button>
         )}
       </div>
-      {paper.pdf_path && !isLocalDesktop() && (
+      {paper.pdf_path && !backendPlatform.isLocalDesktop() && (
         <p className="break-all text-xs text-muted-foreground">
           {paper.pdf_path}
         </p>
@@ -260,11 +295,13 @@ export function AcademicPaperDetail({ paper }: { paper: AcademicPaper }) {
             {paper.repo_url}
           </button>
           {paper.repo_path &&
-            (isLocalDesktop() ? (
+            (backendPlatform.isLocalDesktop() ? (
               <button
                 type="button"
                 className="block break-all text-left text-xs text-muted-foreground underline"
-                onClick={() => void perform(() => openPath(paper.repo_path!))}
+                onClick={() =>
+                  void perform(() => backendPlatform.openPath(paper.repo_path!))
+                }
               >
                 {paper.repo_path}
               </button>

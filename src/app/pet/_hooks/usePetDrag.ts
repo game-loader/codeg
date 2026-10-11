@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef } from "react"
 import { isDesktop } from "@/lib/transport"
 import { recordPetWindowPosition } from "@/lib/pet/api"
@@ -54,6 +55,8 @@ export interface UsePetDragResult {
  *    debounce-persist the final position to the DB.
  */
 export function usePetDrag(opts: UsePetDragOptions): UsePetDragResult {
+  const backendPlatform = useBackendPlatform()
+
   const draggingRef = useRef(false)
   const startScreenRef = useRef<{ x: number; y: number } | null>(null)
   const startWinLogicalRef = useRef<{ x: number; y: number } | null>(null)
@@ -85,11 +88,11 @@ export function usePetDrag(opts: UsePetDragOptions): UsePetDragResult {
       const { getCurrentWindow } = await import("@tauri-apps/api/window")
       const win = getCurrentWindow()
       const pos = await win.outerPosition()
-      await recordPetWindowPosition(pos.x, pos.y)
+      await recordPetWindowPosition(pos.x, pos.y, backendPlatform)
     } catch (err) {
       console.warn("[Pet] failed to persist window position:", err)
     }
-  }, [])
+  }, [backendPlatform])
 
   useEffect(() => {
     let disposed = false

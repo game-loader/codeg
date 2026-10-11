@@ -1,5 +1,9 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
@@ -18,7 +22,7 @@ import {
   Trash2,
   Zap,
 } from "lucide-react"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import { AgentSelector } from "@/components/chat/agent-selector"
 import {
   AgentConfigSection,
@@ -26,14 +30,7 @@ import {
   snapshotLabels,
 } from "@/components/automations/agent-config-section"
 import { useAgentOptions } from "@/components/automations/use-agent-options"
-import { getAgentLabel } from "@/lib/custom-agents"
-import {
-  listFolderCommands,
-  workTaskSettingsDelete,
-  workTaskSettingsGet,
-  workTaskSettingsGetOwn,
-  workTaskSettingsSet,
-} from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import { cn } from "@/lib/utils"
 import {
@@ -194,6 +191,13 @@ function TaskSettingsBody({
   onScopeChange: (folderId: number) => void
   onClose: () => void
 }) {
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Tasks")
   const folders = useAppWorkspaceStore((s) => s.folders)
   const isGlobal = folderId === GLOBAL_SCOPE
@@ -243,11 +247,13 @@ function TaskSettingsBody({
     // only fetched to migrate a legacy id-based preflight selection into the
     // free-text field (saving always writes text now).
     Promise.all([
-      isGlobal ? Promise.resolve(null) : workTaskSettingsGetOwn(folderId),
-      workTaskSettingsGet(GLOBAL_SCOPE),
+      isGlobal
+        ? Promise.resolve(null)
+        : backendApi.workTaskSettingsGetOwn(folderId),
+      backendApi.workTaskSettingsGet(GLOBAL_SCOPE),
       isGlobal
         ? Promise.resolve([])
-        : listFolderCommands(folderId).catch(() => []),
+        : backendApi.listFolderCommands(folderId).catch(() => []),
     ])
       .then(([own, global, commands]) => {
         if (cancelled) return
@@ -282,7 +288,7 @@ function TaskSettingsBody({
     return () => {
       cancelled = true
     }
-  }, [folderId, folder?.default_agent_type, isGlobal])
+  }, [folderId, folder?.default_agent_type, isGlobal, backendApi])
 
   // The form (and thus the config surface) is live for the global scope and
   // for a folder editing its own settings; while a folder follows the global
@@ -300,7 +306,7 @@ function TaskSettingsBody({
     try {
       // "Use global defaults" saves by dropping the folder's own row.
       if (!isGlobal && source === "global") {
-        await workTaskSettingsDelete(folderId)
+        await backendApi.workTaskSettingsDelete(folderId)
         onClose()
         return
       }
@@ -351,7 +357,7 @@ function TaskSettingsBody({
             .filter(([, text]) => text.length > 0)
         ),
       }
-      await workTaskSettingsSet(folderId, settings)
+      await backendApi.workTaskSettingsSet(folderId, settings)
       onClose()
     } catch (e) {
       toast.error(toErrorMessage(e))

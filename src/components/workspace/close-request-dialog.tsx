@@ -24,6 +24,7 @@
  *   terminals would die with it. Confirm the loss, do not re-ask the pref.
  */
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
@@ -40,7 +41,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
-import { listenCloseRequest, resolveCloseRequest } from "@/lib/api"
+
 import { getCurrentWindow, isDesktop } from "@/lib/platform"
 import { toErrorMessage } from "@/lib/app-error"
 import type { CloseRequestPayload } from "@/lib/types"
@@ -63,6 +64,8 @@ const backoffMs = (attempt: number) =>
   Math.min(RETRY_BASE_MS * 2 ** attempt, RETRY_MAX_MS)
 
 export function CloseRequestDialog() {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("CloseRequestDialog")
   const [request, setRequest] = useState<CloseRequestPayload | null>(null)
   const [remember, setRemember] = useState(false)
@@ -104,7 +107,7 @@ export function CloseRequestDialog() {
     // press that vanishes.
     const announceListening = (attempt = 0) => {
       if (disposed) return
-      void resolveCloseRequest("cancel", false).catch((err) => {
+      void backendApi.resolveCloseRequest("cancel", false).catch((err) => {
         if (disposed) return
         if (!warnedHandshake) {
           warnedHandshake = true
@@ -118,13 +121,14 @@ export function CloseRequestDialog() {
     // and announce only once the listener is armed.
     const subscribe = (attempt = 0) => {
       if (disposed) return
-      void listenCloseRequest((payload) => {
-        // Fresh prompt, fresh checkbox: "remember" is a decision about this
-        // press, not a sticky UI preference.
-        setRemember(false)
-        setBusy(false)
-        setRequest(payload)
-      })
+      void backendApi
+        .listenCloseRequest((payload) => {
+          // Fresh prompt, fresh checkbox: "remember" is a decision about this
+          // press, not a sticky UI preference.
+          setRemember(false)
+          setBusy(false)
+          setRequest(payload)
+        })
         .then((fn) => {
           if (disposed) {
             fn()
@@ -161,13 +165,13 @@ export function CloseRequestDialog() {
       timers.clear()
       unsubscribe?.()
     }
-  }, [])
+  }, [backendApi])
 
   const respond = useCallback(
     async (action: CloseAction) => {
       setBusy(true)
       try {
-        await resolveCloseRequest(
+        await backendApi.resolveCloseRequest(
           action,
           action !== "cancel" && rememberRef.current
         )
@@ -183,7 +187,7 @@ export function CloseRequestDialog() {
         setBusy(false)
       }
     },
-    [t]
+    [t, backendApi]
   )
 
   if (!request) return null

@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useState, type FormEvent } from "react"
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
@@ -29,6 +30,8 @@ export function ManualMachineDialog({
   onClose: () => void
   onSaved: (machine: Machine) => void
 }) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Machines")
   const [name, setName] = useState(machine?.name ?? "")
   const [target, setTarget] = useState(() =>
@@ -53,12 +56,15 @@ export function ManualMachineDialog({
     setSaving(true)
     setError(null)
     try {
-      const saved = await saveManualMachine({
-        id: machine?.id ?? null,
-        name: name.trim(),
-        ...endpointInput(target),
-        jump_host: useJump ? endpointInput(jump) : null,
-      })
+      const saved = await saveManualMachine(
+        {
+          id: machine?.id ?? null,
+          name: name.trim(),
+          ...endpointInput(target),
+          jump_host: useJump ? endpointInput(jump) : null,
+        },
+        backendPlatform
+      )
       setTarget(endpointForm())
       setJump(endpointForm())
       onSaved(saved)

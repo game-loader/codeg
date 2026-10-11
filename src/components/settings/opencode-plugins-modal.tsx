@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
   Dialog,
@@ -11,11 +12,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Download, Loader2, RefreshCw, Trash2 } from "lucide-react"
 import { useTranslations } from "next-intl"
-import {
-  opencodeListPlugins,
-  opencodeInstallPlugins,
-  opencodeUninstallPlugin,
-} from "@/lib/api"
+
 import { usePluginInstallStream } from "@/hooks/use-plugin-install-stream"
 import { randomUUID } from "@/lib/utils"
 import type { PluginCheckSummary, PluginInfo, PluginStatus } from "@/lib/types"
@@ -42,6 +39,8 @@ export function OpencodePluginsModal({
   onOpenChange,
   onCompleted,
 }: OpencodePluginsModalProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("AcpAgentSettings")
   const [summary, setSummary] = useState<PluginCheckSummary | null>(null)
   const [loading, setLoading] = useState(false)
@@ -54,14 +53,14 @@ export function OpencodePluginsModal({
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const result = await opencodeListPlugins()
+      const result = await backendApi.opencodeListPlugins()
       setSummary(result)
     } catch (err) {
       console.error("[OpencodePlugins] Failed to list plugins:", err)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [backendApi])
 
   useEffect(() => {
     if (open) {
@@ -89,36 +88,39 @@ export function OpencodePluginsModal({
     const taskId = randomUUID()
     await stream.start(taskId)
     try {
-      await opencodeInstallPlugins(taskId)
+      await backendApi.opencodeInstallPlugins(taskId)
     } catch {
       // Error handled by event stream
     }
-  }, [stream])
+  }, [stream, backendApi])
 
   const handleInstallOne = useCallback(
     async (name: string) => {
       const taskId = randomUUID()
       await stream.start(taskId)
       try {
-        await opencodeInstallPlugins(taskId, [name])
+        await backendApi.opencodeInstallPlugins(taskId, [name])
       } catch {
         // Error handled by event stream
       }
     },
-    [stream]
+    [stream, backendApi]
   )
 
-  const handleUninstall = useCallback(async (name: string) => {
-    setUninstalling(name)
-    try {
-      const result = await opencodeUninstallPlugin(name)
-      setSummary(result)
-    } catch (err) {
-      console.error("[OpencodePlugins] Uninstall failed:", err)
-    } finally {
-      setUninstalling(null)
-    }
-  }, [])
+  const handleUninstall = useCallback(
+    async (name: string) => {
+      setUninstalling(name)
+      try {
+        const result = await backendApi.opencodeUninstallPlugin(name)
+        setSummary(result)
+      } catch (err) {
+        console.error("[OpencodePlugins] Uninstall failed:", err)
+      } finally {
+        setUninstalling(null)
+      }
+    },
+    [backendApi]
+  )
 
   const handleClose = useCallback(
     (nextOpen: boolean) => {

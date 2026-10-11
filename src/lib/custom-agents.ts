@@ -1,3 +1,5 @@
+import * as legacyBackendApi from "@/lib/api"
+import type { BackendApi } from "@/lib/backend/types"
 /**
  * Display metadata for **custom (user-registered) ACP agents**.
  *
@@ -6,9 +8,9 @@
  * those records can no longer be indexed directly — every call site goes
  * through {@link getAgentLabel} / {@link getAgentColor} instead.
  *
- * The store is a plain module-level map rather than React state on purpose:
- * labels are read from ~70 render paths, and threading a context through all
- * of them would be far more invasive than the problem warrants. It is
+ * Each fixed API client owns a display map:
+ * React readers bind through useAgentDisplay; standalone helpers keep a
+ * compatibility map. Display metadata is
  * populated once from the agent list the settings/connection layer already
  * fetches, and until then {@link getAgentLabel} falls back to a humanized form
  * of the registry id — which for most registry entries (`goose`, `qwen-code`,
@@ -25,18 +27,33 @@ import {
   type BuiltinAgentType,
 } from "@/lib/types"
 
-const customAgentNames = new Map<string, string>()
-const customAgentIcons = new Map<string, string>()
-
-// Version counter + listeners so a component can re-render when the map is
-// hydrated. Labels tolerate arriving late (the humanized-id fallback is usually
-// already right), but an icon has no such fallback — without this, the first
-// paint's initial glyph would stick until something else re-rendered the row.
-let displayVersion = 0
-const displayListeners = new Set<() => void>()
+interface DisplayCache {
+  customAgentNames: Map<string, string>
+  customAgentIcons: Map<string, string>
+  displayVersion: number
+  displayListeners: Set<() => void>
+}
+const caches = new WeakMap<BackendApi, DisplayCache>()
+function getDisplayCache(api: BackendApi): DisplayCache {
+  let cache = caches.get(api)
+  if (!cache) {
+    cache = {
+      customAgentNames: new Map(),
+      customAgentIcons: new Map(),
+      displayVersion: 0,
+      displayListeners: new Set(),
+    }
+    caches.set(api, cache)
+  }
+  return cache
+}
 
 /** Subscribe to changes published by {@link setCustomAgentDisplay}. */
-export function subscribeCustomAgentDisplay(listener: () => void): () => void {
+export function subscribeCustomAgentDisplay(
+  listener: () => void,
+  api: BackendApi = legacyBackendApi
+): () => void {
+  const { displayListeners } = getDisplayCache(api)
   displayListeners.add(listener)
   return () => {
     displayListeners.delete(listener)
@@ -44,8 +61,10 @@ export function subscribeCustomAgentDisplay(listener: () => void): () => void {
 }
 
 /** Monotonic snapshot for `useSyncExternalStore`. */
-export function getCustomAgentDisplayVersion(): number {
-  return displayVersion
+export function getCustomAgentDisplayVersion(
+  api: BackendApi = legacyBackendApi
+): number {
+  return getDisplayCache(api).displayVersion
 }
 
 /**
@@ -54,8 +73,11 @@ export function getCustomAgentDisplayVersion(): number {
  * resolving.
  */
 export function setCustomAgentDisplay(
-  entries: { agentType: AgentType; name: string; iconUrl?: string | null }[]
+  entries: { agentType: AgentType; name: string; iconUrl?: string | null }[],
+  api: BackendApi = legacyBackendApi
 ): void {
+  const cache = getDisplayCache(api)
+  const { customAgentNames, customAgentIcons, displayListeners } = cache
   const names = new Map<string, string>()
   const icons = new Map<string, string>()
   for (const entry of entries) {
@@ -80,7 +102,7 @@ export function setCustomAgentDisplay(
   for (const [id, name] of names) customAgentNames.set(id, name)
   for (const [id, icon] of icons) customAgentIcons.set(id, icon)
   if (!changed) return
-  displayVersion += 1
+  cache.displayVersion += 1
   for (const listener of displayListeners) listener()
 }
 
@@ -98,7 +120,11 @@ function sameEntries(a: Map<string, string>, b: Map<string, string>): boolean {
  * "fall back to the initial glyph" — the registry does not require an icon, and
  * a manually added agent need not supply one.
  */
-export function getAgentIconUrl(agentType: AgentType): string | null {
+export function getAgentIconUrl(
+  agentType: AgentType,
+  api: BackendApi = legacyBackendApi
+): string | null {
+  const { customAgentIcons } = getDisplayCache(api)
   const id = customAgentId(agentType)
   if (!id) return null
   return customAgentIcons.get(id) ?? null
@@ -117,12 +143,16 @@ function humanizeId(id: string): string {
  * Human-readable name for any agent type. Built-ins use their pinned label;
  * custom agents use their registered name, falling back to a humanized id.
  */
-export function getAgentLabel(agentType: AgentType): string {
+export function getAgentLabel(
+  agentType: AgentType,
+  api: BackendApi | null = legacyBackendApi
+): string {
+  const customAgentNames = api ? getDisplayCache(api).customAgentNames : null
   const builtin = AGENT_LABELS[agentType as BuiltinAgentType]
   if (builtin) return builtin
   const id = customAgentId(agentType)
   if (!id) return agentType
-  return customAgentNames.get(id) ?? humanizeId(id)
+  return customAgentNames?.get(id) ?? humanizeId(id)
 }
 
 /**
@@ -162,8 +192,11 @@ export function getAgentColor(agentType: AgentType): string {
  * Single uppercase letter used as a custom agent's icon glyph, for agents with
  * no icon of their own (see {@link getAgentIconUrl}).
  */
-export function getAgentInitial(agentType: AgentType): string {
-  return getAgentLabel(agentType).trim().charAt(0).toUpperCase() || "?"
+export function getAgentInitial(
+  agentType: AgentType,
+  api: BackendApi = legacyBackendApi
+): string {
+  return getAgentLabel(agentType, api).trim().charAt(0).toUpperCase() || "?"
 }
 
 /**

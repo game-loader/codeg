@@ -90,7 +90,9 @@ describe("paper research entry", () => {
       expect.objectContaining({
         paper_id: "paper-1",
         working_dir: "/research/repo",
-      })
+      }),
+      expect.any(Object),
+      expect.objectContaining({ getTransport: expect.any(Function) })
     )
   })
 

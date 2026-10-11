@@ -35,7 +35,12 @@ pub async fn get_folder(
     Json(params): Json<FolderIdParams>,
 ) -> Result<Json<FolderDetail>, AppCommandError> {
     Ok(Json(
-        folder_commands::get_folder_core(&state.db, params.folder_id).await?,
+        folder_commands::get_folder_core(&state.db, params.folder_id)
+            .await
+            .map_err(|error| match error {
+                crate::db::error::DbError::NotFound(message) => AppCommandError::not_found(message),
+                error => AppCommandError::db(error),
+            })?,
     ))
 }
 
@@ -79,12 +84,8 @@ pub async fn open_worktree_folder(
     Json(params): Json<OpenWorktreeFolderParams>,
 ) -> Result<Json<FolderDetail>, AppCommandError> {
     Ok(Json(
-        folder_commands::open_worktree_folder_core(
-            &state.db,
-            params.path,
-            params.source_folder_id,
-        )
-        .await?,
+        folder_commands::open_worktree_folder_core(&state.db, params.path, params.source_folder_id)
+            .await?,
     ))
 }
 
@@ -151,12 +152,8 @@ pub async fn remove_folder_from_workspace(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<FolderIdParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    folder_commands::remove_folder_from_workspace_core(
-        &state.emitter,
-        &state.db,
-        params.folder_id,
-    )
-    .await?;
+    folder_commands::remove_folder_from_workspace_core(&state.emitter, &state.db, params.folder_id)
+        .await?;
     Ok(Json(()))
 }
 

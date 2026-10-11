@@ -1,3 +1,4 @@
+import type { BackendStores } from "@/lib/backend/stores"
 import { formatConversationTitle } from "@/lib/conversation-title"
 import type { NotifyPayload } from "@/lib/desktop-notification"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
@@ -27,17 +28,18 @@ import { useTabStore } from "@/stores/tab-store"
 function describeNotificationSession(
   contextKey: string,
   connectionConversationId: number | null | undefined,
-  activeFolderName: string | null | undefined
+  activeFolderName: string | null | undefined,
+  stores: Pick<BackendStores, "workspace" | "tabs" | "conversationRuntime">
 ): { sessionTitle: string | null; folderName: string | null } {
-  const workspace = useAppWorkspaceStore.getState()
-  const tab = useTabStore.getState().tabs.find((t) => t.id === contextKey)
+  const workspace = stores.workspace.getState()
+  const tab = stores.tabs.getState().tabs.find((t) => t.id === contextKey)
 
   let conversationId = tab ? tab.conversationId : connectionConversationId
   // The runtime session learns the row id on the first send, which can be
   // before the draft's tab is bound to it.
   if (tab && conversationId == null && tab.runtimeConversationId != null) {
     conversationId =
-      useConversationRuntimeStore
+      stores.conversationRuntime
         .getState()
         .byConversationId.get(tab.runtimeConversationId)?.dbConversationId ??
       null
@@ -83,12 +85,18 @@ export function sessionNotificationPayload(
   contextKey: string,
   connectionConversationId: number | null | undefined,
   activeFolderName: string | null | undefined,
-  content: { body: string; redactedBody?: string }
+  content: { body: string; redactedBody?: string },
+  stores: Pick<BackendStores, "workspace" | "tabs" | "conversationRuntime"> = {
+    workspace: useAppWorkspaceStore,
+    tabs: useTabStore,
+    conversationRuntime: useConversationRuntimeStore,
+  }
 ): NotifyPayload {
   const { sessionTitle, folderName } = describeNotificationSession(
     contextKey,
     connectionConversationId,
-    activeFolderName
+    activeFolderName,
+    stores
   )
   const folderTitle = folderName ? `${folderName} - Codeg` : "Codeg"
   if (!sessionTitle) return { title: folderTitle, ...content }

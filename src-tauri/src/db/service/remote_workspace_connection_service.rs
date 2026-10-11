@@ -10,7 +10,7 @@ use sea_orm::{
 use crate::app_error::AppCommandError;
 use crate::db::entities::remote_workspace_connection;
 use crate::db::error::DbError;
-use crate::models::{RemoteWorkspaceConnectionInfo, RemoteWorkspaceHeader};
+use crate::models::{RemoteWorkspaceConnectionInfo, RemoteWorkspaceHeader, ToHeaderMap};
 
 /// Names the client sets itself, on the HTTP calls and on the WebSocket
 /// handshake. The save fails rather than silently drop what the user typed.
@@ -44,6 +44,7 @@ fn to_info(model: remote_workspace_connection::Model) -> RemoteWorkspaceConnecti
         sort_order: model.sort_order,
         created_at: model.created_at,
         updated_at: model.updated_at,
+        config_revision: model.config_revision,
     }
 }
 
@@ -162,6 +163,7 @@ pub async fn create(
         base_url: Set(normalize_base_url(base_url)?),
         token: Set(validate_token(token)?),
         headers: Set(headers),
+        config_revision: Set(uuid::Uuid::new_v4().simple().to_string()),
         sort_order: Set(max_order + 1),
         created_at: Set(now),
         updated_at: Set(now),
@@ -182,7 +184,9 @@ pub async fn update(
     token: &str,
     headers: &[RemoteWorkspaceHeader],
 ) -> Result<RemoteWorkspaceConnectionInfo, AppCommandError> {
-    let headers = serialize_headers(&validate_headers(headers)?)?;
+    let headers = validate_headers(headers)?;
+    let base_url = normalize_base_url(base_url)?;
+    let token = validate_token(token)?;
     let row = remote_workspace_connection::Entity::find_by_id(id)
         .one(conn)
         .await
@@ -190,12 +194,21 @@ pub async fn update(
         .map_err(AppCommandError::db)?
         .ok_or_else(|| AppCommandError::not_found(format!("Remote connection {id} not found")))?;
 
+    let old_headers: Vec<RemoteWorkspaceHeader> =
+        serde_json::from_str(&row.headers).unwrap_or_default();
+    let changed = normalize_base_url(&row.base_url)? != base_url
+        || validate_token(&row.token)? != token
+        || old_headers.to_header_map() != headers.to_header_map();
+    let headers = serialize_headers(&headers)?;
     let mut active = row.into_active_model();
     active.name = Set(validate_name(name)?);
-    active.base_url = Set(normalize_base_url(base_url)?);
-    active.token = Set(validate_token(token)?);
+    active.base_url = Set(base_url);
+    active.token = Set(token);
     active.headers = Set(headers);
     active.updated_at = Set(Utc::now());
+    if changed {
+        active.config_revision = Set(uuid::Uuid::new_v4().simple().to_string());
+    }
     let model = active
         .update(conn)
         .await
@@ -291,6 +304,78 @@ mod tests {
             name: name.to_string(),
             value: value.to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn revision_preserves_rename_normalized_config_and_reorder_but_rotates_each_connection_field(
+    ) {
+        let db = fresh_in_memory_db().await;
+        let a = create(
+            &db.conn,
+            "A",
+            "http://localhost:3080",
+            "token",
+            &[header("X-Test", "one"), header("X-Other", "two")],
+        )
+        .await
+        .unwrap();
+        let b = create(&db.conn, "B", "http://localhost:3081", "b-token", &[])
+            .await
+            .unwrap();
+        let b_snapshot = serde_json::to_value(&b).unwrap();
+        let renamed = update(
+            &db.conn,
+            a.id,
+            "Renamed A",
+            "  http://localhost:3080///  ",
+            " token ",
+            &[
+                header(" x-other ", " two "),
+                header("x-test", "one"),
+                header("", ""),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(renamed.name, "Renamed A");
+        assert_eq!(renamed.config_revision, a.config_revision);
+        let mut current = renamed;
+        for (url, token, headers) in [
+            (
+                "http://localhost:3090",
+                "token",
+                vec![header("X-Test", "one"), header("X-Other", "two")],
+            ),
+            (
+                "http://localhost:3090",
+                "new-token",
+                vec![header("X-Test", "one"), header("X-Other", "two")],
+            ),
+            (
+                "http://localhost:3090",
+                "new-token",
+                vec![header("X-Test", "changed"), header("X-Other", "two")],
+            ),
+        ] {
+            let updated = update(&db.conn, a.id, "Renamed A", url, token, &headers)
+                .await
+                .unwrap();
+            assert_ne!(updated.config_revision, current.config_revision);
+            assert_eq!(
+                serde_json::to_value(get(&db.conn, b.id).await.unwrap().unwrap()).unwrap(),
+                b_snapshot
+            );
+            current = updated;
+        }
+        reorder(&db.conn, vec![b.id, a.id]).await.unwrap();
+        assert_eq!(
+            get(&db.conn, a.id).await.unwrap().unwrap().config_revision,
+            current.config_revision
+        );
+        assert_eq!(
+            get(&db.conn, b.id).await.unwrap().unwrap().config_revision,
+            b.config_revision
+        );
     }
 
     #[test]

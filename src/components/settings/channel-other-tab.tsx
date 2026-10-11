@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useState } from "react"
 import { Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -12,7 +13,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { getChatMessageLanguage, setChatMessageLanguage } from "@/lib/api"
 
 const SUPPORTED_LANGUAGES = [
   "en",
@@ -28,23 +28,26 @@ const SUPPORTED_LANGUAGES = [
 ] as const
 
 export function ChannelOtherTab() {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("ChatChannelSettings.language")
   const [language, setLanguage] = useState("en")
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    getChatMessageLanguage()
+    backendApi
+      .getChatMessageLanguage()
       .then((lang) => setLanguage(lang))
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [])
+  }, [backendApi])
 
   const handleLanguageChange = useCallback(
     async (value: string) => {
       setSaving(true)
       try {
-        await setChatMessageLanguage(value)
+        await backendApi.setChatMessageLanguage(value)
         setLanguage(value)
         toast.success(t("saved"))
       } catch {
@@ -53,7 +56,7 @@ export function ChannelOtherTab() {
         setSaving(false)
       }
     },
-    [t]
+    [t, backendApi]
   )
 
   if (loading) {

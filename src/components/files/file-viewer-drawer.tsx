@@ -1,5 +1,7 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import { ArrowLeft, Code, Eye, ExternalLink } from "lucide-react"
@@ -23,7 +25,7 @@ import {
   useWorkspaceFileTabs,
   type FileWorkspaceTab,
 } from "@/contexts/workspace-context"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import { buildFileTabId } from "@/lib/file-tab-id"
 import {
   findOwningFolder,
@@ -115,6 +117,9 @@ export function FileViewerDrawer({
 }
 
 function FileViewerBody({ request }: { request: FileViewerRequest }) {
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
   const t = useTranslations("Folder.fileViewer")
   const {
     openFilePreview,

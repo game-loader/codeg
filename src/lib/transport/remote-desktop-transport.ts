@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import { WS_READY_CHANNEL } from "./constants"
+import {
+  isRemoteConfigurationChanged,
+  REMOTE_CONFIGURATION_CHANGED_MESSAGE,
+} from "./remote-errors"
 import type { AttachTransportHost } from "./web-event-stream"
 import { WebEventStream } from "./web-event-stream"
 import type {
@@ -106,6 +110,10 @@ export class RemoteDesktopTransport implements Transport {
   private readonly subscriptionId = crypto.randomUUID()
   /// Null = not yet requested; true = subscribe invoke in-flight or done.
   private wsStarted = false
+  private wsStartPromise: Promise<void> | null = null
+  private authRejected = false
+  private authRecovery: Promise<void> | null = null
+  private lastAuthRecoveryAt: number | null = null
   /// Latched in `destroy()` so any in-flight `subscribe()` awaiters
   /// settle promptly instead of hanging on `readyPromise`.
   private destroyed = false
@@ -165,6 +173,9 @@ export class RemoteDesktopTransport implements Transport {
     args?: Record<string, unknown>,
     options?: CallOptions
   ): Promise<T> {
+    if (this.destroyed) {
+      throw new Error(REMOTE_CONFIGURATION_CHANGED_MESSAGE)
+    }
     try {
       // Forward `timeoutMs` through to `remote_http_call`. Without this,
       // the Rust client's 30s default fires before the backend can answer
@@ -175,7 +186,15 @@ export class RemoteDesktopTransport implements Transport {
         command,
         args: args ?? {},
         timeoutMs: options?.timeoutMs,
+        ...(this.config.configRevision
+          ? { configRevision: this.config.configRevision }
+          : {}),
       })
+      if (this.destroyed) throw new Error(REMOTE_CONFIGURATION_CHANGED_MESSAGE)
+      // A 401 stops Rust's WS task. A later successful request (including the
+      // machine's Refresh action) must revive it without replacing the view,
+      // otherwise HTTP appears connected but its streams remain dead.
+      this.recoverAuthenticatedStream()
       return result
     } catch (err) {
       // The Rust proxy returns 401 from the remote server as
@@ -185,6 +204,7 @@ export class RemoteDesktopTransport implements Transport {
       if (isAuthenticationFailed(err)) {
         this.config.onUnauthorized?.()
       }
+      if (isRemoteConfigurationChanged(err)) this.retireConfiguration()
       throw err
     }
   }
@@ -193,6 +213,9 @@ export class RemoteDesktopTransport implements Transport {
     event: string,
     handler: (payload: T) => void
   ): Promise<UnsubscribeFn> {
+    if (this.destroyed) {
+      throw new Error(REMOTE_CONFIGURATION_CHANGED_MESSAGE)
+    }
     if (!this.handlers.has(event)) {
       this.handlers.set(event, new Set())
     }
@@ -266,7 +289,14 @@ export class RemoteDesktopTransport implements Transport {
     void invoke("remote_ws_send_text", {
       connectionId: this.config.id,
       text,
+      ...(this.config.configRevision
+        ? { configRevision: this.config.configRevision }
+        : {}),
     }).catch((err) => {
+      if (isRemoteConfigurationChanged(err)) {
+        this.retireConfiguration()
+        return
+      }
       console.warn("[RemoteDesktopTransport] remote_ws_send_text failed:", err)
       this.scheduleReattachAfterSendFailure()
     })
@@ -294,7 +324,57 @@ export class RemoteDesktopTransport implements Transport {
     }, 200)
   }
 
-  private async startWs() {
+  private startWs(): Promise<void> {
+    if (this.wsStartPromise) return this.wsStartPromise
+    const pending = this.openWs()
+    this.wsStartPromise = pending
+    const clear = () => {
+      if (this.wsStartPromise === pending) this.wsStartPromise = null
+    }
+    void pending.then(clear, clear)
+    return pending
+  }
+
+  private recoverAuthenticatedStream(): void {
+    if (!this.authRejected || this.authRecovery || this.destroyed) return
+    const now = Date.now()
+    if (
+      this.lastAuthRecoveryAt !== null &&
+      now - this.lastAuthRecoveryAt < 5000
+    )
+      return
+    this.lastAuthRecoveryAt = now
+    this.authRejected = false
+    const pending = (async () => {
+      await this.wsStartPromise?.catch(() => {})
+      if (this.destroyed) return
+      this.wsOpen = false
+      this.readyResolve?.()
+      this.resetReady()
+      this.unlistenWsEvent?.()
+      this.unlistenWsEvent = null
+      await invoke("remote_ws_unsubscribe", {
+        connectionId: this.config.id,
+        subscriptionId: this.subscriptionId,
+      }).catch(() => {})
+      if (this.destroyed) return
+      this.wsStarted = false
+      await this.startWs()
+    })().catch((error: unknown) => {
+      if (this.destroyed) return
+      if (isRemoteConfigurationChanged(error)) this.retireConfiguration()
+      else {
+        this.authRejected = true
+        this.config.onDisconnected?.()
+      }
+    })
+    this.authRecovery = pending
+    void pending.then(() => {
+      if (this.authRecovery === pending) this.authRecovery = null
+    })
+  }
+
+  private async openWs() {
     this.wsStarted = true
 
     try {
@@ -308,10 +388,18 @@ export class RemoteDesktopTransport implements Transport {
     }
 
     try {
+      if (this.destroyed) {
+        this.unlistenWsEvent?.()
+        this.unlistenWsEvent = null
+        return
+      }
       await invoke("remote_ws_subscribe", {
         connectionId: this.config.id,
         subscriptionId: this.subscriptionId,
         windowInstanceId: this.config.windowInstanceId,
+        ...(this.config.configRevision
+          ? { configRevision: this.config.configRevision }
+          : {}),
       })
       if (this.destroyed) {
         // destroy() ran while the invoke was in-flight; clean up immediately.
@@ -326,12 +414,25 @@ export class RemoteDesktopTransport implements Transport {
       this.unlistenWsEvent?.()
       this.unlistenWsEvent = null
       this.wsStarted = false
+      if (isRemoteConfigurationChanged(err)) this.retireConfiguration()
+      if (isAuthenticationFailed(err)) this.config.onUnauthorized?.()
       throw err
     }
   }
 
   private handleWsEvent(frame: WsFrame) {
     if (this.destroyed) return
+    // IPC can deliver an already-emitted old frame after this window mounts a
+    // replacement transport. Rust stamps the issuing binding on every frame.
+    // Fence before either attach frames or lifecycle/readiness notifications.
+    if (
+      this.config.configRevision &&
+      (!frame ||
+        typeof frame !== "object" ||
+        (frame as { configRevision?: unknown }).configRevision !==
+          this.config.configRevision)
+    )
+      return
 
     // Attach-protocol frames are top-level `{ type, ... }` (the Rust proxy
     // forwards the WS text frame as-is, so the wire shape `ServerMsg` from
@@ -385,11 +486,20 @@ export class RemoteDesktopTransport implements Transport {
       // New subscribers (and any concurrent subscribe() calls in flight)
       // must wait for the next `__ready__` before resolving.
       this.resetReady()
+      this.config.onDisconnected?.()
+      return
+    }
+    if (channel === "__configuration_changed__") {
+      this.retireConfiguration()
       return
     }
     if (channel === WS_UNAUTHORIZED_CHANNEL) {
-      // Rust gave up after WS_RECONNECT_FAIL_THRESHOLD failures, OR the
-      // remote rejected the handshake. Either way, surface as expired.
+      // Only an explicit rejection is an auth failure. Network outages use
+      // __disconnected__ and retain the saved credential.
+      this.wsOpen = false
+      this.authRejected = true
+      this.readyResolve?.()
+      this.resetReady()
       this.config.onUnauthorized?.()
       return
     }
@@ -399,6 +509,12 @@ export class RemoteDesktopTransport implements Transport {
         h(payload)
       }
     }
+  }
+
+  private retireConfiguration() {
+    if (this.destroyed) return
+    this.destroy()
+    this.config.onConfigurationChanged?.()
   }
 
   destroy() {

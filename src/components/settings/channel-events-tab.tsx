@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Loader2, Pencil, Plus, Trash2 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -28,12 +29,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import {
-  getChatEventFilter,
-  getChatEventWebhooks,
-  setChatEventFilter,
-  setChatEventWebhooks,
-} from "@/lib/api"
+
 import type { WebhookConfig } from "@/lib/types"
 
 const ALL_EVENT_TYPES = [
@@ -141,6 +137,8 @@ const PAYLOAD_EXAMPLES: Record<(typeof ALL_EVENT_TYPES)[number]["id"], string> =
   }
 
 export function ChannelEventsTab() {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("ChatChannelSettings.events")
   const ime = useImeGuard()
   const [enabledEvents, setEnabledEvents] = useState<Set<string>>(
@@ -173,7 +171,10 @@ export function ChannelEventsTab() {
   const loadConfig = useCallback(() => {
     setLoading(true)
     setLoadError(false)
-    Promise.all([getChatEventFilter(), getChatEventWebhooks()])
+    Promise.all([
+      backendApi.getChatEventFilter(),
+      backendApi.getChatEventWebhooks(),
+    ])
       .then(([filter, hooks]) => {
         setEnabledEvents(parseFilter(filter))
         setWebhooks(hooks)
@@ -181,7 +182,7 @@ export function ChannelEventsTab() {
       })
       .catch(() => setLoadError(true))
       .finally(() => setLoading(false))
-  }, [])
+  }, [backendApi])
 
   useEffect(() => {
     loadConfig()
@@ -205,7 +206,7 @@ export function ChannelEventsTab() {
         const isDefault =
           next.size === DEFAULT_ON_IDS.length &&
           DEFAULT_ON_IDS.every((id) => next.has(id))
-        await setChatEventFilter(isDefault ? null : [...next])
+        await backendApi.setChatEventFilter(isDefault ? null : [...next])
         setEnabledEvents(next)
         toast.success(t("saved"))
       } catch {
@@ -214,7 +215,7 @@ export function ChannelEventsTab() {
         setSaving(false)
       }
     },
-    [enabledEvents, t]
+    [enabledEvents, t, backendApi]
   )
 
   // Persist the full webhook list. State is updated only on success, so a
@@ -227,7 +228,7 @@ export function ChannelEventsTab() {
       savingRef.current = true
       setWebhooksSaving(true)
       try {
-        await setChatEventWebhooks(next)
+        await backendApi.setChatEventWebhooks(next)
         setWebhooks(next)
         toast.success(t("webhooksSaved"))
         return true
@@ -239,7 +240,7 @@ export function ChannelEventsTab() {
         setWebhooksSaving(false)
       }
     },
-    [t]
+    [t, backendApi]
   )
 
   const handleToggleEnabled = useCallback(

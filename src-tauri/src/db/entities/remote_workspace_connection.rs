@@ -13,6 +13,7 @@ pub struct Model {
     /// sends on every request to this connection.
     #[sea_orm(column_type = "Text")]
     pub headers: String,
+    pub config_revision: String,
     pub sort_order: i32,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,

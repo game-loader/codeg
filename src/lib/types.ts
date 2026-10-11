@@ -86,6 +86,8 @@ export interface RemoteWorkspaceConnection {
   sort_order: number
   created_at: string
   updated_at: string
+  /** Optional for compatibility with saved connections from older clients. */
+  config_revision?: string
 }
 
 export interface RemoteWorkspaceConnectionInput {

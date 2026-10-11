@@ -1,12 +1,13 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import {
   useEffect,
   type Dispatch,
   type RefObject,
   type SetStateAction,
 } from "react"
-import { onTransportReconnect, subscribe } from "@/lib/platform"
+
 import {
   CONVERSATION_CHANGED_EVENT,
   type ConversationChange,
@@ -62,6 +63,8 @@ export function useSubsessionSync(params: {
    *  deletion guard. */
   deletedChildIdsRef: RefObject<Set<number>>
 }): void {
+  const backendPlatform = useBackendPlatform()
+
   const { setChildrenByParent, deletedChildIdsRef } = params
 
   useEffect(() => {
@@ -165,7 +168,7 @@ export function useSubsessionSync(params: {
     let disposed = false
     let unlisten: (() => void) | undefined
     void (async () => {
-      const dispose = await subscribe<ConversationChange>(
+      const dispose = await backendPlatform.subscribe<ConversationChange>(
         CONVERSATION_CHANGED_EVENT,
         (change) => {
           if (change.kind === "upsert") {
@@ -185,7 +188,7 @@ export function useSubsessionSync(params: {
     // re-fetches fresh (events missed while disconnected are gone). The list's
     // restore-time guard re-runs `ensureChildrenLoaded` for expanded parents.
     // Returns null on desktop IPC (no disconnect window) → no-op there.
-    const offReconnect = onTransportReconnect(() => {
+    const offReconnect = backendPlatform.onTransportReconnect(() => {
       setChildrenByParent((prev) => (prev.size === 0 ? prev : new Map()))
     })
 
@@ -194,5 +197,5 @@ export function useSubsessionSync(params: {
       unlisten?.()
       offReconnect?.()
     }
-  }, [setChildrenByParent, deletedChildIdsRef])
+  }, [setChildrenByParent, deletedChildIdsRef, backendPlatform])
 }

@@ -1,6 +1,10 @@
 "use client"
 
 import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
+import {
   createContext,
   useCallback,
   useContext,
@@ -10,8 +14,7 @@ import {
   useState,
   type ReactNode,
 } from "react"
-import { automationList } from "@/lib/api"
-import { onTransportReconnect, subscribe } from "@/lib/platform"
+
 import type { Automation } from "@/lib/types"
 
 const AUTOMATION_CHANGED_EVENT = "automation://changed"
@@ -46,20 +49,23 @@ export function useAutomationsView() {
 }
 
 export function AutomationsViewProvider({ children }: { children: ReactNode }) {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const [automations, setAutomations] = useState<Automation[]>([])
   const reqRef = useRef(0)
 
   const refetch = useCallback(async () => {
     const id = ++reqRef.current
     try {
-      const list = await automationList()
+      const list = await backendApi.automationList()
       // Drop stale responses; keep the previous list on transient error rather
       // than blanking the view (matches CONVERSATION_CHANGED_EVENT consumers).
       if (id === reqRef.current) setAutomations(list)
     } catch {
       // ignore — a later event/refetch recovers
     }
-  }, [])
+  }, [backendApi])
 
   useEffect(() => {
     // Initial fetch + subscribe for backend-pushed updates. `refetch` only
@@ -71,16 +77,18 @@ export function AutomationsViewProvider({ children }: { children: ReactNode }) {
     void refetch()
     let unsub: (() => void) | undefined
     let cancelled = false
-    void subscribe(AUTOMATION_CHANGED_EVENT, () => {
-      void refetch()
-    }).then((u: () => void) => {
-      if (cancelled) u()
-      else unsub = u
-    })
+    void backendPlatform
+      .subscribe(AUTOMATION_CHANGED_EVENT, () => {
+        void refetch()
+      })
+      .then((u: () => void) => {
+        if (cancelled) u()
+        else unsub = u
+      })
     // Events fired while the WS was disconnected are dropped by the broadcaster
     // (receiver_count == 0); re-fetch on reconnect so a run that settled during
     // the gap doesn't leave the list stale. No-op on desktop IPC.
-    const offReconnect = onTransportReconnect(() => {
+    const offReconnect = backendPlatform.onTransportReconnect(() => {
       void refetch()
     })
     return () => {
@@ -89,7 +97,7 @@ export function AutomationsViewProvider({ children }: { children: ReactNode }) {
       offReconnect?.()
     }
     /* eslint-enable react-hooks/set-state-in-effect */
-  }, [refetch])
+  }, [refetch, backendPlatform])
 
   const unseenFailures = useMemo(
     () => automations.reduce((sum, a) => sum + (a.unseen_failures || 0), 0),

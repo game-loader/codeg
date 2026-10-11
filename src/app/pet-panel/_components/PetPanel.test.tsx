@@ -130,7 +130,10 @@ describe("PetPanel", () => {
   it("fits the window to measured content height on mount", () => {
     render(renderPanel())
     expect(mockResize).toHaveBeenCalledTimes(1)
-    expect(mockResize).toHaveBeenCalledWith(150)
+    expect(mockResize).toHaveBeenCalledWith(
+      150,
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
   })
 
   it("does not re-resize when the measured height is unchanged", () => {
@@ -143,11 +146,17 @@ describe("PetPanel", () => {
 
   it("re-resizes when the content height changes", () => {
     render(renderPanel())
-    expect(mockResize).toHaveBeenLastCalledWith(150)
+    expect(mockResize).toHaveBeenLastCalledWith(
+      150,
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
     measuredHeight = 248
     act(() => roCallback?.([], {} as ResizeObserver))
     expect(mockResize).toHaveBeenCalledTimes(2)
-    expect(mockResize).toHaveBeenLastCalledWith(248)
+    expect(mockResize).toHaveBeenLastCalledWith(
+      248,
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
   })
 
   it("never resizes when not running on the desktop", () => {

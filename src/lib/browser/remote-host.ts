@@ -7,31 +7,44 @@
 // instead. Every place that opens a tab asks here first, so there is one
 // answer for "is this address on the remote host?".
 
-import { getServerBaseUrl, isRemoteDesktopMode } from "@/lib/transport"
+import type { BackendPlatform } from "@/lib/backend/types"
+import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
 
 import { hostnameOf, isLoopbackHost, isRemoteHostName } from "./browser-url"
 
 /** The remote codeg-server's own host name, in a remote-workspace window;
  *  null anywhere else. */
-export function remoteServerHost(): string | null {
-  return isRemoteDesktopMode() ? hostnameOf(getServerBaseUrl()) : null
+export function remoteServerHost(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): string | null {
+  return backendPlatform.isRemoteDesktopMode()
+    ? hostnameOf(backendPlatform.getServerBaseUrl())
+    : null
 }
 
 /** The remote codeg-server's host as a person recognises it — null when it
  *  is reached through this machine's own loopback (an SSH tunnel), which
  *  names this computer, not the remote host. */
-export function remoteHostDisplayName(): string | null {
-  const host = remoteServerHost()
+export function remoteHostDisplayName(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): string | null {
+  const host = remoteServerHost(backendPlatform)
   return host && !isLoopbackHost(host) ? host : null
 }
 
 /** Whether `url`, opened in this window, names a place on the remote codeg
  *  host rather than on this computer (see `isRemoteHostName`). Always false
  *  outside a remote-workspace window. */
-export function isRemoteHostAddress(url: string): boolean {
-  if (!isRemoteDesktopMode()) return false
+export function isRemoteHostAddress(
+  url: string,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): boolean {
+  if (!backendPlatform.isRemoteDesktopMode()) return false
   const hostname = hostnameOf(url)
-  return hostname !== null && isRemoteHostName(hostname, remoteServerHost())
+  return (
+    hostname !== null &&
+    isRemoteHostName(hostname, remoteServerHost(backendPlatform))
+  )
 }
 
 /** The name a remote tab on macOS gives the remote host's loopback: WebKit

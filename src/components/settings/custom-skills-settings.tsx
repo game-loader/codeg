@@ -1,5 +1,11 @@
 "use client"
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
+import type { BackendApi } from "@/lib/backend/types"
+import * as legacyBackendApi from "@/lib/api"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Bot,
@@ -52,25 +58,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import {
-  customApplyLinks,
-  customCreateSkill,
-  customDeleteSkills,
-  customDuplicateSkill,
-  customImportFromAgent,
-  customImportSkill,
-  customList,
-  customListAllInstallStatuses,
-  customReadSkill,
-  customSaveSkill,
-  acpListAgents,
-  acpListAgentSkills,
-  expertsList,
-  scienceList,
-  officecliListSkills,
-} from "@/lib/api"
+
 import { invalidateAgentSkillsCache } from "@/hooks/use-agent-skills"
-import { isLocalDesktop } from "@/lib/platform"
+
 import { piUsesCustomAgentDir } from "@/lib/pi-config"
 import {
   defaultCustomSkillTemplate,
@@ -100,13 +90,15 @@ const CATEGORY_ORDER: Record<string, number> = { custom: 1 }
 // "no filtering" rather than blocking imports.
 let reservedSkillIdsCache: Set<string> | null = null
 
-async function loadReservedSkillIds(): Promise<Set<string>> {
+async function loadReservedSkillIds(
+  backendApi: BackendApi = legacyBackendApi
+): Promise<Set<string>> {
   if (reservedSkillIdsCache) return reservedSkillIdsCache
   try {
     const [experts, science, office] = await Promise.all([
-      expertsList(),
-      scienceList(),
-      officecliListSkills(),
+      backendApi.expertsList(),
+      backendApi.scienceList(),
+      backendApi.officecliListSkills(),
     ])
     const ids = new Set<string>([
       ...experts.map((e) => e.metadata.id),
@@ -131,6 +123,9 @@ export function CustomSkillsBody({
 }: {
   onRegisterRefresh?: (refresh: () => void) => void
 }) {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("CustomSkillsSettings")
 
   const [skills, setSkills] = useState<CustomSkillItem[]>([])
@@ -182,8 +177,8 @@ export function CustomSkillsBody({
     setLoadError(null)
     try {
       const [list, agentList] = await Promise.all([
-        customList(),
-        acpListAgents(),
+        backendApi.customList(),
+        backendApi.acpListAgents(),
       ])
       setSkills(list)
       // `skills_capable` is derived backend-side from `skill_storage_spec`:
@@ -203,7 +198,7 @@ export function CustomSkillsBody({
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [backendApi])
 
   useEffect(() => {
     refresh().catch((err) => {
@@ -220,8 +215,9 @@ export function CustomSkillsBody({
   }, [onRegisterRefresh, refresh])
 
   const invalidateAll = useCallback(() => {
-    for (const agent of agents) invalidateAgentSkillsCache(agent.agent_type)
-  }, [agents])
+    for (const agent of agents)
+      invalidateAgentSkillsCache(agent.agent_type, backendApi)
+  }, [agents, backendApi])
 
   const translateState = useCallback(
     (state: ExpertLinkState): string => {
@@ -273,7 +269,7 @@ export function CustomSkillsBody({
   const openEdit = useCallback(
     async (id: string) => {
       try {
-        const content = await customReadSkill(id)
+        const content = await backendApi.customReadSkill(id)
         setEditorMode("edit")
         setEditorId(id)
         setEditorContent(content)
@@ -285,7 +281,7 @@ export function CustomSkillsBody({
         })
       }
     },
-    [t]
+    [t, backendApi]
   )
 
   const handleSave = useCallback(async () => {
@@ -297,9 +293,9 @@ export function CustomSkillsBody({
     setEditorSaving(true)
     try {
       if (editorMode === "create") {
-        await customCreateSkill({ id, content: editorContent })
+        await backendApi.customCreateSkill({ id, content: editorContent })
       } else {
-        await customSaveSkill({ id, content: editorContent })
+        await backendApi.customSaveSkill({ id, content: editorContent })
       }
       setEditorOpen(false)
       invalidateAll()
@@ -312,14 +308,22 @@ export function CustomSkillsBody({
     } finally {
       setEditorSaving(false)
     }
-  }, [editorContent, editorId, editorMode, invalidateAll, refresh, t])
+  }, [
+    editorContent,
+    editorId,
+    editorMode,
+    invalidateAll,
+    refresh,
+    t,
+    backendApi,
+  ])
 
   const handleImport = useCallback(
     async (path: string) => {
       setImportOpen(false)
       setImporting(true)
       try {
-        await customImportSkill({ sourcePath: path })
+        await backendApi.customImportSkill({ sourcePath: path })
         invalidateAll()
         await refresh()
         toast.success(t("toasts.imported"))
@@ -331,14 +335,14 @@ export function CustomSkillsBody({
         setImporting(false)
       }
     },
-    [invalidateAll, refresh, t]
+    [invalidateAll, refresh, t, backendApi]
   )
 
   // Local desktop → native OS folder picker. Web / remote workspace → the
   // server-aware directory browser (it walks the SERVER's filesystem, which is
   // where the central store lives, not the browser's).
   const handleImportClick = useCallback(async () => {
-    if (isLocalDesktop()) {
+    if (backendPlatform.isLocalDesktop()) {
       try {
         const { open } = await import("@tauri-apps/plugin-dialog")
         const picked = await open({
@@ -355,7 +359,7 @@ export function CustomSkillsBody({
       return
     }
     setImportOpen(true)
-  }, [handleImport, t])
+  }, [handleImport, t, backendPlatform])
 
   // ─── Import from agent (multi-select) ───────────────────────────────
 
@@ -368,8 +372,8 @@ export function CustomSkillsBody({
       setAgentImportSelected(new Set())
       try {
         const [result, reserved] = await Promise.all([
-          acpListAgentSkills({ agentType }),
-          loadReservedSkillIds(),
+          backendApi.acpListAgentSkills({ agentType }),
+          loadReservedSkillIds(backendApi),
         ])
         if (!result.supported) {
           setAgentImportUnsupported(true)
@@ -396,7 +400,7 @@ export function CustomSkillsBody({
         setAgentImportLoading(false)
       }
     },
-    [libraryIds]
+    [libraryIds, backendApi]
   )
 
   const openAgentImport = useCallback(() => {
@@ -444,7 +448,7 @@ export function CustomSkillsBody({
     if (!agentImportAgent || agentImportSelected.size === 0) return
     setAgentImporting(true)
     try {
-      const results = await customImportFromAgent({
+      const results = await backendApi.customImportFromAgent({
         agentType: agentImportAgent,
         ids: [...agentImportSelected],
       })
@@ -471,7 +475,14 @@ export function CustomSkillsBody({
     } finally {
       setAgentImporting(false)
     }
-  }, [agentImportAgent, agentImportSelected, invalidateAll, refresh, t])
+  }, [
+    agentImportAgent,
+    agentImportSelected,
+    invalidateAll,
+    refresh,
+    t,
+    backendApi,
+  ])
 
   const openDuplicate = useCallback((id: string) => {
     setDuplicateSource(id)
@@ -487,7 +498,10 @@ export function CustomSkillsBody({
     }
     setDuplicating(true)
     try {
-      await customDuplicateSkill({ sourceId: duplicateSource, newId })
+      await backendApi.customDuplicateSkill({
+        sourceId: duplicateSource,
+        newId,
+      })
       setDuplicateSource(null)
       invalidateAll()
       await refresh()
@@ -499,13 +513,13 @@ export function CustomSkillsBody({
     } finally {
       setDuplicating(false)
     }
-  }, [duplicateNewId, duplicateSource, invalidateAll, refresh, t])
+  }, [duplicateNewId, duplicateSource, invalidateAll, refresh, t, backendApi])
 
   const handleConfirmDelete = useCallback(async () => {
     if (!deleteIds || deleteIds.length === 0) return
     setDeleting(true)
     try {
-      const results = await customDeleteSkills(deleteIds)
+      const results = await backendApi.customDeleteSkills(deleteIds)
       const failed = results.filter((r) => !r.ok)
       invalidateAll()
       await refresh()
@@ -528,7 +542,7 @@ export function CustomSkillsBody({
     } finally {
       setDeleting(false)
     }
-  }, [deleteIds, invalidateAll, refresh, t])
+  }, [deleteIds, invalidateAll, refresh, t, backendApi])
 
   // ─── Matrix slots ───────────────────────────────────────────────────
 
@@ -645,11 +659,11 @@ export function CustomSkillsBody({
           categoryOrder={CATEGORY_ORDER}
           translateCategory={() => t("category")}
           translateState={translateState}
-          loadAllStatuses={customListAllInstallStatuses}
-          applyLinks={customApplyLinks}
-          loadContent={customReadSkill}
+          loadAllStatuses={backendApi.customListAllInstallStatuses}
+          applyLinks={backendApi.customApplyLinks}
+          loadContent={backendApi.customReadSkill}
           onApplied={(touched: AgentType[]) =>
-            touched.forEach((a) => invalidateAgentSkillsCache(a))
+            touched.forEach((a) => invalidateAgentSkillsCache(a, backendApi))
           }
           searchPlaceholder={t("searchPlaceholder")}
           toolbarActions={toolbarActions}

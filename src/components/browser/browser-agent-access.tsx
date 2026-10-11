@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useRef, type KeyboardEvent } from "react"
 
 import {
@@ -38,7 +39,7 @@ import type {
   GrantLevel,
 } from "@/lib/browser/types"
 import { browserTabBackendId } from "@/lib/file-tab-id"
-import { isRemoteDesktopMode } from "@/lib/transport"
+
 import { cn } from "@/lib/utils"
 
 import { FIELD_BTN, FIELD_PILL } from "./browser-toolbar-buttons"
@@ -93,6 +94,8 @@ export function BrowserAgentShareControl({
   tab: BrowserWorkspaceTab
   state: BrowserTabState | null
 }) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Browser.agent")
   const backendId = browserTabBackendId(tab.id)
   const grant = state?.agentGrant ?? null
@@ -119,7 +122,7 @@ export function BrowserAgentShareControl({
     // The agents of a remote workspace run on its host, and their browser
     // tools reach that host's codeg — which has no browser. Sharing a page
     // of this window would hand it to nobody who works here.
-    const remoteWindow = isRemoteDesktopMode()
+    const remoteWindow = backendPlatform.isRemoteDesktopMode()
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>

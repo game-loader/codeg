@@ -1,5 +1,13 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+import { getRuntimeSession as standaloneGetRuntimeSession } from "@/stores/conversation-runtime-store"
+
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { memo, useCallback, useState } from "react"
 import {
   ChevronRight,
@@ -14,17 +22,10 @@ import {
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useImeGuard } from "@/hooks/use-ime-guard"
-import {
-  deleteConversation,
-  updateConversationPinned,
-  updateConversationStatus,
-  updateConversationTitle,
-} from "@/lib/api"
+
 import { formatConversationTitle } from "@/lib/conversation-title"
 import { ConversationHeaderFolderPicker } from "@/components/chat/conversation-context-bar"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabActions } from "@/contexts/tab-context"
-import { getRuntimeSession } from "@/stores/conversation-runtime-store"
+
 import type { ConversationStatus } from "@/lib/types"
 import { STATUS_ORDER } from "@/lib/types"
 import { ConversationStatusDot } from "@/components/conversations/conversation-status-dot"
@@ -100,6 +101,21 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
   title,
   status,
 }: ConversationDetailHeaderProps) {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({
+    workspace: legacyWorkspace,
+  })
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+  const useAppWorkspaceStore = backendStores.workspace
+  const getRuntimeSession = backendStoreSelection
+    ? backendStores.conversationRuntime.getRuntimeSession
+    : standaloneGetRuntimeSession
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.conversationCard")
   const ime = useImeGuard()
   const tConv = useTranslations("Folder.conversation")
@@ -156,10 +172,10 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
     updateConversationLocal(conversationId, {
       pinned_at: next ? new Date().toISOString() : null,
     })
-    updateConversationPinned(conversationId, next).catch((err) => {
+    backendApi.updateConversationPinned(conversationId, next).catch((err) => {
       console.error("[ConversationDetailHeader] toggle pin:", err)
     })
-  }, [conversationId, isPinned, updateConversationLocal])
+  }, [conversationId, isPinned, updateConversationLocal, backendApi])
 
   const handleNewConversation = useCallback(() => {
     if (!folderPath) return
@@ -179,25 +195,25 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
     const trimmed = renameValue.trim()
     if (trimmed && trimmed !== renameTarget.title) {
       try {
-        await updateConversationTitle(renameTarget.id, trimmed)
+        await backendApi.updateConversationTitle(renameTarget.id, trimmed)
         refreshConversations()
       } catch (err) {
         console.error("[ConversationDetailHeader] rename:", err)
       }
     }
     setRenameTarget(null)
-  }, [renameTarget, renameValue, refreshConversations])
+  }, [renameTarget, renameValue, refreshConversations, backendApi])
 
   const handleStatusChange = useCallback(
     (next: ConversationStatus) => {
       if (conversationId == null) return
       // Optimistic local patch, then persist (mirrors sidebar handleStatusChange).
       updateConversationLocal(conversationId, { status: next })
-      updateConversationStatus(conversationId, next).catch((err) => {
+      backendApi.updateConversationStatus(conversationId, next).catch((err) => {
         console.error("[ConversationDetailHeader] status change:", err)
       })
     },
-    [conversationId, updateConversationLocal]
+    [conversationId, updateConversationLocal, backendApi]
   )
 
   const handleDeleteOpen = useCallback(() => {
@@ -208,7 +224,7 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
   const handleDeleteConfirm = useCallback(async () => {
     if (deleteTarget == null) return
     try {
-      await deleteConversation(deleteTarget.id)
+      await backendApi.deleteConversation(deleteTarget.id)
       // The deleted conversation is gone — close its tab and refresh the list.
       // Not recorded for reopen: there is no longer a conversation to reopen.
       closeTab(deleteTarget.tabId, { recordForReopen: false })
@@ -217,7 +233,7 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
       console.error("[ConversationDetailHeader] delete:", err)
     }
     setDeleteTarget(null)
-  }, [deleteTarget, closeTab, refreshConversations])
+  }, [deleteTarget, closeTab, refreshConversations, backendApi])
 
   const handleOpenDetails = useCallback(() => {
     // Resolve on demand (no reactive whole-session subscription) via the same
@@ -235,7 +251,13 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
     )
     if (!resolved.summary) return
     setDetails(resolved)
-  }, [conversationId, runtimeConversationId, runtimeId])
+  }, [
+    conversationId,
+    runtimeConversationId,
+    runtimeId,
+    getRuntimeSession,
+    useAppWorkspaceStore,
+  ])
 
   return (
     // Transparent (no surface class): the title header reads as part of the

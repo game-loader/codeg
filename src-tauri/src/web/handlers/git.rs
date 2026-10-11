@@ -776,3 +776,41 @@ pub async fn clone_repository(
     .await?;
     Ok(Json(()))
 }
+
+pub async fn git_list_worktrees(
+    Json(params): Json<PathParams>,
+) -> Result<Json<Vec<crate::models::GitWorktreeInfo>>, AppCommandError> {
+    Ok(Json(
+        folder_commands::git_list_worktrees_core(params.path).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRemoveWorktreePathParams {
+    pub path: String,
+    pub worktree_path: String,
+    pub source_folder_id: i32,
+    #[serde(default)]
+    pub delete_branch: bool,
+    #[serde(default)]
+    pub force: bool,
+}
+
+pub async fn git_remove_worktree_path(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<GitRemoveWorktreePathParams>,
+) -> Result<Json<folder_commands::GitWorktreeRemoval>, AppCommandError> {
+    Ok(Json(
+        folder_commands::git_remove_worktree_path_core(
+            &state.emitter,
+            &state.db,
+            params.path,
+            params.worktree_path,
+            params.source_folder_id,
+            params.delete_branch,
+            params.force,
+        )
+        .await?,
+    ))
+}

@@ -1,8 +1,10 @@
 "use client"
 
+import { useAcademicStore as legacyAcademic } from "@/stores/academic-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useEffect } from "react"
-import { getTransport, type Transport } from "@/lib/transport"
-import { useAcademicStore } from "@/stores/academic-store"
+import { type Transport } from "@/lib/transport"
 
 interface Subscription {
   transport: Transport
@@ -22,8 +24,13 @@ function dispose(current: Subscription) {
 }
 
 export function useAcademicEvents() {
+  const backendStores = useBackendStores({ academic: legacyAcademic })
+  const useAcademicStore = backendStores.academic
+
+  const backendPlatform = useBackendPlatform()
+
   useEffect(() => {
-    const transport = getTransport()
+    const transport = backendPlatform.getTransport()
     if (subscription?.transport !== transport) {
       if (subscription) dispose(subscription)
       subscription = null
@@ -36,7 +43,7 @@ export function useAcademicEvents() {
       }
       subscription = current
       const isCurrent = () =>
-        current.active && current.transport === getTransport()
+        current.active && current.transport === backendPlatform.getTransport()
       current.stopReconnect = transport.onReconnect?.(() => {
         if (!isCurrent()) return
         void useAcademicStore.getState().loadSettings()
@@ -80,5 +87,5 @@ export function useAcademicEvents() {
         if (subscription === current) subscription = null
       }
     }
-  }, [])
+  }, [backendPlatform, useAcademicStore])
 }

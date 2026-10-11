@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -178,6 +179,8 @@ export function WorkspaceBackgroundMarketDialog({
   appliedSourceUrl,
   onApply,
 }: WorkspaceBackgroundMarketDialogProps) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("AppearanceSettings.workspaceBackground.market")
   const [searchInput, setSearchInput] = useState("")
   const [query, setQuery] = useState("")
@@ -215,35 +218,41 @@ export function WorkspaceBackgroundMarketDialog({
     return () => clearTimeout(handle)
   }, [searchInput])
 
-  const load = useCallback(async (q: string, c: MarketCategory, p: number) => {
-    const seq = ++requestSeq.current
-    setLoading(true)
-    setError(null)
-    setShownPage(p)
-    try {
-      const result = await searchWorkspaceBgMarket({
-        query: q,
-        category: c,
-        page: p,
-      })
-      if (seq !== requestSeq.current) return
-      setItems(result.items)
-      setLastPage(result.lastPage)
-      setShownPage(result.page)
-      // 把游标拉到上游真正给的那一页，翻页才总是从一页真实存在的页起算。
-      // 只往回拉，不追着往前跑：夹页（要第 9 页、给第 5 页）是唯一现实的分歧，
-      // 而「给的比要的大」若每次都发生，追下去就是一个由远端应答驱动、没有上限
-      // 的请求循环。往回拉最多再对齐一次就收敛。
-      if (result.page < p) setPage(result.page)
-    } catch (err) {
-      if (seq !== requestSeq.current) return
-      setItems([])
-      setLastPage(1)
-      setError(toErrorMessage(err))
-    } finally {
-      if (seq === requestSeq.current) setLoading(false)
-    }
-  }, [])
+  const load = useCallback(
+    async (q: string, c: MarketCategory, p: number) => {
+      const seq = ++requestSeq.current
+      setLoading(true)
+      setError(null)
+      setShownPage(p)
+      try {
+        const result = await searchWorkspaceBgMarket(
+          {
+            query: q,
+            category: c,
+            page: p,
+          },
+          backendPlatform
+        )
+        if (seq !== requestSeq.current) return
+        setItems(result.items)
+        setLastPage(result.lastPage)
+        setShownPage(result.page)
+        // 把游标拉到上游真正给的那一页，翻页才总是从一页真实存在的页起算。
+        // 只往回拉，不追着往前跑：夹页（要第 9 页、给第 5 页）是唯一现实的分歧，
+        // 而「给的比要的大」若每次都发生，追下去就是一个由远端应答驱动、没有上限
+        // 的请求循环。往回拉最多再对齐一次就收敛。
+        if (result.page < p) setPage(result.page)
+      } catch (err) {
+        if (seq !== requestSeq.current) return
+        setItems([])
+        setLastPage(1)
+        setError(toErrorMessage(err))
+      } finally {
+        if (seq === requestSeq.current) setLoading(false)
+      }
+    },
+    [backendPlatform]
+  )
 
   useEffect(() => {
     if (!open) return

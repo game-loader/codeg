@@ -1,5 +1,7 @@
 "use client"
 
+import * as legacyBackendApi from "@/lib/api"
+import type { BackendApi } from "@/lib/backend/types"
 /**
  * Remembers what each agent CALLS its models, so a surface holding nothing but
  * a raw model id can show the name the user picked it by.
@@ -51,8 +53,24 @@ export type ModelLabels = ReadonlyMap<string, string>
  *  forever ("Maximum update depth exceeded"). */
 const NO_LABELS: ModelLabels = new Map()
 
-let labels: Map<string, Map<string, string>> | null = null
-const listeners = new Set<() => void>()
+interface LabelCache {
+  labels: Map<string, Map<string, string>> | null
+  listeners: Set<() => void>
+  storageKey: string | null
+}
+const caches = new WeakMap<BackendApi, LabelCache>()
+function getCache(api: BackendApi, storageKey?: string): LabelCache {
+  let cache = caches.get(api)
+  if (!cache) {
+    cache = {
+      labels: null,
+      listeners: new Set(),
+      storageKey: storageKey ?? (api === legacyBackendApi ? STORAGE_KEY : null),
+    }
+    caches.set(api, cache)
+  }
+  return cache
+}
 
 /**
  * Keep only `{agent: {id: nonEmptyLabel}}`, discarding anything else.
@@ -83,7 +101,8 @@ function normalize(raw: unknown): Map<string, Map<string, string>> {
   return out
 }
 
-function load(): Map<string, Map<string, string>> {
+function load(cache: LabelCache): Map<string, Map<string, string>> {
+  let { labels } = cache
   if (labels) return labels
   if (typeof window === "undefined") {
     // Deliberately NOT cached: this module outlives a server render, and
@@ -92,16 +111,17 @@ function load(): Map<string, Map<string, string>> {
     return new Map()
   }
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = cache.storageKey ? localStorage.getItem(cache.storageKey) : null
     labels = raw ? normalize(JSON.parse(raw)) : new Map()
   } catch {
     labels = new Map()
   }
+  cache.labels = labels
   return labels
 }
 
-function persist(all: Map<string, Map<string, string>>) {
-  labels = all
+function persist(cache: LabelCache, all: Map<string, Map<string, string>>) {
+  cache.labels = all
   if (typeof window !== "undefined") {
     try {
       // `Object.fromEntries` DEFINES each key rather than assigning it, so an
@@ -113,12 +133,13 @@ function persist(all: Map<string, Map<string, string>>) {
           Object.fromEntries(byId),
         ])
       )
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(plain))
+      if (cache.storageKey)
+        localStorage.setItem(cache.storageKey, JSON.stringify(plain))
     } catch {
       /* quota / private mode — the in-memory map still serves this session */
     }
   }
-  for (const listener of listeners) listener()
+  for (const listener of cache.listeners) listener()
 }
 
 /**
@@ -152,12 +173,15 @@ function modelSelectOptions(
  */
 export function rememberModelLabels(
   agentType: string,
-  options: SessionConfigOptionInfo[] | null | undefined
+  options: SessionConfigOptionInfo[] | null | undefined,
+  api: BackendApi = legacyBackendApi,
+  storageKey?: string
 ): void {
+  const cache = getCache(api, storageKey)
   const selectOptions = modelSelectOptions(options)
   if (!selectOptions) return
 
-  const all = load()
+  const all = load(cache)
   const existing = all.get(agentType)
   let next: Map<string, string> | null = null
   for (const option of selectOptions) {
@@ -175,18 +199,27 @@ export function rememberModelLabels(
   // changes, so a write here cannot re-render a surface reading another
   // agent's labels.
   all.set(agentType, next)
-  persist(all)
+  persist(cache, all)
 }
 
 /**
  * Every label known for an agent, as a `useSyncExternalStore`-safe snapshot:
  * the reference only changes when THIS agent's labels do.
  */
-export function getModelLabels(agentType: string): ModelLabels {
-  return load().get(agentType) ?? NO_LABELS
+export function getModelLabels(
+  agentType: string,
+  api: BackendApi = legacyBackendApi,
+  storageKey?: string
+): ModelLabels {
+  return load(getCache(api, storageKey)).get(agentType) ?? NO_LABELS
 }
 
-export function subscribeModelLabels(listener: () => void): () => void {
+export function subscribeModelLabels(
+  listener: () => void,
+  api: BackendApi = legacyBackendApi,
+  storageKey?: string
+): () => void {
+  const { listeners } = getCache(api, storageKey)
   listeners.add(listener)
   return () => {
     listeners.delete(listener)

@@ -17,8 +17,8 @@
  * feature needs none of the upload-staging machinery `backup` uses.
  */
 
-import { isLocalDesktop } from "./platform"
-import { getTransport } from "./transport"
+import type { BackendPlatform } from "@/lib/backend/types"
+import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
 
 /** Stable domain ids, matching `domains::CONFIG_DOMAINS` in Rust. */
 export const CONFIG_DOMAIN_IDS = [
@@ -192,14 +192,15 @@ interface ConfigExportContent {
 }
 
 /** `null` when the user dismissed the save dialog. */
-export async function exportConfigToFile(): Promise<ConfigExportSummary | null> {
+export async function exportConfigToFile(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<ConfigExportSummary | null> {
   const fileName = defaultExportFileName()
 
-  if (!isLocalDesktop()) {
-    const built = await getTransport().call<ConfigExportContent>(
-      "config_sync_export_content",
-      {}
-    )
+  if (!backendPlatform.isLocalDesktop()) {
+    const built = await backendPlatform
+      .getTransport()
+      .call<ConfigExportContent>("config_sync_export_content", {})
     downloadTextFile(fileName, built.content)
     // The browser owns the destination from here, so the "path" is the name
     // it was offered under — the summary is only ever shown as a toast.
@@ -212,22 +213,25 @@ export async function exportConfigToFile(): Promise<ConfigExportSummary | null> 
     filters: [{ name: "Codeg config", extensions: ["json"] }],
   })
   if (!destPath) return null
-  return getTransport().call<ConfigExportSummary>("config_sync_export_file", {
-    destPath,
-  })
+  return backendPlatform
+    .getTransport()
+    .call<ConfigExportSummary>("config_sync_export_file", {
+      destPath,
+    })
 }
 
 /** Opens a file picker and inspects the choice WITHOUT applying it. `null`
  *  when the dialog was dismissed. */
-export async function pickConfigFileToImport(): Promise<PickedConfigImport | null> {
-  if (!isLocalDesktop()) {
+export async function pickConfigFileToImport(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<PickedConfigImport | null> {
+  if (!backendPlatform.isLocalDesktop()) {
     const file = await pickLocalFile()
     if (!file) return null
     const content = await file.text()
-    const preview = await getTransport().call<ConfigImportPreview>(
-      "config_sync_peek_content",
-      { content }
-    )
+    const preview = await backendPlatform
+      .getTransport()
+      .call<ConfigImportPreview>("config_sync_peek_content", { content })
     return { source: { kind: "content", content, label: file.name }, preview }
   }
 
@@ -239,43 +243,50 @@ export async function pickConfigFileToImport(): Promise<PickedConfigImport | nul
   })
   const srcPath = typeof picked === "string" ? picked : null
   if (!srcPath) return null
-  const preview = await getTransport().call<ConfigImportPreview>(
-    "config_sync_peek_file",
-    { srcPath }
-  )
+  const preview = await backendPlatform
+    .getTransport()
+    .call<ConfigImportPreview>("config_sync_peek_file", { srcPath })
   return { source: { kind: "path", path: srcPath, label: srcPath }, preview }
 }
 
 export async function importPickedConfig(
-  source: ConfigImportSource
+  source: ConfigImportSource,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
 ): Promise<ConfigImportResult> {
   if (source.kind === "content") {
-    return getTransport().call<ConfigImportResult>(
-      "config_sync_import_content",
-      { content: source.content }
-    )
+    return backendPlatform
+      .getTransport()
+      .call<ConfigImportResult>("config_sync_import_content", {
+        content: source.content,
+      })
   }
-  return getTransport().call<ConfigImportResult>("config_sync_import_file", {
-    srcPath: source.path,
-  })
+  return backendPlatform
+    .getTransport()
+    .call<ConfigImportResult>("config_sync_import_file", {
+      srcPath: source.path,
+    })
 }
 
 /** Newest first. Empty when nothing has ever been imported or restored. */
-export async function listConfigRollbacks(): Promise<RollbackSnapshot[]> {
-  return getTransport().call<RollbackSnapshot[]>(
-    "config_sync_list_rollbacks",
-    {}
-  )
+export async function listConfigRollbacks(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<RollbackSnapshot[]> {
+  return backendPlatform
+    .getTransport()
+    .call<RollbackSnapshot[]>("config_sync_list_rollbacks", {})
 }
 
 /** Re-apply the configuration captured just before an import or a restore.
  *  Writes its own rollback point first, so the undo is itself undoable. */
 export async function applyConfigRollback(
-  id: string
+  id: string,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
 ): Promise<ConfigImportResult> {
-  return getTransport().call<ConfigImportResult>("config_sync_apply_rollback", {
-    id,
-  })
+  return backendPlatform
+    .getTransport()
+    .call<ConfigImportResult>("config_sync_apply_rollback", {
+      id,
+    })
 }
 
 function downloadTextFile(fileName: string, content: string): void {
@@ -326,59 +337,76 @@ function pickLocalFile(): Promise<File | null> {
   })
 }
 
-export async function getConfigSyncSettings(): Promise<ConfigSyncSettingsView> {
-  return getTransport().call<ConfigSyncSettingsView>(
-    "config_sync_get_settings",
-    {}
-  )
+export async function getConfigSyncSettings(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<ConfigSyncSettingsView> {
+  return backendPlatform
+    .getTransport()
+    .call<ConfigSyncSettingsView>("config_sync_get_settings", {})
 }
 
 export async function updateConfigSyncSettings(
-  settings: ConfigSyncSettingsInput
+  settings: ConfigSyncSettingsInput,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
 ): Promise<ConfigSyncSettingsView> {
-  return getTransport().call<ConfigSyncSettingsView>(
-    "config_sync_update_settings",
-    { settings }
-  )
+  return backendPlatform
+    .getTransport()
+    .call<ConfigSyncSettingsView>("config_sync_update_settings", { settings })
 }
 
-export async function getConfigSyncState(): Promise<ConfigSyncState> {
-  return getTransport().call<ConfigSyncState>("config_sync_get_state", {})
+export async function getConfigSyncState(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<ConfigSyncState> {
+  return backendPlatform
+    .getTransport()
+    .call<ConfigSyncState>("config_sync_get_state", {})
 }
 
 /** Verifies the form's credentials without saving them. */
 export async function testConfigSyncConnection(
-  settings: ConfigSyncSettingsInput
+  settings: ConfigSyncSettingsInput,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
 ): Promise<void> {
-  await getTransport().call<null>("config_sync_test_connection", { settings })
+  await backendPlatform
+    .getTransport()
+    .call<null>("config_sync_test_connection", { settings })
 }
 
 /** Manual "sync now": uploads even when the hash is unchanged. */
-export async function uploadConfigNow(): Promise<UploadOutcome> {
-  return getTransport().call<UploadOutcome>("config_sync_upload_now", {})
+export async function uploadConfigNow(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<UploadOutcome> {
+  return backendPlatform
+    .getTransport()
+    .call<UploadOutcome>("config_sync_upload_now", {})
 }
 
 /** `null` when the remote has no snapshot yet. */
-export async function peekRemoteConfig(): Promise<ConfigManifest | null> {
-  return getTransport().call<ConfigManifest | null>(
-    "config_sync_peek_remote",
-    {}
-  )
+export async function peekRemoteConfig(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<ConfigManifest | null> {
+  return backendPlatform
+    .getTransport()
+    .call<ConfigManifest | null>("config_sync_peek_remote", {})
 }
 
 /** Explicit, never automatic: overwrites local configuration with the remote
  *  snapshot after the user confirms. */
-export async function downloadAndApplyConfig(): Promise<DownloadOutcome> {
-  return getTransport().call<DownloadOutcome>("config_sync_download_apply", {})
+export async function downloadAndApplyConfig(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<DownloadOutcome> {
+  return backendPlatform
+    .getTransport()
+    .call<DownloadOutcome>("config_sync_download_apply", {})
 }
 
 export async function listenConfigSyncStatus(
-  handler: (event: ConfigSyncStatusEvent) => void
+  handler: (event: ConfigSyncStatusEvent) => void,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
 ): Promise<() => void> {
-  return getTransport().subscribe<ConfigSyncStatusEvent>(
-    CONFIG_SYNC_STATUS_EVENT,
-    handler
-  )
+  return backendPlatform
+    .getTransport()
+    .subscribe<ConfigSyncStatusEvent>(CONFIG_SYNC_STATUS_EVENT, handler)
 }
 
 /** Domains with at least one row, in the fixed display order. Used by both

@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useState } from "react"
 import { ChevronRight, CircleAlert, X, Trash2 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -15,7 +16,7 @@ import {
 } from "@/components/ui/popover"
 import { useAcpActions } from "@/contexts/acp-connections-context"
 import { openUrl } from "@/lib/platform"
-import { openSettingsWindow } from "@/lib/api"
+
 import { AGENT_LABELS, type AgentType } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -68,6 +69,8 @@ function triggerTone(alerts: { level: AlertLevel }[]): string {
 }
 
 function AlertActionButton({ action }: { action: AlertAction }) {
+  const backendApi = useBackendApi()
+
   const { connect } = useAcpActions()
 
   const handleClick = async () => {
@@ -108,7 +111,7 @@ function AlertActionButton({ action }: { action: AlertAction }) {
         break
       }
       case "open_agents_settings":
-        await openSettingsWindow("agents", {
+        await backendApi.openSettingsWindow("agents", {
           agentType: parseOpenAgentsSettingsPayload(action.payload).agentType,
         })
         break

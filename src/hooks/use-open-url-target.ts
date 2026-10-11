@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useCallback } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
@@ -34,7 +35,7 @@ import {
   type LinkAction,
   type LinkSurface,
 } from "@/lib/resolve-link-action"
-import { isDesktop, isRemoteDesktopMode } from "@/lib/transport"
+import { isDesktop } from "@/lib/transport"
 
 /** What a click did — or, on the desktop before the backend has answered
  *  what it can do, that it will do it as soon as the answer is in. */
@@ -70,6 +71,8 @@ export function isPrimaryModifier(event: {
  * system browser without a person pressing something).
  */
 export function useLinkDecision() {
+  const backendPlatform = useBackendPlatform()
+
   // Null outside the workspace (no tab strip to open into): the built-in
   // target is then simply unavailable and links go to the system browser.
   const openBrowserTab = useOptionalWorkspaceActions()?.openBrowserTab ?? null
@@ -84,18 +87,19 @@ export function useLinkDecision() {
       // In a browser the server's answer is primed at startup; if it is
       // still missing here (the call failed and its retries ran out), ask
       // again for the next click rather than staying blind for the session.
-      if (!isDesktop() && bridgeStatusSnapshot() === null) void bridgeStatus()
+      if (!isDesktop() && bridgeStatusSnapshot(backendPlatform) === null)
+        void bridgeStatus(backendPlatform)
       const surface: LinkSurface = {
         builtinAvailable: (capabilities?.available ?? false) && somewhereToOpen,
         fileColumnVisible,
         viewerHostAvailable: viewerHost !== null,
-        remoteDesktop: isRemoteDesktopMode(),
-        remoteServerHost: remoteServerHost(),
+        remoteDesktop: backendPlatform.isRemoteDesktopMode(),
+        remoteServerHost: remoteServerHost(backendPlatform),
         // Before the answer is in, a loopback link opens as it always did
         // (a new tab) rather than waiting out the gesture.
         bridgeAvailable:
           !isDesktop() &&
-          (bridgeStatusSnapshot()?.enabled ?? false) &&
+          (bridgeStatusSnapshot(backendPlatform)?.enabled ?? false) &&
           somewhereToOpen,
       }
       const prefs = getBrowserPrefs()
@@ -109,7 +113,7 @@ export function useLinkDecision() {
         managedHostRules: capabilities?.policy.managedRules,
       })
     },
-    [fileColumnVisible, openBrowserTab, viewerHost]
+    [fileColumnVisible, openBrowserTab, viewerHost, backendPlatform]
   )
 }
 
@@ -126,6 +130,8 @@ export function useLinkDecision() {
  * they are `useOpenFileTarget`'s job and never reach this hook.
  */
 export function useOpenUrlTarget() {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Browser.toast")
   // Null outside the workspace (no tab strip to open into): the built-in
   // target is then simply unavailable and links go to the system browser.
@@ -142,7 +148,7 @@ export function useOpenUrlTarget() {
           void openInSystemBrowser(action.url)
           break
         case "os-handler":
-          void openWithOsHandler(action.url)
+          void openWithOsHandler(action.url, backendPlatform)
           break
         case "builtin": {
           // `remote` rides along to wherever the page opens: an address on
@@ -193,7 +199,7 @@ export function useOpenUrlTarget() {
       }
       return action
     },
-    [decide, openBrowserTab, t, viewerHost]
+    [decide, openBrowserTab, t, viewerHost, backendPlatform]
   )
 
   return useCallback(

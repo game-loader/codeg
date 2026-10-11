@@ -1,7 +1,10 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
+import type { BackendApi } from "@/lib/backend/types"
+import * as legacyBackendApi from "@/lib/api"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { describeAgentOptions } from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import type { AgentOptionsSnapshot, AgentType } from "@/lib/types"
 
@@ -23,15 +26,27 @@ interface CachedSnapshot {
 const snapshotCache = new Map<string, CachedSnapshot>()
 const inflight = new Map<string, Promise<AgentOptionsSnapshot>>()
 
-function cacheKey(agent: AgentType, folderPath: string | null): string {
-  return JSON.stringify([agent, folderPath ?? null])
+const clientIds = new WeakMap<BackendApi, number>()
+let nextClientId = 0
+function cacheKey(
+  agent: AgentType,
+  folderPath: string | null,
+  backendApi: BackendApi
+): string {
+  let id = clientIds.get(backendApi)
+  if (id === undefined) {
+    id = ++nextClientId
+    clientIds.set(backendApi, id)
+  }
+  return JSON.stringify([id, agent, folderPath ?? null])
 }
 
 function readCache(
   agent: AgentType,
-  folderPath: string | null
+  folderPath: string | null,
+  backendApi: BackendApi
 ): AgentOptionsSnapshot | null {
-  const key = cacheKey(agent, folderPath)
+  const key = cacheKey(agent, folderPath, backendApi)
   const entry = snapshotCache.get(key)
   if (!entry) return null
   if (Date.now() - entry.ts > CACHE_TTL_MS) {
@@ -43,12 +58,14 @@ function readCache(
 
 function fetchOptions(
   agent: AgentType,
-  folderPath: string | null
+  folderPath: string | null,
+  backendApi: BackendApi = legacyBackendApi
 ): Promise<AgentOptionsSnapshot> {
-  const key = cacheKey(agent, folderPath)
+  const key = cacheKey(agent, folderPath, backendApi)
   let promise = inflight.get(key)
   if (!promise) {
-    promise = describeAgentOptions(agent, folderPath)
+    promise = backendApi
+      .describeAgentOptions(agent, folderPath)
       .then((snapshot) => {
         snapshotCache.set(key, { snapshot, ts: Date.now() })
         inflight.delete(key)
@@ -97,6 +114,8 @@ export function useAgentOptions(
    *  probes on demand at save time. */
   enabled: boolean = true
 ): AgentOptionsState {
+  const backendApi = useBackendApi()
+
   // Snapshot and its producer live in ONE state value so they can never be
   // rendered out of step — see `snapshotAgentType`.
   const [loaded, setLoaded] = useState<{
@@ -113,12 +132,12 @@ export function useAgentOptions(
       // previously-selected (agent, folder) — otherwise that slow probe's late
       // result would overwrite the snapshot for the now-current one.
       const id = ++reqRef.current
-      const key = cacheKey(agent, folder)
+      const key = cacheKey(agent, folder, backendApi)
       if (force) {
         snapshotCache.delete(key)
         inflight.delete(key)
       } else {
-        const cached = readCache(agent, folder)
+        const cached = readCache(agent, folder, backendApi)
         if (cached) {
           setLoaded({ agent, snapshot: cached })
           setError(null)
@@ -129,7 +148,7 @@ export function useAgentOptions(
       setLoading(true)
       setError(null)
       setLoaded(null)
-      fetchOptions(agent, folder)
+      fetchOptions(agent, folder, backendApi)
         .then((fresh) => {
           if (reqRef.current !== id) return
           setLoaded({ agent, snapshot: fresh })
@@ -141,7 +160,7 @@ export function useAgentOptions(
           setLoading(false)
         })
     },
-    []
+    [backendApi]
   )
 
   useEffect(() => {
@@ -166,7 +185,7 @@ export function useAgentOptions(
     // agent's/folder's defaults into the save. The module cache + inflight map are
     // keyed by (agent, folder), so a hit is instant and a switch rides the
     // effect's in-flight probe (no double spawn).
-    const cached = readCache(agentType, folderPath)
+    const cached = readCache(agentType, folderPath, backendApi)
     if (cached) return cached
     // Bound the wait so a wedged probe degrades to "save with raw overrides"
     // rather than hanging the save.
@@ -176,13 +195,13 @@ export function useAgentOptions(
     })
     try {
       return await Promise.race([
-        fetchOptions(agentType, folderPath).catch(() => null),
+        fetchOptions(agentType, folderPath, backendApi).catch(() => null),
         timeout,
       ])
     } finally {
       if (timer !== undefined) window.clearTimeout(timer)
     }
-  }, [agentType, folderPath])
+  }, [agentType, folderPath, backendApi])
 
   return {
     snapshot: loaded?.snapshot ?? null,

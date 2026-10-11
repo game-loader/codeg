@@ -1,5 +1,9 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendEventScope } from "@/hooks/use-runtime-event-scope"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import {
   useCallback,
   useEffect,
@@ -14,15 +18,7 @@ import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { Funnel, Play, Plus, ListTodo, Tag } from "lucide-react"
 import { useTasksView } from "@/contexts/tasks-view-context"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import {
-  workTaskArchive,
-  workTaskCreate,
-  workTaskMergeUnqueue,
-  workTaskReorder,
-  workTaskStart,
-  workTaskUpdate,
-} from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import {
   consumePendingTaskDraft,
@@ -127,6 +123,12 @@ export function TasksPageTitle() {
  * keep all clients converged.
  */
 export function TasksPage() {
+  const backendScope = useBackendEventScope()
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Tasks")
   const { tasks, loading, refetch, viewMode } = useTasksView()
   const folders = useAppWorkspaceStore((s) => s.folders)
@@ -219,7 +221,7 @@ export function TasksPage() {
   // is unmounted while other routes are active) and on the live event.
   useEffect(() => {
     const consume = () => {
-      const draft = consumePendingTaskDraft()
+      const draft = consumePendingTaskDraft(backendScope)
       if (!draft) return
       setEditorTask(null)
       setEditorPrefill(draft)
@@ -229,7 +231,7 @@ export function TasksPage() {
     window.addEventListener(CREATE_TASK_FROM_TEXT_EVENT, consume)
     return () =>
       window.removeEventListener(CREATE_TASK_FROM_TEXT_EVENT, consume)
-  }, [])
+  }, [backendScope])
   const [detailTaskId, setDetailTaskId] = useState<number | null>(null)
   const [mergeTask, setMergeTask] = useState<WorkTask | null>(null)
   const [mergeOpen, setMergeOpen] = useState(false)
@@ -262,10 +264,14 @@ export function TasksPage() {
   // tree branch — it asks this page (which owns the dialog + folder scope) to
   // open via a window event, like the "task from message" hand-off above.
   useEffect(() => {
-    const open = () => setSettingsOpen(true)
+    const open = (event: Event) => {
+      const detail = (event as CustomEvent<{ backendScope?: string }>).detail
+      if (detail?.backendScope !== backendScope) return
+      setSettingsOpen(true)
+    }
     window.addEventListener(OPEN_TASK_SETTINGS_EVENT, open)
     return () => window.removeEventListener(OPEN_TASK_SETTINGS_EVENT, open)
-  }, [])
+  }, [backendScope])
 
   const visibleTasks = useMemo(
     () =>
@@ -361,13 +367,13 @@ export function TasksPage() {
 
   const submitEditor = useCallback(
     async (draft: WorkTaskDraft) => {
-      if (editorTask) await workTaskUpdate(editorTask.id, draft)
-      else await workTaskCreate(draft)
+      if (editorTask) await backendApi.workTaskUpdate(editorTask.id, draft)
+      else await backendApi.workTaskCreate(draft)
       setEditorOpen(false)
       setEditorPrefill(null)
       void refetch()
     },
-    [editorTask, refetch]
+    [editorTask, refetch, backendApi]
   )
 
   const openMerge = useCallback((task: WorkTask) => {
@@ -409,17 +415,20 @@ export function TasksPage() {
   // One handler set, wired the same way for a board card and a list row.
   const handlersFor = useCallback(
     (task: WorkTask): TaskActionHandlers => ({
-      onStart: () => void act(() => workTaskStart(task.id)),
+      onStart: () => void act(() => backendApi.workTaskStart(task.id)),
       onCancel: () => openCancel(task),
       onRetry: () => openRestart(task, "retry"),
       onRequeue: () => openRestart(task, "requeue"),
       onViewSession: () => openSession(task),
       onMerge: () => openMerge(task),
       onDeliverPr: () => openDeliver(task),
-      onUnqueueMerge: () => void act(() => workTaskMergeUnqueue(task.id)),
+      onUnqueueMerge: () =>
+        void act(() => backendApi.workTaskMergeUnqueue(task.id)),
       onComplete: () => openComplete(task),
       onArchive: () =>
-        void act(() => workTaskArchive(task.id, task.archived_at == null)),
+        void act(() =>
+          backendApi.workTaskArchive(task.id, task.archived_at == null)
+        ),
       onEdit: () => {
         setEditorTask(task)
         setEditorOpen(true)
@@ -435,6 +444,7 @@ export function TasksPage() {
       openRestart,
       openSchedule,
       openSession,
+      backendApi,
     ]
   )
 
@@ -569,14 +579,15 @@ export function TasksPage() {
         // The row may have advanced during the drag; the engine would reject
         // the stale start anyway, so don't spend a request and a toast on it.
         const live = tasksRef.current.find((row) => row.id === task.id)
-        if (live?.status === "todo") void act(() => workTaskStart(task.id))
+        if (live?.status === "todo")
+          void act(() => backendApi.workTaskStart(task.id))
         return
       }
       const order = dragOrderRef.current
       if (folderFilter != null && order != null) {
         void (async () => {
           try {
-            await workTaskReorder(folderFilter, order)
+            await backendApi.workTaskReorder(folderFilter, order)
           } catch (e) {
             toast.error(toErrorMessage(e))
           }
@@ -585,7 +596,7 @@ export function TasksPage() {
         })()
       }
     },
-    [act, clearDrag, folderFilter, refetch]
+    [act, clearDrag, folderFilter, refetch, backendApi]
   )
 
   // Archives whatever the Done column currently shows unarchived — respects
@@ -594,9 +605,11 @@ export function TasksPage() {
     const targets = columns.done.filter((task) => task.archived_at == null)
     if (targets.length === 0) return
     void act(() =>
-      Promise.all(targets.map((task) => workTaskArchive(task.id, true)))
+      Promise.all(
+        targets.map((task) => backendApi.workTaskArchive(task.id, true))
+      )
     )
-  }, [act, columns.done])
+  }, [act, columns.done, backendApi])
 
   // The badge counts deviations from the DEFAULT view (canceled shown,
   // archived hidden), not checked boxes — a pristine board shows no badge.

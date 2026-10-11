@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { Copy, ExternalLink, RotateCw, Server } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
@@ -57,12 +58,14 @@ export function BrowserRemoteTabView({
   /** Try opening it through the remote host again. */
   onRetry?: () => void
 }) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Browser.remote")
   const openBrowserTab = useOptionalWorkspaceActions()?.openBrowserTab ?? null
   // As the remote host knows it: a record brought back from a suspended
   // page can hold the macOS alias its page was loaded by.
   const url = remoteHostAddress(tab.browser.initialUrl)
-  const host = remoteHostDisplayName()
+  const host = remoteHostDisplayName(backendPlatform)
   const hostname = hostnameOf(url)
   const loopback = hostname !== null && isLoopbackHost(hostname)
   const tryUrl = loopback ? onRemoteHostName(url, host) : null

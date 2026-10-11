@@ -73,7 +73,7 @@ it("loads the Zotero library through the active remote or web transport", async 
     items: [{ key: "REMOTE01" }],
   })
 })
-it("does not enqueue research in a different backend after reading settings", async () => {
+it("continues research on the captured backend after selection changes", async () => {
   let finish!: (settings: unknown) => void
   call.mockImplementationOnce(
     () =>
@@ -85,6 +85,11 @@ it("does not enqueue research in a different backend after reading settings", as
   const otherCall = vi.fn()
   environment.transport = { call: otherCall }
   finish({ agent_type: "codex", bridge_port: 23119, paired: true })
-  await expect(pending).rejects.toThrow("Workspace changed")
+  await expect(pending).resolves.toMatchObject({ id: "paper-a" })
+  expect(call).toHaveBeenLastCalledWith(
+    "academic_select",
+    expect.objectContaining({ itemKey: "REMOTE01" }),
+    { timeoutMs: 190_000 }
+  )
   expect(otherCall).not.toHaveBeenCalled()
 })

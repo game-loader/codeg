@@ -1,15 +1,13 @@
 "use client"
 
+import { useAcademicStore as legacyAcademic } from "@/stores/academic-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendAcademicApi } from "@/contexts/backend-client-context"
 import { useEffect, useState } from "react"
 import { BookOpen } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useOptionalWorkbenchRoute } from "@/contexts/workbench-route-context"
-import {
-  academicConversationPaper,
-  academicPaperGet,
-  type AcademicPaper,
-} from "@/lib/academic"
-import { useAcademicStore } from "@/stores/academic-store"
+import { type AcademicPaper } from "@/lib/academic"
 
 export function AcademicContextBar({
   paperId,
@@ -18,6 +16,11 @@ export function AcademicContextBar({
   paperId?: string | null
   conversationId?: number | null
 }) {
+  const backendStores = useBackendStores({ academic: legacyAcademic })
+  const useAcademicStore = backendStores.academic
+
+  const backendAcademic = useBackendAcademicApi()
+
   const t = useTranslations("Academic")
   const route = useOptionalWorkbenchRoute()
   const [result, setResult] = useState<{
@@ -32,8 +35,8 @@ export function AcademicContextBar({
     if (!paperId && !conversationId) return
     let active = true
     const load = paperId
-      ? academicPaperGet(paperId)
-      : academicConversationPaper(conversationId!)
+      ? backendAcademic.academicPaperGet(paperId)
+      : backendAcademic.academicConversationPaper(conversationId!)
     void load
       .then((paper) => {
         if (active && paper) setResult({ key, paper })
@@ -49,7 +52,7 @@ export function AcademicContextBar({
     return () => {
       active = false
     }
-  }, [paperId, conversationId, key])
+  }, [paperId, conversationId, key, backendAcademic])
 
   if (error?.key === key)
     return (

@@ -1,5 +1,6 @@
 "use client"
 
+import { useOptionalBackendClient } from "@/contexts/backend-client-context"
 /**
  * The extra tools codeg hands an agent inside a conversation, as one panel:
  * live feedback, ask-user-question, get-session-info, the built-in browser
@@ -27,6 +28,10 @@
  * unless the user touched it.
  */
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Wrench } from "lucide-react"
@@ -43,7 +48,7 @@ import {
   AGENT_TOOLS_NAMESPACE,
   AGENT_TOOL_GROUPS,
 } from "@/lib/agent-tool-groups"
-import { subscribe } from "@/lib/platform"
+
 import {
   BROWSER_TOOLS_SETTINGS_CHANGED_EVENT,
   CHAT_AUTHORING_SETTINGS_CHANGED_EVENT,
@@ -57,16 +62,6 @@ import {
   type ComputerToolsSettings,
 } from "@/lib/computer/types"
 import {
-  getBrowserToolsSettings,
-  getChatAuthoringSettings,
-  getFeedbackSettings,
-  getQuestionSettings,
-  getSessionInfoSettings,
-  setBrowserToolsSettings,
-  setChatAuthoringSettings,
-  setFeedbackSettings,
-  setQuestionSettings,
-  setSessionInfoSettings,
   type BrowserToolsSettings,
   type ChatAuthoringSettings,
 } from "@/lib/api"
@@ -133,6 +128,10 @@ const FIELD_OF_SLUG: Record<string, keyof AgentToolValues | undefined> =
   Object.fromEntries(TOOL_ROWS.map((row) => [row.slug, row.key]))
 
 export function AgentToolsSettingsSection() {
+  const backendApi = useBackendApi()
+  const client = useOptionalBackendClient()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("AgentToolsSettings")
   const tools = useTranslations(AGENT_TOOLS_NAMESPACE)
   const [loading, setLoading] = useState(true)
@@ -163,12 +162,12 @@ export function AgentToolsSettingsSection() {
       const gen = { ...remoteGenRef.current }
       const [feedback, question, sessionInfo, browserTools, computer, chat] =
         await Promise.allSettled([
-          getFeedbackSettings(),
-          getQuestionSettings(),
-          getSessionInfoSettings(),
-          getBrowserToolsSettings(),
-          getComputerToolsSettings(),
-          getChatAuthoringSettings(),
+          backendApi.getFeedbackSettings(),
+          backendApi.getQuestionSettings(),
+          backendApi.getSessionInfoSettings(),
+          backendApi.getBrowserToolsSettings(),
+          getComputerToolsSettings(backendPlatform),
+          backendApi.getChatAuthoringSettings(),
         ])
       if (cancelled) return
 
@@ -220,7 +219,7 @@ export function AgentToolsSettingsSection() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [backendApi, backendPlatform])
 
   /**
    * Converge on a create-from-chat write that happened elsewhere.
@@ -237,28 +236,29 @@ export function AgentToolsSettingsSection() {
   useEffect(() => {
     let disposed = false
     let unsubscribe: (() => void) | undefined
-    void subscribe<ChatAuthoringSettings>(
-      CHAT_AUTHORING_SETTINGS_CHANGED_EVENT,
-      (remote) => {
-        remoteGenRef.current.chat += 1
-        const incoming = {
-          automations: remote.automations_enabled,
-          workTasks: remote.work_tasks_enabled,
+    void backendPlatform
+      .subscribe<ChatAuthoringSettings>(
+        CHAT_AUTHORING_SETTINGS_CHANGED_EVENT,
+        (remote) => {
+          remoteGenRef.current.chat += 1
+          const incoming = {
+            automations: remote.automations_enabled,
+            workTasks: remote.work_tasks_enabled,
+          }
+          const current = valuesRef.current
+          const base = baselineRef.current
+          setValues((prev) => ({
+            ...prev,
+            ...(current.automations === base.automations
+              ? { automations: incoming.automations }
+              : {}),
+            ...(current.workTasks === base.workTasks
+              ? { workTasks: incoming.workTasks }
+              : {}),
+          }))
+          setBaseline((prev) => ({ ...prev, ...incoming }))
         }
-        const current = valuesRef.current
-        const base = baselineRef.current
-        setValues((prev) => ({
-          ...prev,
-          ...(current.automations === base.automations
-            ? { automations: incoming.automations }
-            : {}),
-          ...(current.workTasks === base.workTasks
-            ? { workTasks: incoming.workTasks }
-            : {}),
-        }))
-        setBaseline((prev) => ({ ...prev, ...incoming }))
-      }
-    )
+      )
       .then((fn) => {
         if (disposed) fn()
         else unsubscribe = fn
@@ -270,7 +270,7 @@ export function AgentToolsSettingsSection() {
       disposed = true
       unsubscribe?.()
     }
-  }, [])
+  }, [backendPlatform])
 
   /**
    * The same convergence for the two browser switches, which are two keys of
@@ -282,28 +282,29 @@ export function AgentToolsSettingsSection() {
   useEffect(() => {
     let disposed = false
     let unsubscribe: (() => void) | undefined
-    void subscribe<BrowserToolsSettings>(
-      BROWSER_TOOLS_SETTINGS_CHANGED_EVENT,
-      (remote) => {
-        remoteGenRef.current.browser += 1
-        const incoming = {
-          browserTools: remote.enabled,
-          browserEval: remote.eval,
+    void backendPlatform
+      .subscribe<BrowserToolsSettings>(
+        BROWSER_TOOLS_SETTINGS_CHANGED_EVENT,
+        (remote) => {
+          remoteGenRef.current.browser += 1
+          const incoming = {
+            browserTools: remote.enabled,
+            browserEval: remote.eval,
+          }
+          const current = valuesRef.current
+          const base = baselineRef.current
+          setValues((prev) => ({
+            ...prev,
+            ...(current.browserTools === base.browserTools
+              ? { browserTools: incoming.browserTools }
+              : {}),
+            ...(current.browserEval === base.browserEval
+              ? { browserEval: incoming.browserEval }
+              : {}),
+          }))
+          setBaseline((prev) => ({ ...prev, ...incoming }))
         }
-        const current = valuesRef.current
-        const base = baselineRef.current
-        setValues((prev) => ({
-          ...prev,
-          ...(current.browserTools === base.browserTools
-            ? { browserTools: incoming.browserTools }
-            : {}),
-          ...(current.browserEval === base.browserEval
-            ? { browserEval: incoming.browserEval }
-            : {}),
-        }))
-        setBaseline((prev) => ({ ...prev, ...incoming }))
-      }
-    )
+      )
       .then((fn) => {
         if (disposed) fn()
         else unsubscribe = fn
@@ -313,7 +314,7 @@ export function AgentToolsSettingsSection() {
       disposed = true
       unsubscribe?.()
     }
-  }, [])
+  }, [backendPlatform])
 
   /**
    * And for the computer-use switch, which the popover writes too. Only the
@@ -323,20 +324,21 @@ export function AgentToolsSettingsSection() {
   useEffect(() => {
     let disposed = false
     let unsubscribe: (() => void) | undefined
-    void subscribe<ComputerToolsSettings>(
-      COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
-      (remote) => {
-        remoteGenRef.current.computer += 1
-        const current = valuesRef.current
-        const base = baselineRef.current
-        setValues((prev) =>
-          current.computer === base.computer
-            ? { ...prev, computer: remote.enabled }
-            : prev
-        )
-        setBaseline((prev) => ({ ...prev, computer: remote.enabled }))
-      }
-    )
+    void backendPlatform
+      .subscribe<ComputerToolsSettings>(
+        COMPUTER_TOOLS_SETTINGS_CHANGED_EVENT,
+        (remote) => {
+          remoteGenRef.current.computer += 1
+          const current = valuesRef.current
+          const base = baselineRef.current
+          setValues((prev) =>
+            current.computer === base.computer
+              ? { ...prev, computer: remote.enabled }
+              : prev
+          )
+          setBaseline((prev) => ({ ...prev, computer: remote.enabled }))
+        }
+      )
       .then((fn) => {
         if (disposed) fn()
         else unsubscribe = fn
@@ -346,7 +348,7 @@ export function AgentToolsSettingsSection() {
       disposed = true
       unsubscribe?.()
     }
-  }, [])
+  }, [backendPlatform])
 
   const dirty =
     values.feedback !== baseline.feedback ||
@@ -365,26 +367,31 @@ export function AgentToolsSettingsSection() {
 
       if (values.feedback !== baseline.feedback) {
         writes.push(
-          setFeedbackSettings({ enabled: values.feedback }).then((applied) => {
-            // Refresh the module-cached flag so open conversations show/hide
-            // the feedback bar without a full reload.
-            primeFeedbackEnabled(applied.enabled)
-            return { feedback: applied.enabled }
-          })
+          backendApi
+            .setFeedbackSettings({ enabled: values.feedback })
+            .then((applied) => {
+              // Refresh the module-cached flag so open conversations show/hide
+              // the feedback bar without a full reload.
+              if (client) primeFeedbackEnabled(applied.enabled, backendApi)
+              else primeFeedbackEnabled(applied.enabled)
+              return { feedback: applied.enabled }
+            })
         )
       }
       if (values.question !== baseline.question) {
         writes.push(
-          setQuestionSettings({ enabled: values.question }).then((applied) => ({
-            question: applied.enabled,
-          }))
+          backendApi
+            .setQuestionSettings({ enabled: values.question })
+            .then((applied) => ({
+              question: applied.enabled,
+            }))
         )
       }
       if (values.sessionInfo !== baseline.sessionInfo) {
         writes.push(
-          setSessionInfoSettings({ enabled: values.sessionInfo }).then(
-            (applied) => ({ sessionInfo: applied.enabled })
-          )
+          backendApi
+            .setSessionInfoSettings({ enabled: values.sessionInfo })
+            .then((applied) => ({ sessionInfo: applied.enabled }))
         )
       }
       if (
@@ -392,25 +399,29 @@ export function AgentToolsSettingsSection() {
         values.browserEval !== baseline.browserEval
       ) {
         writes.push(
-          setBrowserToolsSettings({
-            enabled: values.browserTools,
-            // What the row shows while the group is off, sent as what it
-            // shows. The backend drops it too; agreeing with it here is what
-            // keeps the switch from springing back on after a save.
-            eval: values.browserEval && values.browserTools,
-          }).then((applied) => ({
-            browserTools: applied.enabled,
-            browserEval: applied.eval,
-          }))
+          backendApi
+            .setBrowserToolsSettings({
+              enabled: values.browserTools,
+              // What the row shows while the group is off, sent as what it
+              // shows. The backend drops it too; agreeing with it here is what
+              // keeps the switch from springing back on after a save.
+              eval: values.browserEval && values.browserTools,
+            })
+            .then((applied) => ({
+              browserTools: applied.enabled,
+              browserEval: applied.eval,
+            }))
         )
       }
       if (values.computer !== baseline.computer) {
         // The switch alone: the same record's timeout and blocklist are the
         // Computer use section's to write.
         writes.push(
-          setComputerToolsEnabled(values.computer).then((applied) => ({
-            computer: applied.enabled,
-          }))
+          setComputerToolsEnabled(values.computer, backendPlatform).then(
+            (applied) => ({
+              computer: applied.enabled,
+            })
+          )
         )
       }
       if (
@@ -418,13 +429,15 @@ export function AgentToolsSettingsSection() {
         values.workTasks !== baseline.workTasks
       ) {
         writes.push(
-          setChatAuthoringSettings({
-            automations_enabled: values.automations,
-            work_tasks_enabled: values.workTasks,
-          }).then((applied) => ({
-            automations: applied.automations_enabled,
-            workTasks: applied.work_tasks_enabled,
-          }))
+          backendApi
+            .setChatAuthoringSettings({
+              automations_enabled: values.automations,
+              work_tasks_enabled: values.workTasks,
+            })
+            .then((applied) => ({
+              automations: applied.automations_enabled,
+              workTasks: applied.work_tasks_enabled,
+            }))
         )
       }
 
@@ -451,7 +464,7 @@ export function AgentToolsSettingsSection() {
     } finally {
       setSaving(false)
     }
-  }, [values, baseline, t])
+  }, [values, baseline, t, backendApi, client, backendPlatform])
 
   return (
     <SettingsSection

@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useEffect, useMemo, useRef } from "react"
 import { useTranslations } from "next-intl"
 import { AnimatePresence, motion } from "motion/react"
@@ -16,6 +17,8 @@ import { SessionRow } from "./SessionRow"
 const LIST_MAX_HEIGHT_PX = 320
 
 export function PetPanel() {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Pet")
   const { sessions } = usePetSessions()
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -29,12 +32,12 @@ export function PetPanel() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        void closePetPanel().catch(() => {})
+        void closePetPanel(backendPlatform).catch(() => {})
       }
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [])
+  }, [backendPlatform])
 
   // Fit the OS window to the rendered content. The wrapper sizes to its content
   // (no forced fill), so its box height — including the `p-2` chrome — is the
@@ -57,7 +60,7 @@ export function PetPanel() {
       const h = Math.ceil(el.getBoundingClientRect().height)
       if (h <= 0 || h === lastSent) return
       lastSent = h
-      void resizePetPanel(h).catch(() => {})
+      void resizePetPanel(h, backendPlatform).catch(() => {})
     }
     const schedule = () => {
       if (raf) return
@@ -72,7 +75,7 @@ export function PetPanel() {
       ro.disconnect()
       if (raf) cancelAnimationFrame(raf)
     }
-  }, [])
+  }, [backendPlatform])
 
   return (
     <div
@@ -91,7 +94,7 @@ export function PetPanel() {
         <button
           type="button"
           aria-label={t("menu.close")}
-          onClick={() => void closePetPanel().catch(() => {})}
+          onClick={() => void closePetPanel(backendPlatform).catch(() => {})}
           className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <X className="h-3.5 w-3.5" />

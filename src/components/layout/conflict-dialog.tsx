@@ -1,7 +1,11 @@
 "use client"
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useState } from "react"
-import { subscribe } from "@/lib/platform"
+
 import { AlertTriangle, Check, FileWarning, Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
@@ -15,12 +19,7 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  gitListConflicts,
-  gitAbortOperation,
-  gitContinueOperation,
-  openMergeWindow,
-} from "@/lib/api"
+
 import type { GitConflictInfo } from "@/lib/types"
 
 interface ConflictDialogProps {
@@ -38,6 +37,9 @@ export function ConflictDialog({
   onClose,
   onResolved,
 }: ConflictDialogProps) {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Folder.branchDropdown.conflict")
   const [conflictedFiles, setConflictedFiles] = useState<string[]>([])
   const [resolvedFiles, setResolvedFiles] = useState<Set<string>>(new Set())
@@ -61,7 +63,7 @@ export function ConflictDialog({
   const refreshConflicts = useCallback(async () => {
     if (!folderPath || !open) return
     try {
-      const remaining = await gitListConflicts(folderPath)
+      const remaining = await backendApi.gitListConflicts(folderPath)
       const nowResolved = new Set(
         conflictedFiles.filter((f) => !remaining.includes(f))
       )
@@ -69,7 +71,7 @@ export function ConflictDialog({
     } catch {
       // ignore refresh errors
     }
-  }, [folderPath, open, conflictedFiles])
+  }, [folderPath, open, conflictedFiles, backendApi])
 
   // Listen for merge events from the merge window
   useEffect(() => {
@@ -79,24 +81,29 @@ export function ConflictDialog({
     let unlistenCompleted: (() => void) | null = null
     let unlistenAborted: (() => void) | null = null
 
-    subscribe<{ folder_id: number; file: string }>(
-      "folder://merge-conflict-resolved",
-      (payload) => {
-        if (payload.folder_id !== folderId) return
-        setResolvedFiles((prev) => new Set([...prev, payload.file]))
-      }
-    )
+    backendPlatform
+      .subscribe<{ folder_id: number; file: string }>(
+        "folder://merge-conflict-resolved",
+        (payload) => {
+          if (payload.folder_id !== folderId) return
+          setResolvedFiles((prev) => new Set([...prev, payload.file]))
+        }
+      )
       .then((fn) => {
         unlistenResolved = fn
       })
       .catch(() => {})
 
-    subscribe<{ folder_id: number }>("folder://merge-completed", (payload) => {
-      if (payload.folder_id !== folderId) return
-      setDone(true)
-      onResolved()
-      onClose()
-    })
+    backendPlatform
+      .subscribe<{ folder_id: number }>(
+        "folder://merge-completed",
+        (payload) => {
+          if (payload.folder_id !== folderId) return
+          setDone(true)
+          onResolved()
+          onClose()
+        }
+      )
       .then((fn) => {
         unlistenCompleted = fn
       })
@@ -104,12 +111,13 @@ export function ConflictDialog({
 
     // Merge was aborted (user clicked abort in merge window, or window closed)
     // Reset resolved state since abort reverts all changes
-    subscribe<{ folder_id: number }>("folder://merge-aborted", (payload) => {
-      if (payload.folder_id !== folderId) return
-      setDone(true)
-      setResolvedFiles(new Set())
-      onClose()
-    })
+    backendPlatform
+      .subscribe<{ folder_id: number }>("folder://merge-aborted", (payload) => {
+        if (payload.folder_id !== folderId) return
+        setDone(true)
+        setResolvedFiles(new Set())
+        onClose()
+      })
       .then((fn) => {
         unlistenAborted = fn
       })
@@ -120,7 +128,7 @@ export function ConflictDialog({
       unlistenCompleted?.()
       unlistenAborted?.()
     }
-  }, [open, folderId, onResolved, onClose])
+  }, [open, folderId, onResolved, onClose, backendPlatform])
 
   // Periodically refresh conflict status (skip for pull — merge is aborted
   // until the merge tool re-starts it, so git index has no conflicts yet)
@@ -136,7 +144,11 @@ export function ConflictDialog({
 
   async function handleOpenMergeTool() {
     try {
-      await openMergeWindow(folderId, operation, conflictInfo?.upstream_commit)
+      await backendApi.openMergeWindow(
+        folderId,
+        operation,
+        conflictInfo?.upstream_commit
+      )
     } catch (err) {
       toast.error(String(err))
     }
@@ -151,7 +163,7 @@ export function ConflictDialog({
     }
     setAborting(true)
     try {
-      await gitAbortOperation(folderPath, operation)
+      await backendApi.gitAbortOperation(folderPath, operation)
       toast.success(t("abortSuccess"))
       onClose()
       onResolved()
@@ -166,7 +178,7 @@ export function ConflictDialog({
     if (done) return
     setCompleting(true)
     try {
-      await gitContinueOperation(folderPath, operation)
+      await backendApi.gitContinueOperation(folderPath, operation)
       toast.success(t("completeSuccess"))
       onResolved()
       onClose()

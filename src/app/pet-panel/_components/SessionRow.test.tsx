@@ -74,7 +74,12 @@ describe("SessionRow", () => {
     renderRow(rootSession())
     expect(screen.queryByText(/Sub-agent of/)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button"))
-    expect(mockFocus).toHaveBeenCalledWith(3, 7, "claude_code")
+    expect(mockFocus).toHaveBeenCalledWith(
+      3,
+      7,
+      "claude_code",
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
   })
 
   it("names the parent on a delegation sub-agent row", () => {
@@ -90,7 +95,12 @@ describe("SessionRow", () => {
     // delegated it — never to the child's own ids.
     renderRow(subAgentSession())
     fireEvent.click(screen.getByRole("button"))
-    expect(mockFocus).toHaveBeenCalledWith(3, 7, "claude_code")
+    expect(mockFocus).toHaveBeenCalledWith(
+      3,
+      7,
+      "claude_code",
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
     await vi.waitFor(() => expect(mockClose).toHaveBeenCalledTimes(1))
   })
 

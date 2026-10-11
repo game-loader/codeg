@@ -1,7 +1,9 @@
 "use client"
 
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useTranslations } from "next-intl"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import { AgentIcon } from "@/components/agent-icon"
 import { closePetPanel, focusConversation } from "@/lib/pet/api"
 import type { PetSessionEntry } from "@/lib/pet/types"
@@ -24,6 +26,10 @@ const STATUS_DOT: Record<PetSessionStatusKind, string> = {
 }
 
 export function SessionRow({ session }: SessionRowProps) {
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Pet")
   const kind = sessionStatusKind(session)
   const parent = session.parent
@@ -36,9 +42,10 @@ export function SessionRow({ session }: SessionRowProps) {
     void focusConversation(
       target.folderId,
       target.conversationId,
-      target.agentType
+      target.agentType,
+      backendPlatform
     )
-      .then(() => closePetPanel())
+      .then(() => closePetPanel(backendPlatform))
       .catch((err) =>
         console.warn("[PetPanel] focus conversation failed:", err)
       )

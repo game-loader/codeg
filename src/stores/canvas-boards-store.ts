@@ -1,12 +1,17 @@
-import { create } from "zustand"
-import { canvasListBoards } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
+
 import type {
   CanvasBoard,
   CanvasBoardChange,
   CanvasBoardSummary,
 } from "@/lib/types"
+
 import { registerBackendScopedStoreReset } from "@/stores/backend-scoped-store-reset"
+import * as defaultApi from "@/lib/api"
+import {
+  createStoreScope,
+  isStaleStoreRequest,
+} from "@/stores/backend-store-scope"
 
 /**
  * The canvas list, and which canvas the canvas route is showing.
@@ -36,7 +41,7 @@ import { registerBackendScopedStoreReset } from "@/stores/backend-scoped-store-r
  *  - Answers to requests sent before a `reset()` (another backend) carry the
  *    old scope and are ignored: their ids mean nothing in the new one.
  */
-interface CanvasBoardsState {
+export interface CanvasBoardsState {
   /** Every board, most recently edited first. */
   boards: readonly CanvasBoardSummary[]
   /** The first list landed. */
@@ -81,161 +86,191 @@ type BoardOp =
   | { kind: "created"; board: CanvasBoard }
   | { kind: "delete"; id: number }
 
-/** Display order only — never used to decide which of two rows is newer. */
-function compareRecent(a: CanvasBoardSummary, b: CanvasBoardSummary): number {
-  const ta = Date.parse(a.board.updated_at)
-  const tb = Date.parse(b.board.updated_at)
-  if (tb !== ta)
-    return (Number.isNaN(tb) ? 0 : tb) - (Number.isNaN(ta) ? 0 : ta)
-  return b.board.id - a.board.id
-}
+/** Create an independently owned backend store and its bound helper namespace. */
+export function createCanvasBoardsStore(
+  api: Pick<typeof defaultApi, "canvasListBoards">
+) {
+  const scope = createStoreScope()
+  const { canvasListBoards } = scope.bindApi(api, api !== defaultApi)
 
-function applyOp(
-  boards: readonly CanvasBoardSummary[],
-  op: BoardOp,
-  deleted: ReadonlySet<number>
-): readonly CanvasBoardSummary[] {
-  if (op.kind === "delete") {
-    const next = boards.filter((s) => s.board.id !== op.id)
-    return next.length === boards.length ? boards : next
-  }
-  if (deleted.has(op.board.id)) return boards
-  const index = boards.findIndex((s) => s.board.id === op.board.id)
-  if (index < 0) {
-    // New to us: no nodes yet as far as this client knows — the counts and
-    // thumbnail arrive with the next list read.
-    return [
-      ...boards,
-      { board: op.board, node_count: 0, terminal_count: 0, preview: [] },
-    ].sort(compareRecent)
-  }
-  if (op.kind === "created") return boards
-  const known = boards[index]
-  const next = boards.slice()
-  // Only the board row changed; what is ON it is still what we last read.
-  next[index] = { ...known, board: op.board }
-  return next.sort(compareRecent)
-}
-
-let fetchInFlight: Promise<void> | null = null
-/** A refetch was requested while one was in flight. */
-let fetchAgain = false
-/** Changes applied since the in-flight fetch started, replayed onto its
- *  answer. Null while no fetch is in flight. */
-let opsSinceFetch: BoardOp[] | null = null
-/** Bumped by reset(): a list from before it must not land after it. */
-let fetchEpoch = 0
-/** The backend scope, bumped by every reset(). */
-let scopeEpoch = 0
-/** Boards deleted in this backend scope. */
-const deletedBoards = new Set<number>()
-
-export const useCanvasBoardsStore = create<CanvasBoardsState>((set, get) => {
-  const apply = (op: BoardOp) => {
-    opsSinceFetch?.push(op)
-    const boards = applyOp(get().boards, op, deletedBoards)
-    if (boards !== get().boards) set({ boards })
-  }
-  const forget = (boardId: number) => {
-    deletedBoards.add(boardId)
-    apply({ kind: "delete", id: boardId })
+  /** Display order only — never used to decide which of two rows is newer. */
+  function compareRecent(a: CanvasBoardSummary, b: CanvasBoardSummary): number {
+    const ta = Date.parse(a.board.updated_at)
+    const tb = Date.parse(b.board.updated_at)
+    if (tb !== ta)
+      return (Number.isNaN(tb) ? 0 : tb) - (Number.isNaN(ta) ? 0 : ta)
+    return b.board.id - a.board.id
   }
 
-  return {
-    boards: [],
-    hydrated: false,
-    loadError: null,
-    activeBoardId: null,
-    closedNotice: null,
+  function applyOp(
+    boards: readonly CanvasBoardSummary[],
+    op: BoardOp,
+    deleted: ReadonlySet<number>
+  ): readonly CanvasBoardSummary[] {
+    if (op.kind === "delete") {
+      const next = boards.filter((s) => s.board.id !== op.id)
+      return next.length === boards.length ? boards : next
+    }
+    if (deleted.has(op.board.id)) return boards
+    const index = boards.findIndex((s) => s.board.id === op.board.id)
+    if (index < 0) {
+      // New to us: no nodes yet as far as this client knows — the counts and
+      // thumbnail arrive with the next list read.
+      return [
+        ...boards,
+        { board: op.board, node_count: 0, terminal_count: 0, preview: [] },
+      ].sort(compareRecent)
+    }
+    if (op.kind === "created") return boards
+    const known = boards[index]
+    const next = boards.slice()
+    // Only the board row changed; what is ON it is still what we last read.
+    next[index] = { ...known, board: op.board }
+    return next.sort(compareRecent)
+  }
 
-    openBoard: (boardId) => set({ activeBoardId: boardId }),
+  let fetchInFlight: Promise<void> | null = null
 
-    closeBoard: () => set({ activeBoardId: null }),
+  /** A refetch was requested while one was in flight. */
+  let fetchAgain = false
 
-    closeMissingBoard: (boardId) => {
-      if (get().activeBoardId !== boardId) return
-      set({ activeBoardId: null, closedNotice: boardId })
-    },
+  /** Changes applied since the in-flight fetch started, replayed onto its
+   *  answer. Null while no fetch is in flight. */
+  let opsSinceFetch: BoardOp[] | null = null
 
-    acknowledgeClosedNotice: () => set({ closedNotice: null }),
+  /** Bumped by reset(): a list from before it must not land after it. */
+  let fetchEpoch = 0
 
-    scope: () => scopeEpoch,
+  /** The backend scope, bumped by every reset(). */
+  let scopeEpoch = 0
 
-    applyCreatedBoard: (board, scope) => {
-      if (scope !== scopeEpoch) return false
-      apply({ kind: "created", board })
-      return true
-    },
+  /** Boards deleted in this backend scope. */
+  const deletedBoards = new Set<number>()
 
-    removeBoard: (boardId, scope) => {
-      if (scope !== scopeEpoch) return false
-      forget(boardId)
-      return true
-    },
+  const useCanvasBoardsStore = scope.create<CanvasBoardsState>((set, get) => {
+    const apply = (op: BoardOp) => {
+      opsSinceFetch?.push(op)
+      const boards = applyOp(get().boards, op, deletedBoards)
+      if (boards !== get().boards) set({ boards })
+    }
+    const forget = (boardId: number) => {
+      deletedBoards.add(boardId)
+      apply({ kind: "delete", id: boardId })
+    }
 
-    handleBoardChanged: (change) => {
-      if (change.kind === "upsert") {
-        apply({ kind: "event", board: change.board })
-        return
-      }
-      forget(change.id)
-      // Deleted out from under a client that had it open: leave, and say why.
-      get().closeMissingBoard(change.id)
-    },
+    return {
+      boards: [],
+      hydrated: false,
+      loadError: null,
+      activeBoardId: null,
+      closedNotice: null,
 
-    refetch: () => {
-      if (fetchInFlight) {
-        fetchAgain = true
-        return fetchInFlight
-      }
-      const epoch = fetchEpoch
-      opsSinceFetch = []
-      const settle = () => {
-        fetchInFlight = null
-        opsSinceFetch = null
-        if (fetchAgain) {
-          fetchAgain = false
-          void get().refetch()
+      openBoard: (boardId) => set({ activeBoardId: boardId }),
+
+      closeBoard: () => set({ activeBoardId: null }),
+
+      closeMissingBoard: (boardId) => {
+        if (get().activeBoardId !== boardId) return
+        set({ activeBoardId: null, closedNotice: boardId })
+      },
+
+      acknowledgeClosedNotice: () => set({ closedNotice: null }),
+
+      scope: () => scopeEpoch,
+
+      applyCreatedBoard: (board, scope) => {
+        if (scope !== scopeEpoch) return false
+        apply({ kind: "created", board })
+        return true
+      },
+
+      removeBoard: (boardId, scope) => {
+        if (scope !== scopeEpoch) return false
+        forget(boardId)
+        return true
+      },
+
+      handleBoardChanged: (change) => {
+        if (change.kind === "upsert") {
+          apply({ kind: "event", board: change.board })
+          return
         }
-      }
-      fetchInFlight = canvasListBoards()
-        .then((list) => {
-          if (epoch !== fetchEpoch) return
-          let boards: readonly CanvasBoardSummary[] = list.filter(
-            (s) => !deletedBoards.has(s.board.id)
-          )
-          for (const op of opsSinceFetch ?? []) {
-            boards = applyOp(boards, op, deletedBoards)
+        forget(change.id)
+        // Deleted out from under a client that had it open: leave, and say why.
+        get().closeMissingBoard(change.id)
+      },
+
+      refetch: () => {
+        if (fetchInFlight) {
+          fetchAgain = true
+          return fetchInFlight
+        }
+        const epoch = fetchEpoch
+        opsSinceFetch = []
+        const settle = () => {
+          fetchInFlight = null
+          opsSinceFetch = null
+          if (fetchAgain) {
+            fetchAgain = false
+            void get().refetch()
           }
-          set({ boards, hydrated: true, loadError: null })
-          settle()
-        })
-        .catch((e) => {
-          if (epoch !== fetchEpoch) return
-          console.error("[canvas] board list fetch failed:", e)
-          set({ loadError: toErrorMessage(e) })
-          settle()
-        })
-      return fetchInFlight
-    },
+        }
+        fetchInFlight = canvasListBoards()
+          .then((list) => {
+            if (epoch !== fetchEpoch) return
+            let boards: readonly CanvasBoardSummary[] = list.filter(
+              (s) => !deletedBoards.has(s.board.id)
+            )
+            for (const op of opsSinceFetch ?? []) {
+              boards = applyOp(boards, op, deletedBoards)
+            }
+            set({ boards, hydrated: true, loadError: null })
+            settle()
+          })
+          .catch((e) => {
+            if (isStaleStoreRequest(e)) return
+            if (epoch !== fetchEpoch) return
+            console.error("[canvas] board list fetch failed:", e)
+            set({ loadError: toErrorMessage(e) })
+            settle()
+          })
+        return fetchInFlight
+      },
 
-    reset: () => {
-      fetchEpoch++
-      fetchInFlight = null
-      fetchAgain = false
-      opsSinceFetch = null
-      scopeEpoch++
-      // Board ids belong to the backend that handed them out.
-      deletedBoards.clear()
-      set({
-        boards: [],
-        hydrated: false,
-        loadError: null,
-        activeBoardId: null,
-        closedNotice: null,
-      })
-    },
-  }
+      reset: () => {
+        fetchEpoch++
+        fetchInFlight = null
+        fetchAgain = false
+        opsSinceFetch = null
+        scopeEpoch++
+        // Board ids belong to the backend that handed them out.
+        deletedBoards.clear()
+        set({
+          boards: [],
+          hydrated: false,
+          loadError: null,
+          activeBoardId: null,
+          closedNotice: null,
+        })
+      },
+    }
+  })
+
+  scope.onDispose(() => {
+    useCanvasBoardsStore.getState().reset()
+  })
+  return Object.assign(useCanvasBoardsStore, {
+    useCanvasBoardsStore,
+
+    dispose: scope.dispose,
+    isDisposed: () => scope.disposed,
+  })
+}
+
+export type CanvasBoardsStore = ReturnType<typeof createCanvasBoardsStore>
+
+export const useCanvasBoardsStore = createCanvasBoardsStore(defaultApi)
+
+registerBackendScopedStoreReset(() => {
+  useCanvasBoardsStore.getState().reset()
 })
-
-registerBackendScopedStoreReset(() => useCanvasBoardsStore.getState().reset())
