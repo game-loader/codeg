@@ -34,6 +34,7 @@ export function createBackendClient(
     configRevision: options.configRevision ?? remoteConnection?.config_revision,
     onUnauthorized: options.onUnauthorized,
     onConfigurationChanged: options.onConfigurationChanged,
+    onRepositoryRemotesChanged: options.onRepositoryRemotesChanged,
   })
   const preferences = createBackendStoreStorage(options.key).selectorPreferences
   const academic = Object.freeze(

@@ -175,3 +175,47 @@ export function reconcileWindowDestination(
     destinations: { ...layout.destinations, [backendKey]: baseUrl },
   }
 }
+
+export type CatalogMode = "projects" | "machines"
+export interface CatalogPreferences {
+  mode: CatalogMode
+  collapsedProjects: string[]
+}
+export const CATALOG_PREFERENCES_KEY = "codeg:project-catalog:v1"
+
+function catalogPreferences(raw: unknown): CatalogPreferences {
+  const value =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {}
+  return {
+    mode: value.mode === "machines" ? "machines" : "projects",
+    collapsedProjects: Array.isArray(value.collapsedProjects)
+      ? [
+          ...new Set(
+            value.collapsedProjects.filter(
+              (key): key is string =>
+                typeof key === "string" && key.length > 0 && key.length < 8192
+            )
+          ),
+        ].slice(0, 1000)
+      : [],
+  }
+}
+export function readCatalogPreferences(): CatalogPreferences {
+  try {
+    return catalogPreferences(
+      JSON.parse(localStorage.getItem(CATALOG_PREFERENCES_KEY) ?? "null")
+    )
+  } catch {
+    return catalogPreferences(null)
+  }
+}
+export function saveCatalogPreferences(value: CatalogPreferences): void {
+  try {
+    localStorage.setItem(
+      CATALOG_PREFERENCES_KEY,
+      JSON.stringify(catalogPreferences(value))
+    )
+  } catch {
+    /* Presentation preferences are optional. */
+  }
+}

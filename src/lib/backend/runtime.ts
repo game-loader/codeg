@@ -1,3 +1,4 @@
+import { ProjectIdentityStore, catalogFolders } from "./project-catalog"
 import { createBackendClient } from "./client"
 import { FencedTransport } from "./fenced-transport"
 import { createBackendStores, type BackendStores } from "./stores"
@@ -209,6 +210,8 @@ export class BackendRuntime {
   readonly client: BackendClient
   readonly stores: BackendStores
   readonly generation: number
+  readonly projectIdentities: ProjectIdentityStore
+  private stopCatalogObservation: (() => void) | null = null
   private disposed = false
   private listeners = new Set<() => void>()
   private view: RuntimeView | null = null
@@ -250,6 +253,17 @@ export class BackendRuntime {
       desktop: true,
       windowInstanceId: options.windowInstanceId,
       onUnauthorized: () => lifetime.setStatus("unauthorized"),
+      onRepositoryRemotesChanged: (path) => {
+        if (!lifetime.isCurrent() || this.disposed) return
+        const state = this.stores.workspace.getState()
+        if (
+          catalogFolders(state.folders, state.allFolders).some(
+            (folder) => folder.path === path
+          )
+        ) {
+          void this.projectIdentities.refresh(false)
+        }
+      },
       onConfigurationChanged: () => {
         if (lifetime.isCurrent()) options.onConfigurationChanged?.()
       },
@@ -290,6 +304,18 @@ export class BackendRuntime {
       transport.destroy()
       throw error
     }
+    this.projectIdentities = new ProjectIdentityStore(
+      (ids) => this.client.api.listRepositoryProjectIdentities(ids),
+      () => !this.disposed && lifetime.isCurrent()
+    )
+    const updateCatalog = () => {
+      const state = this.stores.workspace.getState()
+      void this.projectIdentities.setFolders(
+        catalogFolders(state.folders, state.allFolders)
+      )
+    }
+    this.stopCatalogObservation = this.stores.workspace.subscribe(updateCatalog)
+    updateCatalog()
   }
 
   readonly subscribe = (listener: () => void): (() => void) => {
@@ -317,6 +343,8 @@ export class BackendRuntime {
     if (this.disposed) return
     this.captureRecovery()
     this.disposed = true
+    this.stopCatalogObservation?.()
+    this.projectIdentities.dispose()
     this.client.transport.destroy?.()
     this.stores.dispose()
     this.view = null

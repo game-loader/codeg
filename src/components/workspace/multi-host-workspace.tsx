@@ -60,7 +60,13 @@ import { usePlatform } from "@/hooks/use-platform"
 import { cn } from "@/lib/utils"
 import { toErrorMessage } from "@/lib/app-error"
 import { saveTextFile } from "@/lib/save-file"
-import type { FolderDetail } from "@/lib/types"
+import type { FolderDetail, DbConversationSummary } from "@/lib/types"
+import { catalogFolders } from "@/lib/backend/project-catalog"
+import {
+  resolveCatalogRuntime,
+  selectFolderContext,
+  openExistingConversation,
+} from "@/lib/backend/project-navigation"
 import type { WorkbenchRouteId } from "@/contexts/workbench-route-context"
 
 interface HostSummary extends HostFolderCatalog {
@@ -85,29 +91,40 @@ function RuntimeObserver({
     runtime.getSnapshot,
     runtime.getSnapshot
   )
-  const folders = useMemo(() => {
-    const opened = new Set(state.folders.map((folder) => folder.id))
-    for (const folder of state.folders) {
-      let parent = folder.parent_id
-      const visited = new Set<number>()
-      while (parent && !visited.has(parent)) {
-        visited.add(parent)
-        opened.add(parent)
-        parent =
-          state.allFolders.find((candidate) => candidate.id === parent)
-            ?.parent_id ?? null
-      }
-    }
-    return state.allFolders.filter((folder) => opened.has(folder.id))
-  }, [state.folders, state.allFolders])
+  const identities = useSyncExternalStore(
+    runtime.projectIdentities.subscribe,
+    runtime.projectIdentities.getSnapshot,
+    runtime.projectIdentities.getSnapshot
+  )
+  const folders = useMemo(
+    () => catalogFolders(state.folders, state.allFolders),
+    [state.folders, state.allFolders]
+  )
   useEffect(() => {
     onChange(runtime.client.key, {
       generation: runtime.generation,
       folders,
       loading: state.foldersLoading,
+      identities: identities.entries,
+      identityLoading: identities.loading,
+      identityUnavailable: identities.unavailable,
+      identityUnsupported: identities.capability === "unsupported",
+      conversations: state.conversations,
+      historyLoading: state.conversationsLoading,
+      historyError: state.conversationsError,
       view,
     })
-  }, [onChange, runtime, folders, state.foldersLoading, view])
+  }, [
+    onChange,
+    runtime,
+    folders,
+    state.foldersLoading,
+    state.conversations,
+    state.conversationsLoading,
+    state.conversationsError,
+    identities,
+    view,
+  ])
   return null
 }
 
@@ -401,6 +418,13 @@ export function MultiHostWorkspace({
         before?.folders === summary.folders &&
         before.generation === summary.generation &&
         before.loading === summary.loading &&
+        before.identities === summary.identities &&
+        before.identityLoading === summary.identityLoading &&
+        before.identityUnavailable === summary.identityUnavailable &&
+        before.identityUnsupported === summary.identityUnsupported &&
+        before.conversations === summary.conversations &&
+        before.historyLoading === summary.historyLoading &&
+        before.historyError === summary.historyError &&
         before.view === summary.view
       )
         return previous
@@ -768,21 +792,62 @@ function WindowWorkspace({
             : previous.selected,
       }))
   }
-  const openFolder = (key: BackendKey, folder: FolderDetail) => {
-    const runtime = registry.get(key)
+  const openFolder = (
+    key: BackendKey,
+    folder: FolderDetail,
+    generation: number
+  ) => {
+    const runtime = resolveCatalogRuntime(registry, key, generation, folder)
     if (!runtime) return
     activateHost(key)
+    selectFolderContext(runtime, folder)
+  }
+  const openRegisteredFolder = (
+    runtime: BackendRuntime,
+    folder: FolderDetail
+  ) => {
+    if (
+      resolveCatalogRuntime(
+        registry,
+        runtime.client.key,
+        runtime.generation
+      ) !== runtime
+    )
+      return
     runtime.stores.workspace.getState().upsertFolder(folder)
-    runtime.stores.workspace.getState().setActiveFolderId(folder.id)
+    openFolder(runtime.client.key, folder, runtime.generation)
+  }
+  const newSession = (
+    key: BackendKey,
+    folder: FolderDetail,
+    generation: number
+  ) => {
+    const runtime = resolveCatalogRuntime(registry, key, generation, folder)
+    if (!runtime) return
+    activateHost(key)
+    selectFolderContext(runtime, folder)
     runtime.stores.tabs
       .getState()
       .openNewConversationTab(folder.id, folder.path)
-    runtime.getSnapshot()?.navigate("conversations")
   }
-  const refreshHost = (key: BackendKey) => {
-    const runtime = registry.get(key)
+  const openConversation = (
+    key: BackendKey,
+    folder: FolderDetail,
+    conversation: DbConversationSummary,
+    generation: number
+  ) => {
+    const runtime = resolveCatalogRuntime(registry, key, generation, folder)
+    if (!runtime) return
+    if (openExistingConversation(runtime, folder, conversation))
+      activateHost(key)
+  }
+  const refreshHost = (key: BackendKey, generation: number) => {
+    const runtime = resolveCatalogRuntime(registry, key, generation)
     if (runtime) {
-      void runtime.stores.workspace.getState().fetchFolders()
+      void runtime.stores.workspace
+        .getState()
+        .fetchFolders()
+        .then(() => runtime.projectIdentities.refresh())
       void runtime.stores.workspace.getState().refreshConversations()
     }
   }
@@ -930,11 +995,24 @@ function WindowWorkspace({
             }
             onSelectHost={activateHost}
             onOpenFolder={openFolder}
-            onAddRepository={(key) =>
-              setRepositoryTarget(registry.get(key) ?? null)
-            }
-            onWorktrees={(key, folder) => {
-              const runtime = registry.get(key)
+            onNewSession={newSession}
+            onOpenConversation={openConversation}
+            onRetry={(key, generation) => {
+              const runtime = resolveCatalogRuntime(registry, key, generation)
+              if (runtime)
+                void runtime.stores.workspace.getState().refreshConversations()
+            }}
+            onAddRepository={(key, generation) => {
+              const runtime = resolveCatalogRuntime(registry, key, generation)
+              if (runtime) setRepositoryTarget(runtime)
+            }}
+            onWorktrees={(key, folder, generation) => {
+              const runtime = resolveCatalogRuntime(
+                registry,
+                key,
+                generation,
+                folder
+              )
               if (runtime) setWorktreeTarget({ runtime, folder })
             }}
             onRefresh={refreshHost}
@@ -1048,7 +1126,7 @@ function WindowWorkspace({
                       variant="outline"
                       onClick={() => {
                         refreshConnections()
-                        refreshHost(host.key)
+                        refreshHost(host.key, host.generation)
                       }}
                     >
                       {t("refresh")}
@@ -1128,8 +1206,11 @@ function WindowWorkspace({
                     if (!open) setRepositoryTarget(null)
                   }}
                   onFolderOpened={(folder) => {
-                    openFolder(repositoryTarget.client.key, folder)
-                    refreshHost(repositoryTarget.client.key)
+                    openRegisteredFolder(repositoryTarget, folder)
+                    refreshHost(
+                      repositoryTarget.client.key,
+                      repositoryTarget.generation
+                    )
                   }}
                 />
               </ScopedRemoteConnectionProvider>
@@ -1147,9 +1228,14 @@ function WindowWorkspace({
             onOpenChange={(open) => {
               if (!open) setWorktreeTarget(null)
             }}
-            onChanged={() => refreshHost(worktreeTarget.runtime.client.key)}
+            onChanged={() =>
+              refreshHost(
+                worktreeTarget.runtime.client.key,
+                worktreeTarget.runtime.generation
+              )
+            }
             onRegistered={(folder) =>
-              openFolder(worktreeTarget.runtime.client.key, folder)
+              openRegisteredFolder(worktreeTarget.runtime, folder)
             }
           />
         )}

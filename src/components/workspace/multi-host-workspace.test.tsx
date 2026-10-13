@@ -43,6 +43,8 @@ const mocks = vi.hoisted(() => ({
   >(),
   list: vi.fn(),
   unmount: vi.fn(),
+  runtimes: new Map<BackendKey, BackendRuntime>(),
+  worktreeDialog: vi.fn(),
 }))
 vi.mock("next-intl", async (original) => ({
   ...(await original<typeof import("next-intl")>()),
@@ -83,7 +85,12 @@ vi.mock("@/components/layout/remote-workspace-manage-dialog", () => ({
 vi.mock("@/components/layout/workspace-folder-dialog", () => ({
   WorkspaceFolderDialog: () => <FolderPicker />,
 }))
-vi.mock("./host-worktree-dialog", () => ({ HostWorktreeDialog: () => null }))
+vi.mock("./host-worktree-dialog", () => ({
+  HostWorktreeDialog: (props: unknown) => {
+    mocks.worktreeDialog(props)
+    return null
+  },
+}))
 
 function connection(id: number): RemoteWorkspaceConnection {
   return {
@@ -193,15 +200,52 @@ function Probe({ runtime }: { runtime: BackendRuntime }) {
     runtime.publishView(view)
   }, [runtime, view])
   useEffect(() => {
+    mocks.runtimes.set(client.key, runtime)
+    const root = folder(client.name)
+    const child = {
+      ...root,
+      id: 2,
+      parent_id: 1,
+      path: "/same/worktree",
+      name: "worktree",
+      git_branch: "feature",
+    }
+    const session = {
+      id: 1,
+      folder_id: 1,
+      title: "Existing root",
+      title_locked: false,
+      agent_type: "codex" as const,
+      status: "completed",
+      kind: "regular" as const,
+      model: null,
+      git_branch: null,
+      external_id: null,
+      message_count: 1,
+      child_count: 0,
+      created_at: "",
+      updated_at: "",
+      pinned_at: "2026-01-01",
+    }
     stores.workspace.setState({
-      allFolders: [folder(client.name)],
-      folders: [folder(client.name)],
+      allFolders: [root, child],
+      folders: [root, child],
       foldersLoading: false,
+      conversations: [
+        session,
+        {
+          ...session,
+          id: 2,
+          folder_id: 2,
+          title: "Existing worktree",
+          pinned_at: null,
+        },
+      ],
     })
     return () => {
       mocks.unmount(client.key)
     }
-  }, [client, stores])
+  }, [client, stores, runtime])
   return (
     <div
       data-testid={`probe-${client.key}`}
@@ -235,6 +279,8 @@ function Probe({ runtime }: { runtime: BackendRuntime }) {
 beforeEach(() => {
   localStorage.clear()
   mocks.remotes.clear()
+  mocks.runtimes.clear()
+  mocks.worktreeDialog.mockClear()
   mocks.unmount.mockClear()
   mocks.shell.call.mockClear()
   mocks.list.mockResolvedValue([connection(1), connection(2)])
@@ -312,7 +358,13 @@ describe("single-window machine integration", () => {
     fireEvent.click(screen.getByRole("button", { name: "Approve remote:1" }))
     fireEvent.click(screen.getByRole("button", { name: "Approve remote:2" }))
     await waitFor(() =>
-      expect(mocks.remotes.get(2)?.call).toHaveBeenCalledTimes(2)
+      expect(
+        mocks.remotes
+          .get(2)
+          ?.call.mock.calls.filter(
+            ([command]) => command !== "list_repository_project_identities"
+          )
+      ).toHaveLength(2)
     )
     expect(mocks.remotes.get(1)?.call).toHaveBeenCalledWith(
       "acp_prompt",
@@ -331,7 +383,13 @@ describe("single-window machine integration", () => {
     expect(hostNode("remote:2")).toHaveTextContent("Connected")
     fireEvent.click(screen.getByRole("button", { name: "Send remote:2" }))
     await waitFor(() =>
-      expect(mocks.remotes.get(2)?.call).toHaveBeenCalledTimes(3)
+      expect(
+        mocks.remotes
+          .get(2)
+          ?.call.mock.calls.filter(
+            ([command]) => command !== "list_repository_project_identities"
+          )
+      ).toHaveLength(3)
     )
     expect(mocks.unmount).not.toHaveBeenCalled()
   })
@@ -479,4 +537,218 @@ describe("single-window machine integration", () => {
     expect(readWindowLayout()).toEqual(layout)
     expect(readWindowTabs()).toEqual(tabs)
   })
+})
+
+it.each(["Projects", "Machines"])(
+  "opens existing root/worktree sessions on captured A after B focus in %s and creates only explicit drafts",
+  async (mode) => {
+    await mount()
+    const aside = document.querySelector("aside")! as HTMLElement
+    if (mode === "Machines")
+      fireEvent.click(within(aside).getByRole("button", { name: "Machines" }))
+    const a = mocks.runtimes.get("remote:1")!,
+      b = mocks.runtimes.get("remote:2")!
+    const openA = vi.spyOn(a.stores.tabs.getState(), "openTab")
+    const openB = vi.spyOn(b.stores.tabs.getState(), "openTab")
+    const draftA = vi.spyOn(a.stores.tabs.getState(), "openNewConversationTab")
+    const aRows = aside.querySelector(
+      '[data-backend-key="remote:1"][data-runtime-generation]'
+    )! as HTMLElement
+    const bRows = aside.querySelector(
+      '[data-backend-key="remote:2"][data-runtime-generation]'
+    )! as HTMLElement
+    fireEvent.click(within(aRows).getByTitle("/same/repo"))
+    expect(a.stores.workspace.getState().activeFolderId).toBe(1)
+    expect(a.stores.tabs.getState().tabs).toHaveLength(0)
+    fireEvent.click(within(bRows).getByTitle("/same/repo"))
+    expect(screen.getByTestId("probe-remote:2")).toHaveAttribute(
+      "data-focused",
+      "true"
+    )
+    expect(within(aRows).queryByText("Existing worktree")).toBeNull()
+    fireEvent.click(within(aRows).getByText("Existing root"))
+    expect(openA).toHaveBeenCalledWith(1, 1, "codex", false, "Existing root")
+    expect(openB).not.toHaveBeenCalled()
+    expect(draftA).not.toHaveBeenCalled()
+    expect(screen.getByTestId("probe-remote:1")).toHaveAttribute(
+      "data-focused",
+      "true"
+    )
+    fireEvent.click(within(aRows).getByTitle("/same/worktree"))
+    fireEvent.click(within(bRows).getByTitle("/same/repo"))
+    fireEvent.click(within(aRows).getByText("Existing worktree"))
+    expect(openA).toHaveBeenLastCalledWith(
+      2,
+      2,
+      "codex",
+      false,
+      "Existing worktree"
+    )
+    expect(openB).not.toHaveBeenCalled()
+    fireEvent.click(
+      within(aRows).getByRole("button", { name: "New Session · Machine A" })
+    )
+    expect(draftA).toHaveBeenCalledWith(1, "/same/repo")
+    const draft = a.stores.tabs
+      .getState()
+      .tabs.find((tab) => tab.conversationId === null)!
+    fireEvent.click(within(bRows).getByTitle("/same/repo"))
+    fireEvent.click(
+      within(aRows).getByRole("button", {
+        name: "Manage worktrees · Machine A",
+      })
+    )
+    expect(mocks.worktreeDialog).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        client: a.client,
+        repository: expect.objectContaining({ id: 1, path: "/same/repo" }),
+      })
+    )
+    fireEvent.click(within(aRows).getByTitle("/same/repo"))
+    const advanced = vi.spyOn(a.getSnapshot()!, "toggleSidebar")
+    const runtimeNode = screen
+      .getByTestId("probe-remote:1")
+      .closest("[data-runtime-generation]")! as HTMLElement
+    fireEvent.click(
+      within(runtimeNode).getByRole("button", {
+        name: messages.Folder.sidebar.title,
+      })
+    )
+    expect(advanced).toHaveBeenCalledOnce()
+    const aNode = screen.getByTestId("probe-remote:1"),
+      bNode = screen.getByTestId("probe-remote:2")
+    fireEvent.click(
+      within(aside).getByRole("button", {
+        name: mode === "Projects" ? "Machines" : "Projects",
+      })
+    )
+    expect(screen.getByTestId("probe-remote:1")).toBe(aNode)
+    expect(screen.getByTestId("probe-remote:2")).toBe(bNode)
+    expect(
+      a.stores.tabs.getState().tabs.find((tab) => tab.id === draft.id)
+    ).toEqual(draft)
+    expect(mocks.unmount).not.toHaveBeenCalled()
+  }
+)
+
+it("rejects captured worktree-dialog completion after replacing its runtime", async () => {
+  await mount()
+  const aside = document.querySelector("aside")! as HTMLElement
+  const aRows = aside.querySelector(
+    '[data-backend-key="remote:1"][data-runtime-generation]'
+  )! as HTMLElement
+  fireEvent.click(
+    within(aRows).getByRole("button", { name: "Manage worktrees · Machine A" })
+  )
+  const oldCallback = mocks.worktreeDialog.mock.calls[
+    mocks.worktreeDialog.mock.calls.length - 1
+  ][0] as {
+    onRegistered(folder: FolderDetail): void
+    onChanged(): void
+  }
+  mocks.list.mockResolvedValue([
+    { ...connection(1), token: "replacement", config_revision: "new" },
+    connection(2),
+  ])
+  fireEvent(window, new Event("focus"))
+  await waitFor(() =>
+    expect(mocks.remotes.get(1)!.config.configRevision).toBe("new")
+  )
+  const replacement = mocks.runtimes.get("remote:1")!
+  const upsert = vi.spyOn(
+    replacement.stores.workspace.getState(),
+    "upsertFolder"
+  )
+  const fetch = vi.spyOn(
+    replacement.stores.workspace.getState(),
+    "fetchFolders"
+  )
+  act(() => {
+    oldCallback.onRegistered({ ...folder("stale"), id: 99 })
+    oldCallback.onChanged()
+  })
+  expect(upsert).not.toHaveBeenCalled()
+  expect(fetch).not.toHaveBeenCalled()
+  expect(replacement.stores.workspace.getState().activeFolderId).toBeNull()
+})
+
+it("publishes delayed metadata and conversation-only/loading/error updates without changing folders or view", async () => {
+  await mount()
+  const a = mocks.runtimes.get("remote:1")!,
+    b = mocks.runtimes.get("remote:2")!
+  let resolveA!: (entries: unknown[]) => void
+  let resolveB!: (entries: unknown[]) => void
+  mocks.remotes.get(1)!.call.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        resolveA = resolve
+      })
+  )
+  mocks.remotes.get(2)!.call.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        resolveB = resolve
+      })
+  )
+  let refreshA!: Promise<void>, refreshB!: Promise<void>
+  act(() => {
+    refreshA = a.projectIdentities.refresh()
+    refreshB = b.projectIdentities.refresh()
+  })
+  const entry = {
+    folder_id: 1,
+    path: "/same/repo",
+    status: "resolved",
+    identity: {
+      project_key: "github:o/r",
+      repository_path: "o/r",
+      provider: "github",
+      host: "github.com",
+      remote_name: "origin",
+    },
+  }
+  await act(async () => {
+    resolveA([entry])
+    resolveB([entry])
+    await Promise.all([refreshA, refreshB])
+  })
+  const project = document.querySelector(
+    'section[data-project-key="github:o/r"]'
+  )! as HTMLElement
+  expect(project).not.toBeNull()
+  expect(project.querySelectorAll("[data-runtime-generation]")).toHaveLength(2)
+  const rowsA = project.querySelector(
+    '[data-backend-key="remote:1"]'
+  )! as HTMLElement
+  const rowsB = project.querySelector(
+    '[data-backend-key="remote:2"]'
+  )! as HTMLElement
+  fireEvent.click(within(rowsA).getByTitle("/same/repo"))
+  fireEvent.click(within(rowsB).getByTitle("/same/repo"))
+  const identityProbes = mocks.remotes.get(1)!.call.mock.calls.length
+  act(() =>
+    a.stores.workspace.setState({
+      conversations: a.stores.workspace
+        .getState()
+        .conversations.map((c) =>
+          c.id === 1 ? { ...c, title: "Updated history" } : c
+        ),
+    })
+  )
+  expect(within(rowsA).getByText("Updated history")).toBeInTheDocument()
+  expect(within(rowsB).queryByText("Updated history")).toBeNull()
+  act(() =>
+    a.stores.workspace.setState({
+      conversationsLoading: true,
+      conversationsError: "Host A history failed",
+    })
+  )
+  expect(within(rowsA).getByRole("status")).toHaveTextContent(
+    messages.MultiHost.historyLoading
+  )
+  expect(within(rowsA).getByRole("alert")).toHaveTextContent(
+    "Host A history failed"
+  )
+  expect(within(rowsB).queryByRole("alert")).toBeNull()
+  expect(mocks.remotes.get(1)!.call.mock.calls.length).toBe(identityProbes)
 })

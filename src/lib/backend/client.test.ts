@@ -363,3 +363,26 @@ describe("fixed backend clients", () => {
     expect(authA).not.toHaveBeenCalled()
   })
 })
+
+it("calls the project identity batch protocol on the fixed backend", async () => {
+  const a = client(1),
+    b = client(2)
+  const entry = { folder_id: 1, path: "/a", status: "resolved", identity: null }
+  a.target.call.mockResolvedValue([entry])
+  b.target.call.mockResolvedValue([{ ...entry, path: "/b" }])
+  await expect(
+    a.client.api.listRepositoryProjectIdentities([1, 2])
+  ).resolves.toEqual([entry])
+  await expect(
+    b.client.api.listRepositoryProjectIdentities([1])
+  ).resolves.toEqual([{ ...entry, path: "/b" }])
+  expect(a.target.call).toHaveBeenCalledWith(
+    "list_repository_project_identities",
+    { folderIds: [1, 2] }
+  )
+  expect(b.target.call).toHaveBeenCalledWith(
+    "list_repository_project_identities",
+    { folderIds: [1] }
+  )
+  expect(a.shell.call).not.toHaveBeenCalled()
+})

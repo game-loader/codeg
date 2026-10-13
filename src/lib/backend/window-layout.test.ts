@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest"
 import {
+  CATALOG_PREFERENCES_KEY,
+  readCatalogPreferences,
+  saveCatalogPreferences,
   emptyWindowLayout,
   isBackendKey,
   readWindowLayout,
@@ -79,5 +82,32 @@ describe("multi-host window layout", () => {
     expect(after.files).toEqual([b])
     expect(after.selected).toBeNull()
     expect(after.destinations["remote:1"]).toBe("http://new")
+  })
+})
+
+describe("catalog presentation preferences", () => {
+  it("defaults invalid modes to projects and whitelists collapse state separately", () => {
+    localStorage.setItem(
+      CATALOG_PREFERENCES_KEY,
+      JSON.stringify({
+        mode: "invalid",
+        collapsedProjects: ["github:owner/repo", 1],
+        token: "secret",
+      })
+    )
+    expect(readCatalogPreferences()).toEqual({
+      mode: "projects",
+      collapsedProjects: ["github:owner/repo"],
+    })
+    saveCatalogPreferences({
+      mode: "machines",
+      collapsedProjects: ["github:owner/repo"],
+    })
+    expect(readCatalogPreferences().mode).toBe("machines")
+    expect(localStorage.getItem(CATALOG_PREFERENCES_KEY)).not.toContain(
+      "secret"
+    )
+    localStorage.removeItem(CATALOG_PREFERENCES_KEY)
+    expect(readCatalogPreferences().mode).toBe("projects")
   })
 })

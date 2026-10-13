@@ -18,6 +18,7 @@ export interface BackendApiBinding {
   readonly configRevision?: string
   readonly onUnauthorized?: () => void
   readonly onConfigurationChanged?: () => void
+  readonly onRepositoryRemotesChanged?: (path: string) => void
 }
 
 export interface BackendClient {

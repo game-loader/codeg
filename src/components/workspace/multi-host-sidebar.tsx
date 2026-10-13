@@ -4,8 +4,6 @@ import { useTranslations } from "next-intl"
 import {
   ChevronDown,
   ChevronRight,
-  FolderGit2,
-  GitBranch,
   Monitor,
   Plus,
   RefreshCw,
@@ -16,24 +14,45 @@ import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { BackendDescriptor } from "@/lib/backend/registry"
 import type { BackendKey } from "@/lib/backend/types"
-import type { FolderDetail } from "@/lib/types"
+import type {
+  DbConversationSummary,
+  FolderDetail,
+  RepositoryProjectIdentityEntry,
+} from "@/lib/types"
+import {
+  ProjectSetupRows,
+  type CatalogRowActions,
+} from "./project-session-list"
+import { MultiHostProjects } from "./multi-host-projects"
+import {
+  readCatalogPreferences,
+  saveCatalogPreferences,
+  type CatalogPreferences,
+} from "@/lib/backend/window-layout"
+import { useEffect, useState } from "react"
 
 export interface HostFolderCatalog {
   folders: readonly FolderDetail[]
   loading: boolean
+  generation?: number
+  identities?: ReadonlyMap<number, RepositoryProjectIdentityEntry>
+  identityLoading?: boolean
+  identityUnavailable?: boolean
+  identityUnsupported?: boolean
+  conversations?: readonly DbConversationSummary[]
+  historyLoading?: boolean
+  historyError?: string | null
 }
 
-interface MultiHostSidebarProps {
+export interface MultiHostSidebarProps extends CatalogRowActions {
   hosts: readonly BackendDescriptor[]
   catalogs: ReadonlyMap<BackendKey, HostFolderCatalog>
   focusedHost: BackendKey
   collapsed: readonly BackendKey[]
   onToggleHost(key: BackendKey): void
   onSelectHost(key: BackendKey): void
-  onOpenFolder(key: BackendKey, folder: FolderDetail): void
-  onAddRepository(key: BackendKey): void
-  onWorktrees(key: BackendKey, folder: FolderDetail): void
-  onRefresh(key: BackendKey): void
+  onAddRepository(key: BackendKey, generation: number): void
+  onRefresh(key: BackendKey, generation: number): void
   onManageConnections(): void
 }
 
@@ -48,14 +67,51 @@ export function MultiHostSidebar({
   onOpenFolder,
   onAddRepository,
   onWorktrees,
+  onNewSession,
+  onOpenConversation,
+  onRetry,
   onRefresh,
   onManageConnections,
 }: MultiHostSidebarProps) {
   const t = useTranslations("MultiHost")
+  const [preferences, setPreferences] = useState<CatalogPreferences>({
+    mode: "projects",
+    collapsedProjects: [],
+  })
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false)
+  useEffect(() => {
+    // Match static-export markup before hydrating optional device preferences.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPreferences(readCatalogPreferences())
+    setPreferencesLoaded(true)
+  }, [])
+  useEffect(() => {
+    if (preferencesLoaded) saveCatalogPreferences(preferences)
+  }, [preferences, preferencesLoaded])
+  const actions = {
+    onOpenFolder,
+    onWorktrees,
+    onNewSession,
+    onOpenConversation,
+    onRetry,
+  }
   return (
     <aside className="flex h-full w-64 shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground">
       <div className="flex h-10 shrink-0 items-center justify-between border-b px-3">
-        <span className="text-sm font-medium">{t("machines")}</span>
+        <div className="flex gap-1" role="group" aria-label={t("catalogView")}>
+          {(["projects", "machines"] as const).map((mode) => (
+            <Button
+              key={mode}
+              variant={preferences.mode === mode ? "secondary" : "ghost"}
+              size="sm"
+              className="h-7 px-2 text-xs"
+              aria-pressed={preferences.mode === mode}
+              onClick={() => setPreferences((value) => ({ ...value, mode }))}
+            >
+              {t(mode)}
+            </Button>
+          ))}
+        </div>
         <Button
           size="icon"
           variant="ghost"
@@ -67,6 +123,22 @@ export function MultiHostSidebar({
         </Button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        {preferences.mode === "projects" && (
+          <MultiHostProjects
+            hosts={hosts}
+            catalogs={catalogs}
+            collapsed={preferences.collapsedProjects}
+            onToggle={(key) =>
+              setPreferences((value) => ({
+                ...value,
+                collapsedProjects: value.collapsedProjects.includes(key)
+                  ? value.collapsedProjects.filter((k) => k !== key)
+                  : [...value.collapsedProjects, key],
+              }))
+            }
+            {...actions}
+          />
+        )}
         {hosts.map((host) => {
           const catalog = catalogs.get(host.key)
           const folders = catalog?.folders ?? []
@@ -121,7 +193,7 @@ export function MultiHostSidebar({
                   variant="ghost"
                   className="size-6"
                   aria-label={t("addRepository")}
-                  onClick={() => onAddRepository(host.key)}
+                  onClick={() => onAddRepository(host.key, host.generation)}
                 >
                   <Plus className="size-3.5" />
                 </Button>
@@ -130,12 +202,13 @@ export function MultiHostSidebar({
                   variant="ghost"
                   className="size-6"
                   aria-label={t("refresh")}
-                  onClick={() => onRefresh(host.key)}
+                  onClick={() => onRefresh(host.key, host.generation)}
                 >
                   <RefreshCw
                     className={cn(
                       "size-3.5",
-                      catalog?.loading && "animate-spin"
+                      (catalog?.loading || catalog?.identityLoading) &&
+                        "animate-spin"
                     )}
                   />
                 </Button>
@@ -151,7 +224,17 @@ export function MultiHostSidebar({
               >
                 {t(host.status)}
               </p>
-              {!isCollapsed && (
+              {catalog?.identityUnsupported && (
+                <p className="ml-7 text-xs text-muted-foreground">
+                  {t("identityUpgrade")}
+                </p>
+              )}
+              {catalog?.identityUnavailable && !catalog.identityUnsupported && (
+                <p className="ml-7 text-xs text-muted-foreground">
+                  {t("identityUnavailable")}
+                </p>
+              )}
+              {preferences.mode === "machines" && !isCollapsed && (
                 <div className="ml-3 border-l pl-2">
                   {catalog?.loading && roots.length === 0 && (
                     <p className="p-2 text-xs text-muted-foreground">
@@ -164,50 +247,24 @@ export function MultiHostSidebar({
                     </p>
                   )}
                   {roots.map((folder) => (
-                    <div key={folder.id} className="mb-1">
-                      <div className="group flex items-center rounded-md hover:bg-sidebar-accent">
-                        <button
-                          type="button"
-                          className="flex min-w-0 flex-1 items-center gap-1.5 px-1 py-1.5 text-left text-sm"
-                          title={folder.path}
-                          onClick={() => onOpenFolder(host.key, folder)}
-                        >
-                          <FolderGit2 className="size-3.5 shrink-0" />
-                          <span className="truncate">
-                            {folder.alias ?? folder.name}
-                          </span>
-                        </button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="size-6"
-                          aria-label={`${t("manageWorktrees")} · ${folder.name}`}
-                          onClick={() => onWorktrees(host.key, folder)}
-                        >
-                          <GitBranch className="size-3.5" />
-                        </Button>
-                      </div>
-                      {folders
-                        .filter(
+                    <ProjectSetupRows
+                      key={`${host.generation}:${folder.id}:${folder.path}`}
+                      setup={{
+                        backendKey: host.key,
+                        generation: host.generation,
+                        folder,
+                        children: folders.filter(
                           (child) =>
                             child.parent_id === folder.id &&
                             child.kind !== "chat"
-                        )
-                        .map((child) => (
-                          <button
-                            key={child.id}
-                            type="button"
-                            className="ml-3 flex w-[calc(100%-0.75rem)] items-center gap-1.5 rounded-md px-1 py-1.5 text-left text-xs hover:bg-sidebar-accent"
-                            title={child.path}
-                            onClick={() => onOpenFolder(host.key, child)}
-                          >
-                            <GitBranch className="size-3 shrink-0" />
-                            <span className="truncate">
-                              {child.git_branch ?? child.alias ?? child.name}
-                            </span>
-                          </button>
-                        ))}
-                    </div>
+                        ),
+                      }}
+                      hostName={host.name}
+                      conversations={catalog?.conversations}
+                      historyLoading={catalog?.historyLoading}
+                      historyError={catalog?.historyError}
+                      {...actions}
+                    />
                   ))}
                 </div>
               )}

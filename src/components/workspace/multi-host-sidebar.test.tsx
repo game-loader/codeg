@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { MultiHostSidebar } from "./multi-host-sidebar"
 import { MultiHostTabs } from "./multi-host-tabs"
 import type { BackendDescriptor } from "@/lib/backend/registry"
@@ -40,6 +40,8 @@ const folder: FolderDetail = {
   group_id: null,
 }
 
+beforeEach(() => localStorage.clear())
+
 describe("multi-host workspace navigation", () => {
   it("routes equal folder IDs and paths to their containing machine", () => {
     const onOpenFolder = vi.fn()
@@ -66,12 +68,12 @@ describe("multi-host workspace navigation", () => {
         onManageConnections={vi.fn()}
       />
     )
-    fireEvent.click(screen.getAllByText("same-repo")[1])
-    expect(onOpenFolder).toHaveBeenCalledWith("remote:2", folder)
+    fireEvent.click(screen.getAllByTitle("/repo")[1])
+    expect(onOpenFolder).toHaveBeenCalledWith("remote:2", folder, 2)
     fireEvent.click(
       screen.getAllByRole("button", { name: "manageWorktrees · same-repo" })[0]
     )
-    expect(onWorktrees).toHaveBeenCalledWith("remote:1", folder)
+    expect(onWorktrees).toHaveBeenCalledWith("remote:1", folder, 1)
   })
 
   it("opens and closes equal tab IDs on the selected machine", () => {
@@ -105,4 +107,80 @@ describe("multi-host workspace navigation", () => {
     )
     expect(onClose).toHaveBeenCalledWith(b)
   })
+})
+
+it("defaults to Projects, keeps headers disclosure-only, restores Machines and scopes upgrade hints", () => {
+  const onOpenFolder = vi.fn(),
+    onWorktrees = vi.fn(),
+    onAddRepository = vi.fn()
+  const catalogs = new Map(
+    hosts.map((h) => [
+      h.key,
+      {
+        folders: [folder],
+        loading: false,
+        identityUnsupported: h.key === "remote:1",
+        identities: new Map([
+          [
+            1,
+            {
+              folder_id: 1,
+              path: "/repo",
+              status: "resolved" as const,
+              identity: {
+                project_key: "github:o/r",
+                repository_path: "o/r",
+                provider: "github",
+                host: "github.com",
+                remote_name: "origin",
+              },
+            },
+          ],
+        ]),
+      },
+    ])
+  )
+  const props = {
+    hosts,
+    catalogs,
+    focusedHost: "remote:2" as const,
+    collapsed: [],
+    onToggleHost: vi.fn(),
+    onSelectHost: vi.fn(),
+    onOpenFolder,
+    onWorktrees,
+    onAddRepository,
+    onRefresh: vi.fn(),
+    onManageConnections: vi.fn(),
+  }
+  const view = render(<MultiHostSidebar {...props} />)
+  expect(screen.getByRole("button", { name: "projects" })).toHaveAttribute(
+    "aria-pressed",
+    "true"
+  )
+  fireEvent.click(screen.getByRole("button", { name: "o/r" }))
+  expect(onOpenFolder).not.toHaveBeenCalled()
+  expect(onWorktrees).not.toHaveBeenCalled()
+  expect(
+    document.querySelector('section[data-backend-key="remote:1"]')
+  ).toHaveTextContent("identityUpgrade")
+  expect(
+    document.querySelector('section[data-backend-key="remote:2"]')
+  ).not.toHaveTextContent("identityUpgrade")
+  fireEvent.click(screen.getAllByRole("button", { name: "addRepository" })[1])
+  expect(onAddRepository).toHaveBeenCalledWith("remote:2", 2)
+  fireEvent.click(screen.getByRole("button", { name: "machines" }))
+  fireEvent.click(screen.getAllByTitle("/repo")[1])
+  expect(onOpenFolder).toHaveBeenCalledWith("remote:2", folder, 2)
+  view.unmount()
+  render(<MultiHostSidebar {...props} />)
+  expect(screen.getByRole("button", { name: "machines" })).toHaveAttribute(
+    "aria-pressed",
+    "true"
+  )
+  fireEvent.click(screen.getByRole("button", { name: "projects" }))
+  expect(screen.getByRole("button", { name: "o/r" })).toHaveAttribute(
+    "aria-expanded",
+    "false"
+  )
 })

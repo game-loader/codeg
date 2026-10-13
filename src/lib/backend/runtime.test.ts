@@ -251,3 +251,126 @@ describe("retained machine runtimes", () => {
     )
   })
 })
+
+it("owns metadata for root ancestors without probing on conversation/view repaint and retires on configuration change", async () => {
+  const { registry, remotes } = setup()
+  const a = registry.get("remote:1")!,
+    b = registry.get("remote:2")!
+  const root = {
+    id: 1,
+    path: "/a",
+    name: "repo",
+    parent_id: null,
+    kind: "regular",
+    alias: null,
+    group_id: null,
+    git_branch: null,
+    default_agent_type: null,
+    color: "",
+    last_opened_at: "",
+    sort_order: 0,
+  } as const
+  const child = { ...root, id: 2, parent_id: 1, path: "/a-child" }
+  remotes.get(1)!.call.mockResolvedValue([
+    {
+      folder_id: 1,
+      path: "/a",
+      status: "resolved",
+      identity: {
+        project_key: "github:o/r",
+        repository_path: "o/r",
+        provider: "github",
+        host: "github.com",
+        remote_name: "origin",
+      },
+    },
+  ])
+  a.stores.workspace.setState({ folders: [child], allFolders: [root, child] })
+  await a.projectIdentities.setFolders([root, child])
+  expect(remotes.get(1)!.call).toHaveBeenCalledWith(
+    "list_repository_project_identities",
+    { folderIds: [1] },
+    undefined
+  )
+  expect(a.projectIdentities.getSnapshot().entries.size).toBe(1)
+  expect(b.projectIdentities.getSnapshot().entries.size).toBe(0)
+  a.stores.workspace.setState({ conversations: [] })
+  a.stores.workspace.getState().setActiveFolderId(2)
+  a.publishView({} as Parameters<typeof a.publishView>[0])
+  expect(remotes.get(1)!.call).toHaveBeenCalledTimes(1)
+  registry.upsert({
+    key: "remote:1",
+    name: "renamed",
+    connection: { ...connection(1), name: "renamed" },
+  })
+  expect(registry.get("remote:1")).toBe(a)
+  expect(a.projectIdentities.getSnapshot().entries.size).toBe(1)
+  registry.upsert({
+    key: "remote:1",
+    name: "replaced",
+    connection: { ...connection(1), token: "new" },
+  })
+  expect(a.projectIdentities.getSnapshot().entries.size).toBe(0)
+  expect(
+    registry.get("remote:1")?.projectIdentities.getSnapshot().entries.size
+  ).toBe(0)
+})
+
+it("keeps an old server connected on metadata 404 and refreshes identities after relevant Git remote changes only", async () => {
+  const { registry, remotes } = setup()
+  const runtime = registry.get("remote:1")!
+  const root = {
+    id: 1,
+    path: "/repo",
+    name: "repo",
+    kind: "regular",
+    parent_id: null,
+    alias: null,
+    group_id: null,
+    git_branch: null,
+    default_agent_type: null,
+    color: "",
+    last_opened_at: "",
+    sort_order: 0,
+  } as const
+  const call = remotes.get(1)!.call
+  await runtime.client.api.getFolder(1)
+  call.mockClear()
+  call.mockRejectedValueOnce({
+    code: "network_error",
+    message: "Remote returned HTTP 404 Not Found",
+  })
+  runtime.stores.workspace.setState({ allFolders: [root], folders: [root] })
+  await runtime.projectIdentities.setFolders([root])
+  expect(runtime.projectIdentities.getSnapshot().capability).toBe("unsupported")
+  expect(registry.descriptor("remote:1")?.status).toBe("connected")
+  call.mockResolvedValue([])
+  await runtime.client.api.gitRemoveRemote("/repo", "origin")
+  expect(
+    call.mock.calls.filter(
+      ([command]) => command === "list_repository_project_identities"
+    )
+  ).toHaveLength(1)
+  await runtime.projectIdentities.refresh()
+  expect(runtime.projectIdentities.getSnapshot().capability).toBe("supported")
+  await runtime.client.api.gitAddRemote(
+    "/unrelated",
+    "origin",
+    "https://github.com/o/r.git"
+  )
+  expect(
+    call.mock.calls.filter(
+      ([command]) => command === "list_repository_project_identities"
+    )
+  ).toHaveLength(2)
+  await runtime.client.api.gitSetRemoteUrl(
+    "/repo",
+    "origin",
+    "https://github.com/o/new.git"
+  )
+  expect(
+    call.mock.calls.filter(
+      ([command]) => command === "list_repository_project_identities"
+    )
+  ).toHaveLength(3)
+})

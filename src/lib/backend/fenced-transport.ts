@@ -1,3 +1,4 @@
+import { isProjectIdentityUnsupported } from "./project-catalog"
 import type {
   AttachHandlers,
   AttachOptions,
@@ -61,7 +62,13 @@ export class FencedTransport implements Transport {
           : null
       if (code === "authentication_failed") {
         this.lifetime.setStatus("unauthorized")
-      } else if (code === "network_error" || code === "network") {
+      } else if (
+        (code === "network_error" || code === "network") &&
+        !(
+          command === "list_repository_project_identities" &&
+          isProjectIdentityUnsupported(error)
+        )
+      ) {
         this.lifetime.setStatus("offline")
       }
       throw error

@@ -104,6 +104,7 @@ import type {
   CustomImportResult,
   FolderHistoryEntry,
   FolderDetail,
+  RepositoryProjectIdentityEntry,
   FolderGroupDetail,
   SidebarLayoutEntry,
   FolderLinkDetail,
@@ -2795,6 +2796,12 @@ export function createBackendApi(binding: BackendApiBinding) {
     return transport.call("load_folder_history")
   }
 
+  async function listRepositoryProjectIdentities(
+    folderIds: number[]
+  ): Promise<RepositoryProjectIdentityEntry[]> {
+    return transport.call("list_repository_project_identities", { folderIds })
+  }
+
   async function getFolder(folderId: number): Promise<FolderDetail> {
     return transport.call("get_folder", { folderId })
   }
@@ -3436,11 +3443,13 @@ export function createBackendApi(binding: BackendApiBinding) {
     name: string,
     url: string
   ): Promise<void> {
-    return transport.call("git_add_remote", { path, name, url })
+    await transport.call("git_add_remote", { path, name, url })
+    binding.onRepositoryRemotesChanged?.(path)
   }
 
   async function gitRemoveRemote(path: string, name: string): Promise<void> {
-    return transport.call("git_remove_remote", { path, name })
+    await transport.call("git_remove_remote", { path, name })
+    binding.onRepositoryRemotesChanged?.(path)
   }
 
   async function gitSetRemoteUrl(
@@ -3448,7 +3457,8 @@ export function createBackendApi(binding: BackendApiBinding) {
     name: string,
     url: string
   ): Promise<void> {
-    return transport.call("git_set_remote_url", { path, name, url })
+    await transport.call("git_set_remote_url", { path, name, url })
+    binding.onRepositoryRemotesChanged?.(path)
   }
 
   async function gitStatus(
@@ -6263,6 +6273,7 @@ export function createBackendApi(binding: BackendApiBinding) {
     mcpSetServerApps,
     mcpRemoveServer,
     loadFolderHistory,
+    listRepositoryProjectIdentities,
     getFolder,
     listAllConversations,
     listChildConversations,
@@ -6972,6 +6983,8 @@ export const mcpRemoveServer: BackendApi["mcpRemoveServer"] = (...args) =>
   getDefaultBackendApi().mcpRemoveServer(...args)
 export const loadFolderHistory: BackendApi["loadFolderHistory"] = (...args) =>
   getDefaultBackendApi().loadFolderHistory(...args)
+export const listRepositoryProjectIdentities: BackendApi["listRepositoryProjectIdentities"] =
+  (...args) => getDefaultBackendApi().listRepositoryProjectIdentities(...args)
 export const getFolder: BackendApi["getFolder"] = (...args) =>
   getDefaultBackendApi().getFolder(...args)
 export const listAllConversations: BackendApi["listAllConversations"] = (
