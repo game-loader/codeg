@@ -1,6 +1,6 @@
 # Orca-like logical projects across execution hosts
 
-Status: proposed detailed design, awaiting user review before implementation.
+Status: approved by the user on 2026-10-13; implementation in progress.
 
 ## Purpose and approved reference model
 
