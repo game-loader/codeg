@@ -24,6 +24,10 @@ Codeg（Code Generation）是一个多智能体编码工作台：把所有 AI �
 ![工作区](../images/workspace-light.png#gh-light-mode-only)
 ![工作区](../images/workspace-dark.png#gh-dark-mode-only)
 
+## Fork 工作区预览
+
+此 fork 提供单窗口多机器工作区和统一侧栏，同源项目下直接汇总各机器与工作树的会话历史，执行仍绑定原机器和路径。参见[工作区使用说明](../logical-projects.md)与[预览版安装说明](../preview-release.md)。
+
 ## 📖 文档
 
 **完整文档见 [docs.codeg.app](https://docs.codeg.app)** — [快速开始](https://docs.codeg.app/zh/getting-started/) · [指南](https://docs.codeg.app/zh/guide/) · [参考](https://docs.codeg.app/zh/reference/)

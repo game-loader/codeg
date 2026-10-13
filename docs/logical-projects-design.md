@@ -1,6 +1,6 @@
 # Orca-like logical projects across execution hosts
 
-Status: approved by the user on 2026-10-13; implementation in progress.
+Status: approved by the user on 2026-10-13; refined by the user to one unified sidebar and merged project history on the same date; implementation in progress.
 
 ## Purpose and approved reference model
 
@@ -32,7 +32,7 @@ Project github:someone/foo
     registered worktree feature/api
 ```
 
-A project header only expands/collapses its setups. It cannot dispatch file, terminal, chat, Git, clone or worktree operations by itself. Every actionable row supplies the original host-qualified folder reference and fixed client. New operations requiring a destination must select a host setup explicitly.
+A project header expands/collapses a combined session history across its setups and worktrees. It cannot dispatch file, terminal, chat, Git, clone or worktree operations by itself. Every actionable row supplies the original host-qualified folder reference and fixed client. New operations requiring a destination must select a host setup explicitly.
 
 Existing file/conversation/tab/terminal keys, backend database IDs, workspace ownership, draft recovery and lifecycle fences are unchanged. Different branches and HEADs do not prevent matching source identity. Matching source identity does not imply matching commits or clean/dirty state.
 
@@ -79,11 +79,15 @@ The core implementation lives in a focused command/service module and is registe
 
 ## Desktop projection and view
 
-### Repository and worktree session history (user clarification)
+### One unified sidebar and combined project history (latest user clarification)
 
-The user reported that selecting a repository in the new single-window catalog hides its existing sessions. Source verification shows `openFolder` currently creates a new-conversation tab and embedded `SidebarProvider` starts closed. The new catalog must make existing session history reachable directly: selecting a repository/worktree expands its history and activates its owning host/context, without creating a draft. An explicit New Session action creates drafts. Under a repository setup, keep root sessions and worktree sessions in distinct labeled subsections; never flatten different hosts or worktrees into one ambiguous list. Existing completed/pinned sessions remain reachable, with normal child/delegation visibility semantics. Clicking a history row opens its existing conversation through the owning runtime's `openTab`, never a new conversation or another host.
+The user clarified that the same source repository across devices must show a single combined history directly under its logical project. The previous project → machine/setup → folder history hierarchy is superseded. Display root and worktree conversations together, with a machine and root/worktree label on every row and a full path available for disambiguation. Keep completed and pinned conversations reachable, sort across machines, and preserve the existing delegation visibility rules. Equal numeric conversation IDs on different hosts are distinct rows because every row carries its original host, generation, folder ID and exact path.
 
-Project aggregation is the outer display layer. Session history remains scoped to a concrete host setup/worktree, including when the logical project spans machines. Preserve per-host loading/error state, explicit retry, and the full existing sidebar for advanced session actions. Switching the catalog view cannot discard or recreate drafts, active conversations or terminal state. Extend tests with intentionally colliding conversation and folder IDs across hosts, root-versus-worktree filtering, completed/pinned visibility, existing-session selection and explicit-only draft creation.
+Selecting an existing conversation opens that conversation in its owning retained runtime. Selecting a location changes context without creating a draft. Only an explicit New Chat/New Session action creates a draft. A project spans multiple possible execution destinations, so new sessions and folder/worktree operations select a concrete machine and directory; the canonical source key is never an execution target.
+
+The desktop workspace has ONE outer sidebar. Move the original New Chat, search, navigation, view options and conversation management actions into it. Existing folderless chats remain reachable. Remove the old inner sidebar and its reserved width from managed workspace layouts, including initial hydration; retain the legacy sidebar in standalone/independent remote windows. Per-host loading/error/retry indicators remain scoped to their owner, while successful hosts continue to contribute visible history. Keep Machines mode as an alternate catalog presentation without changing runtime providers, drafts, tabs, terminal state or split selections.
+
+Interaction regressions must cover flat merged histories with intentionally colliding IDs across hosts, root/worktree source badges, opening original sessions without draft creation, explicit destination creation, folderless history, fixed-owner context actions, original sidebar navigation/search, and actual managed shell width removal. The previously added actual no-tab panel regression remains required.
 
 The owning `BackendRuntime` holds its identity loader/cache. Its fenced transport and runtime generation gate every result; a per-refresh sequence also rejects older results within the same generation. Runtime disposal clears the cache and subscriptions.
 
@@ -91,7 +95,7 @@ Load identities after the existing opened-folder catalog is available, including
 
 Project projection is a pure function of host descriptors, visible folder catalogs and accepted identity entries. It never drops setups on identity collision, never uses a numeric folder ID across hosts, and only attaches worktree children from the owning host/setup.
 
-The proposed default navigation is **Projects**, with a visible **Projects / Machines** toggle retaining the current machine-first catalog. Machine connection status and add/refresh/manage controls remain reachable in both modes. Every setup row displays machine name and path; its worktree management button keeps the original binding. Persist only view preference and collapse state, not raw remotes or credentials. Existing window layout selections and resource references are unchanged.
+The proposed default navigation is **Projects**, with a visible **Projects / Machines** toggle retaining the current machine-first catalog. Machine connection status and add/refresh/manage controls remain reachable in both modes. Every execution-location choice displays machine name and path; worktree management keeps that captured binding. Persist only view preference and collapse state, not raw remotes or credentials. Existing window layout selections and resource references are unchanged.
 
 ## Native iOS projection and view
 
@@ -99,9 +103,9 @@ Add safe wire DTOs and a bound `CodegClient` method for the batch endpoint. Each
 
 The folders page uses a pure logical-project projection with setup references carrying server profile UUID, configuration revision, folder ID and path. Add the same Projects / Servers view choice, defaulting to Projects. Existing server management, per-server folder browser/clone entry points and iPad two-server pane controls remain available.
 
-Selecting a setup or its child calls the existing `registry.openProject(folderID, on: owner)` with the original owner. Opening worktree management fixes that owner before presentation. Switching grouping cannot dismiss or replace retained session drafts, project runtimes, terminal emulators or split-pane bindings. Folderless chat remains folderless.
+Selecting an execution location calls the existing `registry.openProject(folderID, on: owner)` with the original owner. Opening worktree management fixes that owner before presentation. Switching grouping cannot dismiss or replace retained session drafts, project runtimes, terminal emulators or split-pane bindings. Folderless chat remains folderless.
 
-The native folder detail must also expose its existing sessions directly, with a clear root/worktree distinction rather than forcing users to return to the global Chats tab. Existing conversation selection uses the owning workspace model, while New Task remains an explicit action. The existing files/Git/terminal runtime is preserved across this presentation change.
+The native Projects catalog displays the logical project’s combined history across servers and worktrees directly, with original server/worktree labels and captured-owner selection. Concrete folder details also retain session access. New Task and folder/Git/worktree actions choose a concrete destination explicitly. Global Chats and folderless conversations remain available. The existing files/Git/terminal runtime is preserved across this presentation change.
 
 Identity refresh is separate from the frequent ActivityModel conversation pulse. A successful initial/project-catalog refresh and an explicit pull-to-refresh can update identities; ordinary conversation polling must not repeatedly probe Git.
 
@@ -112,7 +116,7 @@ Identity refresh is separate from the frequent ActivityModel conversation pulse.
 - Successful null identity removes an obsolete association. A removed folder is pruned from projection and identity cache.
 - Address/token replacement or profile deletion invalidates the old cache permanently. Rename/reorder preserves it. Old metadata must never repopulate a replacement server's catalog.
 - One host's error cannot erase another host's project entries or steal its active selection.
-- Automatic file synchronization, re-cloning, repository movement, branch changes and conversation merging are explicitly excluded.
+- Automatic file synchronization, re-cloning, repository movement, branch changes and merging stored conversation data are explicitly excluded. Combining history rows in the project view is required.
 
 ## Validation and acceptance
 

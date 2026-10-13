@@ -24,6 +24,10 @@ It aggregates your sessions from every supported agent CLI into one searchable w
 ![workspace](./docs/images/workspace-light.png#gh-light-mode-only)
 ![workspace](./docs/images/workspace-dark.png#gh-dark-mode-only)
 
+## Fork workspace preview
+
+This fork adds one-window multi-host navigation with a unified sidebar and combined logical-project session history across machines and worktrees. Execution remains bound to the original machine and path. See the [workspace guide](docs/logical-projects.md) and [preview installation notes](docs/preview-release.md).
+
 ## 📖 Documentation
 
 **Full documentation lives at [docs.codeg.app](https://docs.codeg.app)** — [Getting Started](https://docs.codeg.app/getting-started/) · [Guide](https://docs.codeg.app/guide/) · [Reference](https://docs.codeg.app/reference/)

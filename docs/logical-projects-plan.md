@@ -14,7 +14,7 @@
 
 - Preserve original checkouts and unrelated `.gitignore`/review report changes; use the existing isolated worktrees.
 - New UI strings are English and Simplified Chinese only. No dependencies or database migrations.
-- Identity is display metadata. Keep existing host/profile/configuration-generation + folder ID + exact path execution bindings and resource keys; no file sync, session merge, re-clone or draft replay.
+- Identity is display metadata. Keep existing host/profile/configuration-generation + folder ID + exact path execution bindings and resource keys; no file sync, stored-session merge, re-clone or draft replay. Combined history presentation across machines is required by the latest user clarification.
 - Remote choice is upstream, origin, then lexical usable fetch remote. GitHub source matching is case-insensitive; generic repository-path matching is case-sensitive. No raw remote URL or credentials in the new wire DTO, cache, persistence or logs.
 - Default catalog view is Projects; retain Machines/Servers mode. Missing API 404/405/501 produces isolated fallback and a scoped upgrade hint.
 - A successful null identity removes an old association; a failed probe retains accepted metadata only for the same generation, folder ID and exact path. Fence successes, failures and loading states against newer refreshes and retirement.
@@ -162,3 +162,18 @@ XCTAssertNotEqual(projects[0].setups[0].path,
 - [ ] **Step 4: Update user docs** with default/toggle, Git source identity, upstream priority, independent execution, old-server upgrade hint and refresh behavior; mark checklist status according to actual evidence.
 - [ ] **Step 5: If the user approves remote delivery**, push only existing feature branches to their forks, let Codeg Preview Release build macOS ARM64 plus Linux server x64/ARM64, and run the native iOS Build workflow. After native tests pass, release a new iOS build using existing bundle/signature flow only with publication approval. Verify commit IDs, actual workflow conclusions, asset SHA/ZIP/plist integrity before claiming successful packaging.
 - [ ] **Step 6: Preserve original checkouts and feature worktrees**, commit task docs, archive evidence/rulings, and report what is implemented and what validation/release actions are actually complete. Do not merge into main or create a PR without the user's selection.
+
+
+### Task 5: Unified sidebar and combined logical-project histories (latest user steering)
+
+This task supersedes earlier Task 2/3 requirements to nest history under each host setup or retain the inner desktop sidebar. Backend identities and existing execution/resource bindings remain the same.
+
+- [ ] Desktop: combine sessions from all project setups and registered worktrees into one owner-qualified list, with machine/worktree badges, completed/pinned history and per-owner loading/error/retry.
+- [ ] Desktop: move New Chat, search, existing navigation, view options and conversation management into the outer sidebar. Preserve existing folderless history and explicit-only drafts.
+- [ ] Desktop: remove the managed inner sidebar and its panel width/handle on initial render and hydration; preserve legacy standalone layouts.
+- [ ] Desktop: use explicit captured machine/path choices for ambiguous New Session and worktree/folder operations. Keep per-runtime providers, drafts, tabs and terminal state retained.
+- [ ] Native: show combined logical-project history directly in Projects mode, preserving original owner callbacks, pending/error behavior, destination choices and retained files/Git/terminal state.
+- [ ] Validate behavior with colliding conversation/folder IDs across hosts, root/worktree badges, fixed-owner context actions, navigation/search, folderless history and managed shell rendering; independently review the new source.
+- [ ] Run updated frontend acceptance and actual native device/simulator CI, then publish new preview/IPA artifacts under existing authorization. Earlier IPA19 is a pre-refinement artifact and must not be represented as final UX.
+
+Worker briefs/reports and current status are in `.superpowers/sdd/logical-projects-plan/`; frontend and native writers own disjoint repositories. Parent owns specification/documentation/release coordination.
