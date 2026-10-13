@@ -13,9 +13,14 @@ import {
 // The loader verifies its exact bytes before the adapter is executed.
 const bundle = process.env.CODEG_CODEX_ACP_BUNDLE
 if (!bundle)
-  throw new Error("Set CODEG_CODEX_ACP_BUNDLE to codex-acp 2.1.1 dist/index.js")
+  throw new Error(
+    "Set CODEG_CODEX_ACP_BUNDLE to a reviewed codex-acp dist/index.js"
+  )
+const { version } = JSON.parse(
+  await readFile(new URL("../package.json", pathToFileURL(bundle)), "utf8")
+)
 const original = await readFile(bundle, "utf8")
-const patched = patchSteering(original, "2.1.1")
+const patched = patchSteering(original, version)
 assert.ok(patched, "all three anchors must be unique in the verified release")
 const harnessDir = await mkdtemp(join(tmpdir(), "codeg-task3-steering-probe-"))
 after(() => rm(harnessDir, { recursive: true, force: true }))
@@ -102,7 +107,7 @@ function fixture() {
 
 test("verified bytes only; unreviewed versions and modified bytes stay untouched", () => {
   assert.equal(patchSteering(original, "2.1.2"), null)
-  assert.equal(patchSteering(original + "\n", "2.1.1"), null)
+  assert.equal(patchSteering(original + "\n", version), null)
 })
 test("loader preserves the module and removes its option from child processes", async () => {
   const url = pathToFileURL(bundle).href
@@ -118,7 +123,7 @@ test("initialize advertises the patch marker", async () => {
     protocolVersion: 1,
     clientCapabilities: {},
   })
-  assert.equal(init.agentInfo.version, "2.1.1")
+  assert.equal(init.agentInfo.version, version)
   assert.equal(init._meta.steering.codegPromptRequired, 1)
 })
 test("idle opt-in does not consume input or start another prompt", async () => {
