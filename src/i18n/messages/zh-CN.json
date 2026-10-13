@@ -7060,6 +7060,7 @@
     "git": "Git 更改",
     "terminal": "终端",
     "folderlessChats": "无文件夹聊天",
+    "folderUnavailable": "文件夹不可用",
     "recentSessions": "最近会话",
     "rootLocation": "根目录",
     "worktreeLocation": "工作树",

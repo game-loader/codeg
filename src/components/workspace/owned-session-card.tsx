@@ -24,7 +24,7 @@ export function OwnedSessionCard({
   runtime: BackendRuntime
   session: OwnedProjectSession
   hostName: string
-  isCurrent(): boolean
+  isCurrent(session: OwnedProjectSession): boolean
   actions: CatalogRowActions
   depth?: number
 }) {
@@ -34,6 +34,13 @@ export function OwnedSessionCard({
   const tabs = runtime.stores.tabs((s) => s.tabs)
   const activeTabId = runtime.stores.tabs((s) => s.activeTabId)
   const conversation = session.conversation
+  // A missing regular folder is unavailable, never an implicit chat destination.
+  const current = () =>
+    (session.folder != null || conversation.kind === "chat") &&
+    isCurrent(session)
+  const locationLabel = session.folder
+    ? `${session.folder.id === session.root?.id ? t("rootLocation") : (session.folder.git_branch ?? t("worktreeLocation"))} · ${session.folder.path}`
+    : t(conversation.kind === "chat" ? "folderlessChats" : "folderUnavailable")
   useEffect(() => {
     try {
       const ids: unknown = JSON.parse(
@@ -75,12 +82,12 @@ export function OwnedSessionCard({
       tab.agentType === conversation.agent_type
   )
   const run = async (action: () => Promise<void> | undefined) => {
-    if (!isCurrent()) return
+    if (!current()) return
     try {
       await action()
       setError(null)
     } catch (error) {
-      if (isCurrent())
+      if (current())
         setError(error instanceof Error ? error.message : String(error))
     }
   }
@@ -96,7 +103,7 @@ export function OwnedSessionCard({
         isSelected={tab?.id === activeTabId}
         isOpenInTab={!!tab}
         onSelect={() => {
-          if (isCurrent())
+          if (current())
             actions.onOpenConversation?.(
               session.backendKey,
               session.folder,
@@ -105,7 +112,7 @@ export function OwnedSessionCard({
             )
         }}
         onDoubleClick={() => {
-          if (isCurrent()) {
+          if (current()) {
             actions.onOpenConversation?.(
               session.backendKey,
               session.folder,
@@ -140,7 +147,7 @@ export function OwnedSessionCard({
           )
         }}
         onNewConversation={() => {
-          if (isCurrent()) {
+          if (current()) {
             if (session.folder)
               actions.onNewSession?.(
                 session.backendKey,
@@ -157,16 +164,13 @@ export function OwnedSessionCard({
       />
       <p
         className="flex items-center gap-1 pl-7 text-[0.625rem] text-muted-foreground"
-        title={`${hostName} · ${session.folder?.path ?? t("folderlessChats")}`}
+        title={`${hostName} · ${locationLabel}`}
       >
         {conversation.pinned_at && (
           <Pin className="size-2.5 shrink-0" aria-label={t("pinned")} />
         )}
         <span className="truncate">
-          {hostName} ·{" "}
-          {session.folder
-            ? `${session.folder.id === session.root?.id ? t("rootLocation") : (session.folder.git_branch ?? t("worktreeLocation"))} · ${session.folder.path}`
-            : t("folderlessChats")}
+          {hostName} · {locationLabel}
         </span>
       </p>
       {error && (
@@ -192,6 +196,7 @@ function DelegationChildren(props: Parameters<typeof OwnedSessionCard>[0]) {
   const t = useTranslations("Folder.sidebar")
   const hostT = useTranslations("MultiHost")
   const { runtime, session, isCurrent } = props
+  const folders = runtime.stores.workspace((s) => s.allFolders)
   const [childrenByParent, setChildrenByParent] = useState<
     Map<number, DbConversationSummary[]>
   >(() => new Map([[session.conversation.id, []]]))
@@ -206,7 +211,7 @@ function DelegationChildren(props: Parameters<typeof OwnedSessionCard>[0]) {
     void runtime.client.api
       .listChildConversations(session.conversation.id)
       .then((fetched) => {
-        if (!active || !isCurrent()) return
+        if (!active || !isCurrent(session)) return
         setChildrenByParent((previous) => {
           const merged = new Map(
             fetched
@@ -226,7 +231,7 @@ function DelegationChildren(props: Parameters<typeof OwnedSessionCard>[0]) {
         setError(false)
       })
       .catch(() => {
-        if (active && isCurrent()) {
+        if (active && isCurrent(session)) {
           setLoading(false)
           setError(true)
         }
@@ -253,19 +258,34 @@ function DelegationChildren(props: Parameters<typeof OwnedSessionCard>[0]) {
           {hostT("retry")}
         </button>
       )}
-      {(childrenByParent.get(session.conversation.id) ?? []).map((child) => (
-        <OwnedSessionCard
-          key={child.id}
-          {...props}
-          session={ownedSession(
-            session.backendKey,
-            session.generation,
-            session.folder,
-            session.root,
-            child
-          )}
-        />
-      ))}
+      {(childrenByParent.get(session.conversation.id) ?? []).map((child) => {
+        const folder =
+          folders.find((f) => f.id === child.folder_id && f.kind !== "chat") ??
+          null
+        let root = folder
+        const visited = new Set<number>()
+        while (root?.parent_id != null) {
+          if (visited.has(root.id)) {
+            root = null
+            break
+          }
+          visited.add(root.id)
+          root = folders.find((f) => f.id === root?.parent_id) ?? null
+        }
+        return (
+          <OwnedSessionCard
+            key={child.id}
+            {...props}
+            session={ownedSession(
+              session.backendKey,
+              session.generation,
+              folder,
+              root,
+              child
+            )}
+          />
+        )
+      })}
     </>
   )
 }

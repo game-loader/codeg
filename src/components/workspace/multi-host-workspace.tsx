@@ -896,12 +896,12 @@ function WindowWorkspace({
               runtime={runtime}
               session={session}
               hostName={runtime.client.name}
-              isCurrent={() =>
+              isCurrent={(row) =>
                 resolveCatalogRuntime(
                   registry,
-                  session.backendKey,
-                  session.generation,
-                  session.folder ?? undefined
+                  row.backendKey,
+                  row.generation,
+                  row.folder ?? undefined
                 ) === runtime
               }
               actions={{

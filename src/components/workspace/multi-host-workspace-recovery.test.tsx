@@ -119,7 +119,11 @@ vi.mock("@/contexts/sidebar-context", () => ({
   useSidebarContext: () => ({ isOpen: false, toggle }),
 }))
 vi.mock("@/contexts/aux-panel-context", () => ({
-  useAuxPanelContext: () => ({ isOpen: false, toggle }),
+  useAuxPanelContext: () => ({
+    isOpen: false,
+    toggle,
+    clearFolderToolContext: toggle,
+  }),
 }))
 vi.mock("@/contexts/terminal-context", () => ({
   useTerminalContext: () => ({ isOpen: false, toggle }),

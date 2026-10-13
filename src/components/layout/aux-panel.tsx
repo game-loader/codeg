@@ -106,13 +106,17 @@ export function shouldCollapseAuxTabs(
  * just the Session Details tab. `effectiveTab` keeps the rendered selection
  * valid even when the stored `activeTab` is a now-hidden folder tab, avoiding a
  * one-frame flash before the reconciling effect corrects the stored value.
+ * An explicit, still-current folder-tool context exposes the folder tabs while
+ * leaving an unrelated chat composer in its original mode.
  */
 export function resolveAuxTabView(
   activeTab: AuxPanelTab,
   activeFolderId: number | null,
-  isChatMode: boolean
+  isChatMode: boolean,
+  hasFolderToolContext = false
 ): { showFolderTabs: boolean; effectiveTab: AuxPanelTab } {
-  const showFolderTabs = activeFolderId != null && !isChatMode
+  const showFolderTabs =
+    activeFolderId != null && (hasFolderToolContext || !isChatMode)
   return {
     showFolderTabs,
     effectiveTab: showFolderTabs ? activeTab : "session_details",
@@ -122,7 +126,8 @@ export function resolveAuxTabView(
 export function AuxPanel() {
   const t = useTranslations("Folder.auxPanel.tabs")
   const tDetails = useTranslations("Folder.sessionDetails")
-  const { isOpen, width, activeTab, setActiveTab } = useAuxPanelContext()
+  const { isOpen, width, activeTab, setActiveTab, folderToolContext } =
+    useAuxPanelContext()
   const { activeFolderId } = useActiveFolder()
   const isChatMode = useIsActiveChatMode()
   const isMobile = useIsMobile()
@@ -155,7 +160,8 @@ export function AuxPanel() {
   const { showFolderTabs, effectiveTab } = resolveAuxTabView(
     activeTab,
     activeFolderId,
-    isChatMode
+    isChatMode,
+    folderToolContext != null
   )
 
   // Ensure the shown tab is mounted (covers both user clicks and programmatic changes)

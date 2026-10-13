@@ -11,6 +11,10 @@ import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, it, vi } from "vitest"
 import { MultiHostWorkspace } from "./multi-host-workspace"
 import { RuntimeBridge } from "./backend-runtime"
+import { AuxPanel } from "@/components/layout/aux-panel"
+import { AuxPanelProvider } from "@/contexts/aux-panel-context"
+import { useActiveFolder } from "@/contexts/active-folder-context"
+import type { SidebarConversationCard } from "@/components/conversations/sidebar-conversation-card"
 import { useBackendClient } from "@/contexts/backend-client-context"
 import { WorkbenchRouteProvider } from "@/contexts/workbench-route-context"
 import type { BackendRuntime } from "@/lib/backend/runtime"
@@ -18,13 +22,19 @@ import type { BackendKey } from "@/lib/backend/types"
 import type { RemoteTransportConfig } from "@/lib/transport"
 import type { DbConversationSummary, FolderDetail } from "@/lib/types"
 import messages from "@/i18n/messages/en.json"
+import {
+  loadMessageInputDraftV2,
+  saveMessageInputDraftV2,
+} from "@/lib/message-input-draft"
 
 const fixtures = vi.hoisted(() => ({
   runtimes: new Map<BackendKey, BackendRuntime>(),
   db: new Map<BackendKey, DbConversationSummary[]>(),
   calls: new Map<BackendKey, ReturnType<typeof vi.fn>>(),
   search: new Map<BackendKey, ReturnType<typeof vi.fn>>(),
-  aux: vi.fn(),
+  children: new Map<BackendKey, DbConversationSummary[]>(),
+  cards: new Map<string, Parameters<typeof SidebarConversationCard>[0]>(),
+  syncTabs: false,
   terminal: vi.fn(),
   createTerminal: vi.fn(),
   activate: vi.fn(),
@@ -127,7 +137,11 @@ function transport(key: BackendKey) {
       if (command === "list_all_conversations")
         return fixtures.db.get(key) ?? histories(key)
       if (command === "list_child_conversations")
-        return [{ ...conversation(4, 1, `${key} child`), parent_id: 1 }]
+        return (
+          fixtures.children.get(key) ?? [
+            { ...conversation(4, 1, `${key} child`), parent_id: 1 },
+          ]
+        )
       if (command === "academic_library") return { items: [], collections: [] }
       if (command === "get_folder_conversation")
         return { conversation: { id: 1, title: "existing", turns: [] } }
@@ -186,13 +200,47 @@ vi.mock("@/contexts/workspace-context", () => ({
 vi.mock("@/contexts/sidebar-context", () => ({
   useSidebarContext: () => ({ isOpen: true, toggle: fixtures.activate }),
 }))
-vi.mock("@/contexts/aux-panel-context", () => ({
-  useAuxPanelContext: () => ({
-    isOpen: false,
-    toggle: fixtures.activate,
-    openTab: fixtures.aux,
-  }),
+vi.mock("@/hooks/use-appearance", () => ({
+  useZoomLevel: () => ({ zoomLevel: 100 }),
 }))
+function FolderToolContent({ tool }: { tool: string }) {
+  const { activeFolder } = useActiveFolder()
+  const client = useBackendClient()
+  return <p>{`${tool} ${client.key} ${activeFolder?.path}`}</p>
+}
+vi.mock("@/components/layout/aux-panel-session-details-tab", () => ({
+  SessionDetailsTab: () => <p>Session Details content</p>,
+}))
+vi.mock("@/components/layout/aux-panel-file-tree-tab", () => ({
+  FileTreeTab: () => <FolderToolContent tool="Files" />,
+}))
+vi.mock("@/components/layout/aux-panel-git-changes-tab", () => ({
+  GitChangesTab: () => <FolderToolContent tool="Git" />,
+}))
+vi.mock("@/components/layout/aux-panel-git-log-tab", () => ({
+  GitLogTab: () => <FolderToolContent tool="Commits" />,
+}))
+vi.mock(
+  "@/components/conversations/sidebar-conversation-card",
+  async (original) => {
+    const actual =
+      await original<
+        typeof import("@/components/conversations/sidebar-conversation-card")
+      >()
+    return {
+      ...actual,
+      SidebarConversationCard: (
+        props: Parameters<typeof SidebarConversationCard>[0]
+      ) => {
+        fixtures.cards.set(
+          `${useBackendClient().key}:${props.conversation.id}`,
+          props
+        )
+        return <actual.SidebarConversationCard {...props} />
+      },
+    }
+  }
+)
 vi.mock("@/contexts/terminal-context", () => ({
   useTerminalContext: () => ({
     isOpen: false,
@@ -220,6 +268,15 @@ vi.mock("@/contexts/acp-connections-context", () => ({
   useAcpActions: () => ({ disconnectIfIdle: vi.fn() }),
 }))
 
+function TabFolderSync({ runtime }: { runtime: BackendRuntime }) {
+  const rawTabs = runtime.stores.tabs((s) => s.rawTabs)
+  const activeTabId = runtime.stores.tabs((s) => s.activeTabId)
+  // Use the production TabProvider synchronization at the same lifecycle boundary.
+  useEffect(() => {
+    runtime.stores.tabs.getState().syncActiveFolderId()
+  }, [runtime, rawTabs, activeTabId])
+  return null
+}
 function Probe({ runtime }: { runtime: BackendRuntime }) {
   useEffect(() => {
     fixtures.runtimes.set(runtime.client.key, runtime)
@@ -246,12 +303,17 @@ function Probe({ runtime }: { runtime: BackendRuntime }) {
   }, [runtime])
   return (
     <WorkbenchRouteProvider>
-      <RuntimeBridge runtime={runtime} />
+      {fixtures.syncTabs && <TabFolderSync runtime={runtime} />}
+      <AuxPanelProvider>
+        <RuntimeBridge runtime={runtime} />
+        <AuxPanel />
+      </AuxPanelProvider>
       <div data-testid={`runtime-${runtime.client.key}`} />
     </WorkbenchRouteProvider>
   )
 }
-async function mount() {
+async function mount(syncTabs = false) {
+  fixtures.syncTabs = syncTabs
   render(
     <MultiHostWorkspace
       renderWorkspace={(runtime) => <Probe runtime={runtime} />}
@@ -279,6 +341,8 @@ beforeEach(() => {
   fixtures.db.clear()
   fixtures.calls.clear()
   fixtures.search.clear()
+  fixtures.children.clear()
+  fixtures.cards.clear()
   vi.clearAllMocks()
 })
 
@@ -462,6 +526,299 @@ it("loads and opens delegation children only on their original owner", async () 
   expect(b.stores.tabs.getState().tabs).toHaveLength(0)
 })
 
+async function expandChild(project: HTMLElement, folderId: number) {
+  const a = fixtures.runtimes.get("remote:1")!
+  fixtures.children.set("remote:1", [
+    { ...conversation(4, folderId, "remote:1 child"), parent_id: 1 },
+  ])
+  act(() =>
+    a.stores.workspace.setState({
+      conversations: a.stores.workspace
+        .getState()
+        .conversations.map((c) => (c.id === 1 ? { ...c, child_count: 1 } : c)),
+    })
+  )
+  fireEvent.click(
+    within(row(project, "remote:1", "remote:1 root")).getByRole("button", {
+      name: messages.Folder.conversationCard.expandSubsessions,
+    })
+  )
+  const title = await within(project).findByText("remote:1 child")
+  return title.closest<HTMLElement>("[data-session-key]")!
+}
+
+it("renders and opens a delegation child's own worktree and creates a conversation there", async () => {
+  const project = await mount()
+  const a = fixtures.runtimes.get("remote:1")!
+  const b = fixtures.runtimes.get("remote:2")!
+  expect(
+    fixtures.calls
+      .get("remote:1")!
+      .mock.calls.some(([command]) => command === "list_child_conversations")
+  ).toBe(false)
+  const child = await expandChild(project, 2)
+  expect(child).toHaveTextContent("Machine 1 · feature · /worktree")
+  expect(JSON.parse(child.dataset.sessionKey!)).toEqual([
+    "remote:1",
+    a.generation,
+    2,
+    "/worktree",
+    "codex",
+    4,
+  ])
+  fireEvent.click(within(child).getByText("remote:1 child"))
+  expect(a.stores.workspace.getState().activeFolderId).toBe(2)
+  expect(a.stores.tabs.getState().tabs[0]).toMatchObject({
+    conversationId: 4,
+    folderId: 2,
+  })
+  const draft = vi.spyOn(a.stores.tabs.getState(), "openNewConversationTab")
+  fireEvent.contextMenu(within(child).getByText("remote:1 child"))
+  await userEvent.click(
+    screen.getByRole("menuitem", { name: "New Conversation" })
+  )
+  expect(draft).toHaveBeenCalledWith(2, "/worktree")
+  expect(b.stores.tabs.getState().tabs).toHaveLength(0)
+})
+
+it("resolves a delegation child in another unopened root checkout from the owner's full catalog", async () => {
+  const project = await mount()
+  const a = fixtures.runtimes.get("remote:1")!
+  act(() =>
+    a.stores.workspace.setState({
+      allFolders: [
+        ...a.stores.workspace.getState().allFolders,
+        { ...root, id: 5, path: "/other-checkout" },
+      ],
+    })
+  )
+  const child = await expandChild(project, 5)
+  expect(child).toHaveTextContent("Machine 1 · Root · /other-checkout")
+  fireEvent.click(within(child).getByText("remote:1 child"))
+  expect(a.stores.workspace.getState().activeFolderId).toBe(5)
+  expect(a.stores.tabs.getState().tabs[0]).toMatchObject({
+    conversationId: 4,
+    folderId: 5,
+  })
+  const draft = vi.spyOn(a.stores.tabs.getState(), "openNewConversationTab")
+  fireEvent.contextMenu(within(child).getByText("remote:1 child"))
+  await userEvent.click(
+    screen.getByRole("menuitem", { name: "New Conversation" })
+  )
+  expect(draft).toHaveBeenCalledWith(5, "/other-checkout")
+})
+
+it.each(["refolder", "remove"])(
+  "rejects captured child actions after child folder %s while the parent stays current",
+  async (change) => {
+    const project = await mount()
+    const a = fixtures.runtimes.get("remote:1")!
+    await expandChild(project, 2)
+    const captured = fixtures.cards.get("remote:1:4")!
+    const draft = vi.spyOn(a.stores.tabs.getState(), "openNewConversationTab")
+    act(() =>
+      a.stores.workspace.setState({
+        allFolders: a.stores.workspace
+          .getState()
+          .allFolders.flatMap((f) =>
+            f.id !== 2
+              ? [f]
+              : change === "remove"
+                ? []
+                : [{ ...f, path: "/replacement-worktree" }]
+          ),
+      })
+    )
+    act(() => {
+      captured.onSelect(4, "codex", 2)
+      captured.onDoubleClick?.(4, "codex", 2)
+      captured.onNewConversation?.(2)
+      captured.onTogglePin?.(4, true)
+    })
+    await act(async () => {
+      await captured.onRename(4, "stale rename")
+      await captured.onStatusChange(4, "in_progress")
+      await captured.onDelete(4, "codex", 2)
+    })
+    expect(a.stores.tabs.getState().tabs).toHaveLength(0)
+    expect(draft).not.toHaveBeenCalled()
+    expect(
+      fixtures.calls
+        .get("remote:1")!
+        .mock.calls.filter(
+          ([command]) =>
+            command.startsWith("update_conversation") ||
+            command === "delete_conversation"
+        )
+    ).toHaveLength(0)
+    fireEvent.click(
+      within(row(project, "remote:1", "remote:1 root")).getByText(
+        "remote:1 root"
+      )
+    )
+    expect(a.stores.workspace.getState().activeFolderId).toBe(1)
+    expect(a.stores.tabs.getState().tabs[0]).toMatchObject({
+      conversationId: 1,
+      folderId: 1,
+    })
+  }
+)
+
+it("never uses the parent destination for an unresolved delegation child folder", async () => {
+  const project = await mount()
+  const a = fixtures.runtimes.get("remote:1")!
+  const child = await expandChild(project, 99)
+  expect(child).not.toHaveTextContent("/repo")
+  const captured = fixtures.cards.get("remote:1:4")!
+  const draft = vi.spyOn(a.stores.tabs.getState(), "openNewConversationTab")
+  const chat = vi.spyOn(a.stores.tabs.getState(), "openChatModeTab")
+  act(() => {
+    captured.onSelect(4, "codex", 99)
+    captured.onNewConversation?.(99)
+    captured.onTogglePin?.(4, true)
+  })
+  expect(a.stores.tabs.getState().tabs).toHaveLength(0)
+  expect(draft).not.toHaveBeenCalled()
+  expect(chat).not.toHaveBeenCalled()
+  expect(
+    fixtures.calls
+      .get("remote:1")!
+      .mock.calls.some(([command]) => command === "update_conversation_pinned")
+  ).toBe(false)
+})
+
+it.each([messages.MultiHost.files, messages.MultiHost.git])(
+  "shows explicit %s worktree content beside a retained unsent folderless draft and restores ordinary chat tabs",
+  async (label) => {
+    const project = await mount(true)
+    const a = fixtures.runtimes.get("remote:1")!
+    await act(async () => {
+      a.stores.tabs.getState().openChatModeTab()
+    })
+    const draft = a.stores.tabs.getState().tabs[0]
+    const draftKey =
+      a.stores.storage.drafts.buildNewConversationDraftStorageKey(draft.id)
+    const doc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "Unsent folderless request" }],
+        },
+      ],
+    }
+    saveMessageInputDraftV2(draftKey, doc)
+    const newDraft = vi.spyOn(
+      a.stores.tabs.getState(),
+      "openNewConversationTab"
+    )
+    const newChat = vi.spyOn(a.stores.tabs.getState(), "openChatModeTab")
+    const select = within(project).getByRole("combobox", {
+      name: "Execution location",
+    })
+    const option = [...select.querySelectorAll("option")].find(
+      (o) => o.value.includes("remote:1") && o.value.includes("/worktree")
+    )!
+    fireEvent.change(select, { target: { value: option.value } })
+    await userEvent.click(
+      within(project).getByRole("button", {
+        name: messages.MultiHost.locationActions,
+      })
+    )
+    await userEvent.click(screen.getByRole("menuitem", { name: label }))
+    const runtimeNode = screen.getByTestId("runtime-remote:1").parentElement!
+    const panel = () =>
+      runtimeNode.querySelector(
+        '[data-slot="tabs-content"][data-state="active"]'
+      )!
+    expect(panel()).toHaveTextContent(
+      label === messages.MultiHost.files
+        ? "Files remote:1 /worktree"
+        : "Git remote:1 /worktree"
+    )
+    expect(a.stores.tabs.getState().tabs).toEqual([draft])
+    expect(a.stores.tabs.getState().activeTabId).toBe(draft.id)
+    expect(a.stores.tabs.getState().draftRetargetRequests).toHaveLength(0)
+    expect(loadMessageInputDraftV2(draftKey)).toEqual({ kind: "doc", doc })
+    expect(newDraft).not.toHaveBeenCalled()
+    expect(newChat).not.toHaveBeenCalled()
+    // Open an ordinary existing chat, then return to the unsent chat composer.
+    fireEvent.click(screen.getAllByText("remote:1 chat")[0])
+    expect(
+      a.stores.tabs
+        .getState()
+        .tabs.find((tab) => tab.id === a.stores.tabs.getState().activeTabId)
+    ).toMatchObject({ conversationId: 3 })
+    expect(panel()).toHaveTextContent("Session Details content")
+    expect(
+      runtimeNode.querySelectorAll('[data-slot="tabs-trigger"]')
+    ).toHaveLength(1)
+    act(() => a.stores.tabs.getState().switchTab(draft.id))
+    expect(panel()).toHaveTextContent("Session Details content")
+    expect(
+      a.stores.tabs.getState().tabs.find((t) => t.id === draft.id)
+    ).toEqual(draft)
+    expect(loadMessageInputDraftV2(draftKey)).toEqual({ kind: "doc", doc })
+  }
+)
+
+it.each(["refolder", "remove"])(
+  "expires explicit folder tools on composer reselection and folder %s without reviving the destination",
+  async (change) => {
+    const project = await mount(true)
+    const a = fixtures.runtimes.get("remote:1")!
+    await act(async () => {
+      a.stores.tabs.getState().openChatModeTab()
+    })
+    const draft = a.stores.tabs.getState().tabs[0]
+    const select = within(project).getByRole("combobox", {
+      name: "Execution location",
+    })
+    const option = [...select.querySelectorAll("option")].find(
+      (o) => o.value.includes("remote:1") && o.value.includes("/worktree")
+    )!
+    fireEvent.change(select, { target: { value: option.value } })
+    const openFiles = async () => {
+      await userEvent.click(
+        within(project).getByRole("button", {
+          name: messages.MultiHost.locationActions,
+        })
+      )
+      await userEvent.click(
+        screen.getByRole("menuitem", { name: messages.MultiHost.files })
+      )
+    }
+    const runtimeNode = screen.getByTestId("runtime-remote:1").parentElement!
+    const panel = () =>
+      runtimeNode.querySelector(
+        '[data-slot="tabs-content"][data-state="active"]'
+      )!
+    await openFiles()
+    expect(panel()).toHaveTextContent("Files remote:1 /worktree")
+    fireEvent.click(screen.getByTitle(`Machine 1 · ${draft.title}`))
+    expect(panel()).toHaveTextContent("Session Details content")
+    expect(a.stores.tabs.getState().activeTabId).toBe(draft.id)
+    await openFiles()
+    expect(panel()).toHaveTextContent("Files remote:1 /worktree")
+    const folders = a.stores.workspace.getState().allFolders
+    act(() =>
+      a.stores.workspace.setState({
+        allFolders: folders.flatMap((f) =>
+          f.id !== 2
+            ? [f]
+            : change === "remove"
+              ? []
+              : [{ ...f, path: "/replacement-worktree" }]
+        ),
+      })
+    )
+    expect(panel()).toHaveTextContent("Session Details content")
+    act(() => a.stores.workspace.setState({ allFolders: folders }))
+    expect(panel()).toHaveTextContent("Session Details content")
+    expect(a.stores.tabs.getState().tabs).toEqual([draft])
+  }
+)
+
 it("runs file, Git and terminal actions at the explicitly selected machine and worktree", async () => {
   const project = await mount()
   const select = within(project).getByRole("combobox", {
@@ -485,7 +842,17 @@ it("runs file, Git and terminal actions at the explicitly selected machine and w
       })
     )
     await userEvent.click(screen.getByRole("menuitem", { name: label }))
-    expect(fixtures.aux).toHaveBeenLastCalledWith(tab)
+    expect(
+      screen
+        .getByTestId("runtime-remote:1")
+        .parentElement!.querySelector(
+          `[data-slot="tabs-content"][data-state="active"]`
+        )
+    ).toHaveTextContent(
+      tab === "file_tree"
+        ? "Files remote:1 /worktree"
+        : "Git remote:1 /worktree"
+    )
     expect(
       fixtures.runtimes.get("remote:1")!.stores.workspace.getState()
         .activeFolderId

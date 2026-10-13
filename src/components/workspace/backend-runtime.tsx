@@ -106,7 +106,8 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
   const sidebar = useSidebarContext()
   const aux = useAuxPanelContext()
   const terminal = useTerminalContext()
-  const openAuxTab = aux.openTab
+  const openAuxFolderTab = aux.openFolderTab
+  const clearAuxFolderContext = aux.clearFolderToolContext
   const createTerminalInDirectory = terminal.createTerminalInDirectory
   const { setOpen: setSearchOpen } = useSearchDialog()
   const key = runtime.client.key
@@ -203,11 +204,12 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
       openConversations()
       if (ref.kind === "file") workspace.switchFileTab(ref.id)
       else {
+        clearAuxFolderContext()
         stores.tabs.getState().switchTab(ref.id)
         workspace.activateConversationPane()
       }
     },
-    [key, openConversations, workspace, stores]
+    [key, openConversations, workspace, stores, clearAuxFolderContext]
   )
 
   const close = useCallback(
@@ -230,14 +232,16 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
   const search = useCallback(() => setSearchOpen(true), [setSearchOpen])
   const navigate = useCallback(
     (route: RuntimeView["routeId"]) => {
+      clearAuxFolderContext()
       if (route === "canvas" && routeId === "canvas")
         stores.canvasBoards.getState().closeBoard()
       setRoute(route)
     },
-    [routeId, setRoute, stores]
+    [routeId, setRoute, stores, clearAuxFolderContext]
   )
   const newChat = useCallback(
     (folderless = false) => {
+      clearAuxFolderContext()
       openConversations()
       const state = stores.workspace.getState()
       const folder = state.allFolders.find(
@@ -247,7 +251,7 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
         stores.tabs.getState().openNewConversationTab(folder.id, folder.path)
       else stores.tabs.getState().openChatModeTab()
     },
-    [openConversations, stores]
+    [openConversations, stores, clearAuxFolderContext]
   )
   const openLocationTool = useCallback(
     (tool: "files" | "git" | "terminal") => {
@@ -262,9 +266,14 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
             undefined,
             folder.id
           )
-      } else openAuxTab(tool === "files" ? "file_tree" : "changes")
+      } else {
+        const state = stores.workspace.getState()
+        const folder = state.getFolder(state.activeFolderId ?? -1)
+        if (folder && folder.kind !== "chat")
+          openAuxFolderTab(tool === "files" ? "file_tree" : "changes", folder)
+      }
     },
-    [openConversations, stores, createTerminalInDirectory, openAuxTab]
+    [openConversations, stores, createTerminalInDirectory, openAuxFolderTab]
   )
   const renameConversation = useCallback(
     async (conversation: DbConversationSummary, title: string) => {

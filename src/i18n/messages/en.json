@@ -7060,6 +7060,7 @@
     "git": "Git changes",
     "terminal": "Terminal",
     "folderlessChats": "Chats without a folder",
+    "folderUnavailable": "Folder unavailable",
     "recentSessions": "Recent sessions",
     "rootLocation": "Root",
     "worktreeLocation": "Worktree",
