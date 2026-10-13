@@ -35,6 +35,19 @@ export function catalogFolders(
   return [...known.values()].filter((f) => ids.has(f.id) && f.kind !== "chat")
 }
 
+/** Include unopened working copies that still own historical sessions. */
+export function historyCatalogFolders(
+  opened: readonly FolderDetail[],
+  all: readonly FolderDetail[],
+  conversations: readonly import("@/lib/types").DbConversationSummary[]
+): FolderDetail[] {
+  const historyIds = new Set(conversations.map((c) => c.folder_id))
+  return catalogFolders(
+    [...opened, ...all.filter((f) => historyIds.has(f.id))],
+    all
+  )
+}
+
 export function projectCatalog(
   hosts: readonly BackendDescriptor[],
   catalogs: ReadonlyMap<

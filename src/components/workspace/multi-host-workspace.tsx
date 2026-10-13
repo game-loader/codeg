@@ -61,13 +61,17 @@ import { cn } from "@/lib/utils"
 import { toErrorMessage } from "@/lib/app-error"
 import { saveTextFile } from "@/lib/save-file"
 import type { FolderDetail, DbConversationSummary } from "@/lib/types"
-import { catalogFolders } from "@/lib/backend/project-catalog"
+import { historyCatalogFolders } from "@/lib/backend/project-catalog"
 import {
   resolveCatalogRuntime,
   selectFolderContext,
   openExistingConversation,
 } from "@/lib/backend/project-navigation"
-import type { WorkbenchRouteId } from "@/contexts/workbench-route-context"
+import { WorkbenchRouteActionsProvider } from "@/contexts/workbench-route-context"
+import { UnifiedRuntimeNavigation } from "./unified-sidebar-controls"
+import { OwnedSessionCard } from "./owned-session-card"
+import type { OwnedProjectSession } from "@/lib/backend/project-history"
+import { UNIFIED_SIDEBAR_TOGGLE_EVENT } from "@/lib/unified-sidebar-events"
 
 interface HostSummary extends HostFolderCatalog {
   generation: number
@@ -97,8 +101,13 @@ function RuntimeObserver({
     runtime.projectIdentities.getSnapshot
   )
   const folders = useMemo(
-    () => catalogFolders(state.folders, state.allFolders),
-    [state.folders, state.allFolders]
+    () =>
+      historyCatalogFolders(
+        state.folders,
+        state.allFolders,
+        state.conversations
+      ),
+    [state.folders, state.allFolders, state.conversations]
   )
   useEffect(() => {
     onChange(runtime.client.key, {
@@ -112,6 +121,7 @@ function RuntimeObserver({
       conversations: state.conversations,
       historyLoading: state.conversationsLoading,
       historyError: state.conversationsError,
+      activeFolderId: state.activeFolderId,
       view,
     })
   }, [
@@ -122,22 +132,12 @@ function RuntimeObserver({
     state.conversations,
     state.conversationsLoading,
     state.conversationsError,
+    state.activeFolderId,
     identities,
     view,
   ])
   return null
 }
-
-const ROUTES: WorkbenchRouteId[] = [
-  "conversations",
-  "tasks",
-  "automations",
-  "forge",
-  "canvas",
-  "academic",
-  "tokenUsage",
-  "machines",
-]
 
 function RecoveryBuffers() {
   const t = useTranslations("MultiHost")
@@ -248,6 +248,12 @@ export function MultiHostWorkspace({
   >(new Map())
   const [focused, setFocused] = useState<BackendKey>("local")
   const [machinesOpen, setMachinesOpen] = useState(true)
+  useEffect(() => {
+    const toggle = () => setMachinesOpen((open) => !open)
+    window.addEventListener(UNIFIED_SIDEBAR_TOGGLE_EVENT, toggle)
+    return () =>
+      window.removeEventListener(UNIFIED_SIDEBAR_TOGGLE_EVENT, toggle)
+  }, [])
   const [manageOpen, setManageOpen] = useState(false)
   const [repositoryTarget, setRepositoryTarget] =
     useState<BackendRuntime | null>(null)
@@ -425,6 +431,7 @@ export function MultiHostWorkspace({
         before.conversations === summary.conversations &&
         before.historyLoading === summary.historyLoading &&
         before.historyError === summary.historyError &&
+        before.activeFolderId === summary.activeFolderId &&
         before.view === summary.view
       )
         return previous
@@ -541,10 +548,7 @@ function WindowWorkspace({
   isMac: boolean
 }) {
   const t = useTranslations("MultiHost")
-  const tSidebar = useTranslations("Folder.sidebar")
   const tChrome = useTranslations("Folder.folderTitleBar")
-  const tTokens = useTranslations("Folder.statusBar.tokens")
-  const tAcademic = useTranslations("Academic")
   const hosts = useSyncExternalStore(
     registry.subscribe,
     registry.getSnapshot,
@@ -562,7 +566,7 @@ function WindowWorkspace({
     [cachedSummaries, hosts]
   )
   const focusedRuntime = registry.get(focused)
-  const focusedView = summaries.get(focused)?.view
+  const focusedView = focusedRuntime?.getSnapshot()
   const split = layout.split !== "none" && layout.secondary !== null
   const actualTabs = hosts.flatMap((host) =>
     (summaries.get(host.key)?.view?.tabs ?? []).map((tab) => ({
@@ -832,14 +836,93 @@ function WindowWorkspace({
   }
   const openConversation = (
     key: BackendKey,
-    folder: FolderDetail,
+    folder: FolderDetail | null,
     conversation: DbConversationSummary,
     generation: number
   ) => {
-    const runtime = resolveCatalogRuntime(registry, key, generation, folder)
+    const runtime = resolveCatalogRuntime(
+      registry,
+      key,
+      generation,
+      folder ?? undefined
+    )
     if (!runtime) return
-    if (openExistingConversation(runtime, folder, conversation))
+    if (
+      folder &&
+      conversation.parent_id == null &&
+      openExistingConversation(runtime, folder, conversation)
+    )
       activateHost(key)
+    else if (
+      conversation.parent_id != null ||
+      (!folder &&
+        runtime.stores.workspace
+          .getState()
+          .conversations.some(
+            (c) =>
+              c.id === conversation.id &&
+              c.kind === "chat" &&
+              c.folder_id === conversation.folder_id &&
+              c.agent_type === conversation.agent_type
+          ))
+    ) {
+      if (folder) selectFolderContext(runtime, folder)
+      else runtime.getSnapshot()?.navigate("conversations")
+      runtime.stores.tabs
+        .getState()
+        .openTab(
+          conversation.folder_id,
+          conversation.id,
+          conversation.agent_type,
+          false,
+          conversation.title ?? undefined
+        )
+      activateHost(key)
+    }
+  }
+  const renderSession = (session: OwnedProjectSession) => {
+    const runtime = registry.get(session.backendKey)
+    if (!runtime || runtime.generation !== session.generation) return null
+    return (
+      <BackendClientProvider client={runtime.client}>
+        <BackendStoresProvider stores={runtime.stores}>
+          <ScopedRemoteConnectionProvider
+            connection={runtime.client.remoteConnection}
+            expired={
+              registry.descriptor(session.backendKey)?.status === "unauthorized"
+            }
+          >
+            <OwnedSessionCard
+              runtime={runtime}
+              session={session}
+              hostName={runtime.client.name}
+              isCurrent={() =>
+                resolveCatalogRuntime(
+                  registry,
+                  session.backendKey,
+                  session.generation,
+                  session.folder ?? undefined
+                ) === runtime
+              }
+              actions={{
+                onOpenFolder: openFolder,
+                onOpenConversation: openConversation,
+                onNewSession: newSession,
+                onWorktrees: (key, folder, generation) => {
+                  const owner = resolveCatalogRuntime(
+                    registry,
+                    key,
+                    generation,
+                    folder
+                  )
+                  if (owner) setWorktreeTarget({ runtime: owner, folder })
+                },
+              }}
+            />
+          </ScopedRemoteConnectionProvider>
+        </BackendStoresProvider>
+      </BackendClientProvider>
+    )
   }
   const refreshHost = (key: BackendKey, generation: number) => {
     const runtime = resolveCatalogRuntime(registry, key, generation)
@@ -997,6 +1080,70 @@ function WindowWorkspace({
             onOpenFolder={openFolder}
             onNewSession={newSession}
             onOpenConversation={openConversation}
+            renderSession={renderSession}
+            onLocationTool={(key, folder, generation, tool) => {
+              const runtime = resolveCatalogRuntime(
+                registry,
+                key,
+                generation,
+                folder
+              )
+              if (!runtime) return
+              activateHost(key)
+              selectFolderContext(runtime, folder)
+              runtime.getSnapshot()?.openLocationTool?.(tool)
+            }}
+            renderNavigation={(navItems) => {
+              if (!focusedRuntime || !focusedView) return null
+              const runtime = focusedRuntime
+              const act = (action: (view: RuntimeView) => void) => {
+                if (
+                  resolveCatalogRuntime(
+                    registry,
+                    runtime.client.key,
+                    runtime.generation
+                  ) !== runtime
+                )
+                  return
+                const view = runtime.getSnapshot()
+                if (view) action(view)
+              }
+              const folder = runtime.stores.workspace
+                .getState()
+                .getFolder(
+                  runtime.stores.workspace.getState().activeFolderId ?? -1
+                )
+              return (
+                <BackendClientProvider
+                  key={`${runtime.client.key}:${runtime.generation}`}
+                  client={runtime.client}
+                >
+                  <BackendStoresProvider stores={runtime.stores}>
+                    <ScopedRemoteConnectionProvider
+                      connection={runtime.client.remoteConnection}
+                      expired={
+                        registry.descriptor(runtime.client.key)?.status ===
+                        "unauthorized"
+                      }
+                    >
+                      <WorkbenchRouteActionsProvider
+                        routeId={focusedView.routeId}
+                        navigate={(route) =>
+                          act((view) => view.navigate(route))
+                        }
+                      >
+                        <UnifiedRuntimeNavigation
+                          view={focusedView}
+                          context={`${runtime.client.name} · ${folder?.kind !== "chat" && folder?.path ? folder.path : t("folderlessChats")}`}
+                          navItems={navItems}
+                          act={act}
+                        />
+                      </WorkbenchRouteActionsProvider>
+                    </ScopedRemoteConnectionProvider>
+                  </BackendStoresProvider>
+                </BackendClientProvider>
+              )
+            }}
             onRetry={(key, generation) => {
               const runtime = resolveCatalogRuntime(registry, key, generation)
               if (runtime)
@@ -1080,39 +1227,6 @@ function WindowWorkspace({
                   <span className="text-muted-foreground">
                     {t(host.status)}
                   </span>
-                  <select
-                    aria-label={t("title")}
-                    className="ml-auto max-w-40"
-                    value={
-                      summaries.get(host.key)?.view?.routeId ?? "conversations"
-                    }
-                    onChange={(event) =>
-                      runtime
-                        .getSnapshot()
-                        ?.navigate(event.target.value as WorkbenchRouteId)
-                    }
-                  >
-                    {ROUTES.map((route) => (
-                      <option key={route} value={route}>
-                        {route === "conversations"
-                          ? t("title")
-                          : route === "tokenUsage"
-                            ? tTokens("tokenUsage")
-                            : route === "academic"
-                              ? tAcademic("title")
-                              : tSidebar(route)}
-                      </option>
-                    ))}
-                  </select>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="size-6"
-                    aria-label={tSidebar("title")}
-                    onClick={() => runtime.getSnapshot()?.toggleSidebar()}
-                  >
-                    <PanelLeft className="size-3" />
-                  </Button>
                 </div>
                 <div className="relative h-[calc(100%-2rem)] min-h-0">
                   {renderWorkspace(runtime)}

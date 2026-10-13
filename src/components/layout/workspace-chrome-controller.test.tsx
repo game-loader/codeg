@@ -25,6 +25,7 @@ import {
 } from "@/lib/menu-close-shortcut"
 
 import { WorkspaceChromeController } from "./workspace-chrome-controller"
+import { UNIFIED_SIDEBAR_TOGGLE_EVENT } from "@/lib/unified-sidebar-events"
 
 const state = vi.hoisted(() => ({
   mode: "fusion" as "conversation" | "fusion",
@@ -45,6 +46,7 @@ const spies = vi.hoisted(() => ({
   setActivePane: vi.fn(),
   closeCurrentWindow: vi.fn(() => Promise.resolve()),
   subscribe: vi.fn(),
+  toggleSidebar: vi.fn(),
 }))
 
 vi.mock("@/lib/api", () => ({ openSettingsWindow: vi.fn() }))
@@ -55,7 +57,7 @@ vi.mock("@/hooks/use-is-active-chat-mode", () => ({
   useIsActiveChatMode: () => false,
 }))
 vi.mock("@/contexts/sidebar-context", () => ({
-  useSidebarContext: () => ({ toggle: vi.fn() }),
+  useSidebarContext: () => ({ toggle: spies.toggleSidebar }),
 }))
 vi.mock("@/contexts/aux-panel-context", () => ({
   useAuxPanelContext: () => ({ toggle: vi.fn() }),
@@ -174,6 +176,7 @@ beforeEach(() => {
   state.shortcuts = { ...DEFAULT_SHORTCUTS }
   state.listeners.clear()
   spies.closeTab.mockClear()
+  spies.toggleSidebar.mockClear()
   spies.openChatModeTab.mockClear()
   spies.openNewConversationTab.mockClear()
   resetClosedTabStackForTests()
@@ -490,4 +493,23 @@ describe("retained WorkspaceChromeController ownership", () => {
     press("missing-surface")
     expect(spies.closeCurrentWindow).not.toHaveBeenCalled()
   })
+})
+
+it("routes the managed sidebar shortcut to the unified shell once and keeps legacy toggling", () => {
+  const toggle = vi.fn()
+  window.addEventListener(UNIFIED_SIDEBAR_TOGGLE_EVENT, toggle)
+  try {
+    const pair = render(<PairedControllers />)
+    fireEvent.keyDown(document, { key: "b", ctrlKey: true })
+    expect(toggle).toHaveBeenCalledOnce()
+    expect(spies.toggleSidebar).not.toHaveBeenCalled()
+    pair.unmount()
+    const legacy = render(<WorkspaceChromeController />)
+    fireEvent.keyDown(document, { key: "b", ctrlKey: true })
+    expect(spies.toggleSidebar).toHaveBeenCalledOnce()
+    expect(toggle).toHaveBeenCalledOnce()
+    legacy.unmount()
+  } finally {
+    window.removeEventListener(UNIFIED_SIDEBAR_TOGGLE_EVENT, toggle)
+  }
 })

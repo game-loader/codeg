@@ -7052,6 +7052,17 @@
     }
   },
   "MultiHost": {
+    "executionLocation": "Execution location",
+    "chooseLocation": "Choose machine and working copy",
+    "locationActions": "Working copy actions",
+    "openFolder": "Open folder",
+    "files": "Files",
+    "git": "Git changes",
+    "terminal": "Terminal",
+    "folderlessChats": "Chats without a folder",
+    "recentSessions": "Recent sessions",
+    "rootLocation": "Root",
+    "worktreeLocation": "Worktree",
     "historyLoading": "Loading sessions",
     "projects": "Projects",
     "catalogView": "Catalog view",
@@ -7121,7 +7132,7 @@
     "horizontal": "Side by side",
     "vertical": "Top and bottom",
     "chooseSecond": "Choose another machine",
-    "showMachines": "Show machines",
-    "hideMachines": "Hide machines"
+    "showMachines": "Show sidebar",
+    "hideMachines": "Hide sidebar"
   }
 }

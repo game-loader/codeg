@@ -111,7 +111,8 @@ const route = {
   openConversations: toggle,
   setRoute: toggle,
 }
-vi.mock("@/contexts/workbench-route-context", () => ({
+vi.mock("@/contexts/workbench-route-context", async (original) => ({
+  ...(await original<typeof import("@/contexts/workbench-route-context")>()),
   useWorkbenchRoute: () => route,
 }))
 vi.mock("@/contexts/sidebar-context", () => ({

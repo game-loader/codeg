@@ -717,16 +717,18 @@ function MobileFolderWorkspaceShell({
 }
 
 function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
+  const { managed } = useWorkspaceRuntimeVisibility()
   const client = useOptionalBackendClient()
   const panelId = (id: string) => scopePanelId(id, client?.key)
   const {
-    isOpen: sidebarOpen,
+    isOpen: sidebarOpenRequested,
     restored: sidebarRestored,
     width: sidebarWidth,
     minWidth: sidebarMinWidth,
     maxWidth: sidebarMaxWidth,
     setWidth: setSidebarWidth,
   } = useSidebarContext()
+  const sidebarOpen = !managed && sidebarOpenRequested
   const {
     isOpen: auxOpenRequested,
     restored: auxRestored,
@@ -1066,7 +1068,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
         <ResizablePanel
           id={panelId(FOLDER_SHELL_LEFT_PANEL_ID)}
           order={1}
-          defaultSize={18}
+          defaultSize={managed ? 0 : 18}
           minSize={sidebarOpen ? sidebarSizeRange.minSize : 0}
           maxSize={sidebarOpen ? sidebarSizeRange.maxSize : 0}
         >
@@ -1076,7 +1078,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
               slide — an un-backed wrapper would show the root `bg-background`
               (white) through that gap. */}
           <div className="h-full min-h-0 overflow-hidden ws-surface-sidebar">
-            <Sidebar />
+            {!managed && <Sidebar />}
           </div>
         </ResizablePanel>
 
@@ -1091,7 +1093,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
         <ResizablePanel
           id={panelId(FOLDER_SHELL_MAIN_PANEL_ID)}
           order={2}
-          defaultSize={64}
+          defaultSize={managed ? 82 : 64}
           minSize={10}
         >
           <main

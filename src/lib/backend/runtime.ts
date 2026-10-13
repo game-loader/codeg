@@ -1,4 +1,5 @@
-import { ProjectIdentityStore, catalogFolders } from "./project-catalog"
+import { ProjectIdentityStore, historyCatalogFolders } from "./project-catalog"
+import type { ConversationStatus, DbConversationSummary } from "@/lib/types"
 import { createBackendClient } from "./client"
 import { FencedTransport } from "./fenced-transport"
 import { createBackendStores, type BackendStores } from "./stores"
@@ -190,6 +191,21 @@ export interface RuntimeView {
   toggleSidebar(): void
   toggleTerminal(): void
   toggleAux(): void
+  newChat?(folderless?: boolean): void
+  openLocationTool?(tool: "files" | "git" | "terminal"): void
+  renameConversation?(
+    conversation: DbConversationSummary,
+    title: string
+  ): Promise<void>
+  deleteConversation?(conversation: DbConversationSummary): Promise<void>
+  pinConversation?(
+    conversation: DbConversationSummary,
+    pinned: boolean
+  ): Promise<void>
+  statusConversation?(
+    conversation: DbConversationSummary,
+    status: ConversationStatus
+  ): Promise<void>
   captureDirtyFiles?(): readonly RecoveryBuffer[]
   captureComposerDrafts?(): readonly RecoveryBuffer[]
 }
@@ -257,9 +273,11 @@ export class BackendRuntime {
         if (!lifetime.isCurrent() || this.disposed) return
         const state = this.stores.workspace.getState()
         if (
-          catalogFolders(state.folders, state.allFolders).some(
-            (folder) => folder.path === path
-          )
+          historyCatalogFolders(
+            state.folders,
+            state.allFolders,
+            state.conversations
+          ).some((folder) => folder.path === path)
         ) {
           void this.projectIdentities.refresh(false)
         }
@@ -311,7 +329,11 @@ export class BackendRuntime {
     const updateCatalog = () => {
       const state = this.stores.workspace.getState()
       void this.projectIdentities.setFolders(
-        catalogFolders(state.folders, state.allFolders)
+        historyCatalogFolders(
+          state.folders,
+          state.allFolders,
+          state.conversations
+        )
       )
     }
     this.stopCatalogObservation = this.stores.workspace.subscribe(updateCatalog)

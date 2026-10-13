@@ -34,6 +34,7 @@ import type {
 } from "@/lib/backend/runtime"
 import type { WindowResourceRef } from "@/lib/backend/window-layout"
 import type { WindowResourceTab } from "./multi-host-tabs"
+import type { ConversationStatus, DbConversationSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 /** A stable host node: focus/split changes update style, never its providers. */
@@ -105,6 +106,8 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
   const sidebar = useSidebarContext()
   const aux = useAuxPanelContext()
   const terminal = useTerminalContext()
+  const openAuxTab = aux.openTab
+  const createTerminalInDirectory = terminal.createTerminalInDirectory
   const { setOpen: setSearchOpen } = useSearchDialog()
   const key = runtime.client.key
   const recoveryFiles = useRef(fileTabs)
@@ -225,6 +228,83 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
   )
 
   const search = useCallback(() => setSearchOpen(true), [setSearchOpen])
+  const navigate = useCallback(
+    (route: RuntimeView["routeId"]) => {
+      if (route === "canvas" && routeId === "canvas")
+        stores.canvasBoards.getState().closeBoard()
+      setRoute(route)
+    },
+    [routeId, setRoute, stores]
+  )
+  const newChat = useCallback(
+    (folderless = false) => {
+      openConversations()
+      const state = stores.workspace.getState()
+      const folder = state.allFolders.find(
+        (f) => f.id === state.activeFolderId && f.kind !== "chat"
+      )
+      if (folder && !folderless)
+        stores.tabs.getState().openNewConversationTab(folder.id, folder.path)
+      else stores.tabs.getState().openChatModeTab()
+    },
+    [openConversations, stores]
+  )
+  const openLocationTool = useCallback(
+    (tool: "files" | "git" | "terminal") => {
+      openConversations()
+      if (tool === "terminal") {
+        const state = stores.workspace.getState()
+        const folder = state.getFolder(state.activeFolderId ?? -1)
+        if (folder)
+          void createTerminalInDirectory(
+            folder.path,
+            folder.name,
+            undefined,
+            folder.id
+          )
+      } else openAuxTab(tool === "files" ? "file_tree" : "changes")
+    },
+    [openConversations, stores, createTerminalInDirectory, openAuxTab]
+  )
+  const renameConversation = useCallback(
+    async (conversation: DbConversationSummary, title: string) => {
+      await runtime.client.api.updateConversationTitle(conversation.id, title)
+      await stores.workspace.getState().refreshConversations()
+    },
+    [runtime, stores]
+  )
+  const deleteConversation = useCallback(
+    async (conversation: DbConversationSummary) => {
+      await runtime.client.api.deleteConversation(conversation.id)
+      stores.tabs
+        .getState()
+        .closeConversationTab(
+          conversation.folder_id,
+          conversation.id,
+          conversation.agent_type
+        )
+      await stores.workspace.getState().refreshConversations()
+    },
+    [runtime, stores]
+  )
+  const pinConversation = useCallback(
+    async (conversation: DbConversationSummary, pinned: boolean) => {
+      stores.workspace.getState().updateConversationLocal(conversation.id, {
+        pinned_at: pinned ? new Date().toISOString() : null,
+      })
+      await runtime.client.api.updateConversationPinned(conversation.id, pinned)
+    },
+    [runtime, stores]
+  )
+  const statusConversation = useCallback(
+    async (conversation: DbConversationSummary, status: ConversationStatus) => {
+      stores.workspace
+        .getState()
+        .updateConversationLocal(conversation.id, { status })
+      await runtime.client.api.updateConversationStatus(conversation.id, status)
+    },
+    [runtime, stores]
+  )
   const view = useMemo<RuntimeView>(
     () => ({
       hydrated,
@@ -237,7 +317,13 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
       select,
       close,
       restoreFile,
-      navigate: setRoute,
+      navigate,
+      newChat,
+      openLocationTool,
+      renameConversation,
+      deleteConversation,
+      pinConversation,
+      statusConversation,
       search,
       toggleSidebar: sidebar.toggle,
       toggleTerminal: terminal.toggle,
@@ -250,7 +336,13 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
       selected,
       hydrated,
       routeId,
-      setRoute,
+      navigate,
+      newChat,
+      openLocationTool,
+      renameConversation,
+      deleteConversation,
+      pinConversation,
+      statusConversation,
       sidebar.isOpen,
       sidebar.toggle,
       terminal.isOpen,

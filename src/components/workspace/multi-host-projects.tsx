@@ -4,10 +4,13 @@ import { ChevronDown, ChevronRight } from "lucide-react"
 import type { BackendDescriptor } from "@/lib/backend/registry"
 import type { BackendKey } from "@/lib/backend/types"
 import { projectCatalog } from "@/lib/backend/project-catalog"
+import type { CatalogRowActions } from "./project-session-list"
+import { ProjectLocationMenu } from "./project-location-menu"
 import {
-  ProjectSetupRows,
-  type CatalogRowActions,
-} from "./project-session-list"
+  projectHistory,
+  DEFAULT_HISTORY_OPTIONS,
+  type HistoryOptions,
+} from "@/lib/backend/project-history"
 import type { HostFolderCatalog } from "./multi-host-sidebar"
 
 export function MultiHostProjects({
@@ -15,12 +18,14 @@ export function MultiHostProjects({
   catalogs,
   collapsed,
   onToggle,
+  options = DEFAULT_HISTORY_OPTIONS,
   ...actions
 }: CatalogRowActions & {
   hosts: readonly BackendDescriptor[]
   catalogs: ReadonlyMap<BackendKey, HostFolderCatalog>
   collapsed: readonly string[]
   onToggle(key: string): void
+  options?: HistoryOptions
 }) {
   const t = useTranslations("MultiHost")
   const projects = projectCatalog(hosts, catalogs)
@@ -52,27 +57,82 @@ export function MultiHostProjects({
             )}
             <span className="truncate">{project.name}</span>
           </button>
-          {!collapsed.includes(project.key) &&
-            project.setups.map((setup) => {
-              const host = hosts.find((h) => h.key === setup.backendKey)!
-              const catalog = catalogs.get(setup.backendKey)
-              return (
-                <ProjectSetupRows
-                  key={JSON.stringify([
-                    setup.backendKey,
-                    setup.generation,
-                    setup.folder.id,
-                    setup.folder.path,
-                  ])}
-                  setup={setup}
-                  hostName={host.name}
-                  conversations={catalog?.conversations}
-                  historyLoading={catalog?.historyLoading}
-                  historyError={catalog?.historyError}
-                  {...actions}
-                />
-              )
-            })}
+          {!collapsed.includes(project.key) && (
+            <>
+              <ProjectLocationMenu
+                setups={project.setups}
+                hosts={hosts}
+                {...actions}
+              />
+              {projectHistory(project.setups, catalogs, options).map(
+                (session) => (
+                  <div
+                    key={session.key}
+                    data-session-owner={session.backendKey}
+                  >
+                    {actions.renderSession?.(session) ?? (
+                      <button
+                        type="button"
+                        className="w-full text-left text-xs py-1"
+                        onClick={() =>
+                          actions.onOpenConversation?.(
+                            session.backendKey,
+                            session.folder,
+                            session.conversation,
+                            session.generation
+                          )
+                        }
+                      >
+                        {session.conversation.title || t("untitledSession")}
+                        <span className="block text-muted-foreground">
+                          {
+                            hosts.find((h) => h.key === session.backendKey)
+                              ?.name
+                          }{" "}
+                          · {session.folder?.path}
+                        </span>
+                      </button>
+                    )}
+                  </div>
+                )
+              )}
+              {project.setups.map((setup) => {
+                const catalog = catalogs.get(setup.backendKey)
+                return (
+                  <div
+                    key={`${setup.backendKey}:${setup.folder.id}`}
+                    data-history-owner={setup.backendKey}
+                  >
+                    {catalog?.historyLoading && (
+                      <p
+                        role="status"
+                        className="text-xs text-muted-foreground"
+                      >
+                        {hosts.find((h) => h.key === setup.backendKey)?.name} ·{" "}
+                        {t("historyLoading")}
+                      </p>
+                    )}
+                    {catalog?.historyError && (
+                      <div role="alert">
+                        <button
+                          type="button"
+                          className="text-xs text-destructive"
+                          onClick={() =>
+                            actions.onRetry?.(
+                              setup.backendKey,
+                              setup.generation
+                            )
+                          }
+                        >
+                          {catalog.historyError} · {t("retry")}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </>
+          )}
         </section>
       ))}
     </div>

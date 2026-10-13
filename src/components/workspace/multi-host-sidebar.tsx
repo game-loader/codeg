@@ -30,6 +30,34 @@ import {
   type CatalogPreferences,
 } from "@/lib/backend/window-layout"
 import { useEffect, useState } from "react"
+import type { ReactNode } from "react"
+import { UnifiedHistoryControls } from "./unified-sidebar-controls"
+import {
+  DEFAULT_HISTORY_OPTIONS,
+  ownedSession,
+  projectHistory,
+  sortOwnedSessions,
+  type HistoryOptions,
+} from "@/lib/backend/project-history"
+import { projectCatalog } from "@/lib/backend/project-catalog"
+import {
+  loadNavItemVisibility,
+  loadShowCompleted,
+  loadShowRecent,
+  loadShowWorktrees,
+  loadSortMode,
+  saveNavItemVisibility,
+  saveShowCompleted,
+  saveShowRecent,
+  saveShowWorktrees,
+  saveSortMode,
+  type SidebarNavItemVisibility,
+  type SidebarSectionOrder,
+  DEFAULT_SECTION_ORDER,
+  loadSectionOrder,
+  moveSectionInOrder,
+  saveSectionOrder,
+} from "@/lib/sidebar-view-mode-storage"
 
 export interface HostFolderCatalog {
   folders: readonly FolderDetail[]
@@ -42,6 +70,7 @@ export interface HostFolderCatalog {
   conversations?: readonly DbConversationSummary[]
   historyLoading?: boolean
   historyError?: string | null
+  activeFolderId?: number | null
 }
 
 export interface MultiHostSidebarProps extends CatalogRowActions {
@@ -54,6 +83,7 @@ export interface MultiHostSidebarProps extends CatalogRowActions {
   onAddRepository(key: BackendKey, generation: number): void
   onRefresh(key: BackendKey, generation: number): void
   onManageConnections(): void
+  renderNavigation?(items: SidebarNavItemVisibility): ReactNode
 }
 
 /** Numeric folder IDs only have meaning inside their containing machine. */
@@ -72,6 +102,9 @@ export function MultiHostSidebar({
   onRetry,
   onRefresh,
   onManageConnections,
+  renderNavigation,
+  renderSession,
+  onLocationTool,
 }: MultiHostSidebarProps) {
   const t = useTranslations("MultiHost")
   const [preferences, setPreferences] = useState<CatalogPreferences>({
@@ -79,10 +112,38 @@ export function MultiHostSidebar({
     collapsedProjects: [],
   })
   const [preferencesLoaded, setPreferencesLoaded] = useState(false)
+  const [options, setOptions] = useState<HistoryOptions>(
+    DEFAULT_HISTORY_OPTIONS
+  )
+  const [navItems, setNavItems] = useState<SidebarNavItemVisibility>({})
+  const [showRecent, setShowRecent] = useState(true)
+  const [collapsedSections, setCollapsedSections] = useState<string[]>([])
+  const [sectionOrder, setSectionOrder] = useState<SidebarSectionOrder>(
+    DEFAULT_SECTION_ORDER
+  )
   useEffect(() => {
+    const hasPreference = (key: string) => {
+      try {
+        return localStorage.getItem(key) !== null
+      } catch {
+        return false
+      }
+    }
     // Match static-export markup before hydrating optional device preferences.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setPreferences(readCatalogPreferences())
+    setOptions({
+      showCompleted: !hasPreference("workspace:sidebar-show-completed")
+        ? true
+        : loadShowCompleted(),
+      showWorktrees: loadShowWorktrees(),
+      sortMode: !hasPreference("workspace:sidebar-sort-mode")
+        ? "updated"
+        : loadSortMode(),
+    })
+    setNavItems(loadNavItemVisibility())
+    setShowRecent(loadShowRecent())
+    setSectionOrder(loadSectionOrder())
     setPreferencesLoaded(true)
   }, [])
   useEffect(() => {
@@ -94,7 +155,56 @@ export function MultiHostSidebar({
     onNewSession,
     onOpenConversation,
     onRetry,
+    renderSession,
+    onLocationTool,
   }
+  const chats = sortOwnedSessions(
+    hosts.flatMap((host) => {
+      const catalog = catalogs.get(host.key)
+      if (
+        catalog?.generation !== undefined &&
+        catalog.generation !== host.generation
+      )
+        return []
+      return (catalog?.conversations ?? [])
+        .filter((c) => c.kind === "chat" && c.parent_id == null)
+        .map((c) => ownedSession(host.key, host.generation, null, null, c))
+    }),
+    options
+  )
+  const recent = sortOwnedSessions(
+    [
+      ...projectCatalog(hosts, catalogs).flatMap((project) =>
+        projectHistory(project.setups, catalogs, options)
+      ),
+      ...chats,
+    ],
+    options
+  ).slice(0, 10)
+  const renderHistory = (sessions: typeof chats) =>
+    sessions.map((session) => (
+      <div key={session.key}>
+        {renderSession?.(session) ?? (
+          <button
+            type="button"
+            className="w-full text-left text-xs py-1"
+            onClick={() =>
+              onOpenConversation?.(
+                session.backendKey,
+                session.folder,
+                session.conversation,
+                session.generation
+              )
+            }
+          >
+            {session.conversation.title || t("untitledSession")}
+            <span className="block text-muted-foreground">
+              {hosts.find((h) => h.key === session.backendKey)?.name}
+            </span>
+          </button>
+        )}
+      </div>
+    ))
   return (
     <aside className="flex h-full w-64 shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground">
       <div className="flex h-10 shrink-0 items-center justify-between border-b px-3">
@@ -122,22 +232,133 @@ export function MultiHostSidebar({
           <Settings2 className="size-4" />
         </Button>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        {preferences.mode === "projects" && (
-          <MultiHostProjects
-            hosts={hosts}
-            catalogs={catalogs}
-            collapsed={preferences.collapsedProjects}
-            onToggle={(key) =>
-              setPreferences((value) => ({
-                ...value,
-                collapsedProjects: value.collapsedProjects.includes(key)
-                  ? value.collapsedProjects.filter((k) => k !== key)
-                  : [...value.collapsedProjects, key],
-              }))
-            }
-            {...actions}
-          />
+      {renderNavigation?.(navItems)}
+      <UnifiedHistoryControls
+        options={options}
+        onOptions={(value) => {
+          setOptions(value)
+          saveShowCompleted(value.showCompleted)
+          saveShowWorktrees(value.showWorktrees)
+          saveSortMode(value.sortMode)
+        }}
+        navItems={navItems}
+        onNavItems={(value) => {
+          setNavItems(value)
+          saveNavItemVisibility(value)
+        }}
+        showRecent={showRecent}
+        onShowRecent={(value) => {
+          setShowRecent(value)
+          saveShowRecent(value)
+        }}
+        onCollapse={() => {
+          const projects = projectCatalog(hosts, catalogs)
+          const collapse =
+            preferences.collapsedProjects.length < projects.length ||
+            collapsedSections.length < 2
+          setPreferences((value) => ({
+            ...value,
+            collapsedProjects: collapse ? projects.map((p) => p.key) : [],
+          }))
+          setCollapsedSections(collapse ? ["chats", "recent"] : [])
+          if (preferences.mode === "machines")
+            for (const host of hosts)
+              if (collapsed.includes(host.key) !== collapse)
+                onToggleHost(host.key)
+        }}
+        sectionOrder={sectionOrder}
+        onMoveSection={(id, delta) => {
+          const next = moveSectionInOrder(sectionOrder, id, delta)
+          setSectionOrder(next)
+          saveSectionOrder(next)
+        }}
+        allCollapsed={
+          collapsedSections.length === 2 &&
+          (preferences.mode === "machines"
+            ? hosts.every((h) => collapsed.includes(h.key))
+            : projectCatalog(hosts, catalogs).every((p) =>
+                preferences.collapsedProjects.includes(p.key)
+              ))
+        }
+        onLocate={() => {
+          setPreferences((value) => ({
+            ...value,
+            mode: "projects",
+            collapsedProjects: [],
+          }))
+          setCollapsedSections([])
+          requestAnimationFrame(() =>
+            document
+              .querySelector(
+                `aside [data-session-owner="${focusedHost}"][data-session-selected="true"]`
+              )
+              ?.scrollIntoView?.({ block: "nearest" })
+          )
+        }}
+      />
+      <div className="min-h-0 flex-1 overflow-y-auto p-2 flex flex-col">
+        <div style={{ order: sectionOrder.indexOf("folders") }}>
+          {preferences.mode === "projects" && (
+            <MultiHostProjects
+              hosts={hosts}
+              catalogs={catalogs}
+              options={options}
+              collapsed={preferences.collapsedProjects}
+              onToggle={(key) =>
+                setPreferences((value) => ({
+                  ...value,
+                  collapsedProjects: value.collapsedProjects.includes(key)
+                    ? value.collapsedProjects.filter((k) => k !== key)
+                    : [...value.collapsedProjects, key],
+                }))
+              }
+              {...actions}
+            />
+          )}
+        </div>
+        {chats.length > 0 && (
+          <section
+            style={{ order: sectionOrder.indexOf("chats") }}
+            data-history-section="chats"
+          >
+            <button
+              type="button"
+              className="py-2 text-sm font-medium"
+              aria-expanded={!collapsedSections.includes("chats")}
+              onClick={() =>
+                setCollapsedSections((value) =>
+                  value.includes("chats")
+                    ? value.filter((v) => v !== "chats")
+                    : [...value, "chats"]
+                )
+              }
+            >
+              {t("folderlessChats")}
+            </button>
+            {!collapsedSections.includes("chats") && renderHistory(chats)}
+          </section>
+        )}
+        {showRecent && recent.length > 0 && (
+          <section
+            style={{ order: sectionOrder.indexOf("recent") }}
+            data-history-section="recent"
+          >
+            <button
+              type="button"
+              className="py-2 text-sm font-medium"
+              aria-expanded={!collapsedSections.includes("recent")}
+              onClick={() =>
+                setCollapsedSections((value) =>
+                  value.includes("recent")
+                    ? value.filter((v) => v !== "recent")
+                    : [...value, "recent"]
+                )
+              }
+            >
+              {t("recentSessions")}
+            </button>
+            {!collapsedSections.includes("recent") && renderHistory(recent)}
+          </section>
         )}
         {hosts.map((host) => {
           const catalog = catalogs.get(host.key)
@@ -152,6 +373,12 @@ export function MultiHostSidebar({
           return (
             <section
               key={host.key}
+              style={{
+                order:
+                  preferences.mode === "machines"
+                    ? sectionOrder.indexOf("folders")
+                    : 3,
+              }}
               className="mb-2"
               data-backend-key={host.key}
             >
@@ -260,6 +487,7 @@ export function MultiHostSidebar({
                         ),
                       }}
                       hostName={host.name}
+                      options={options}
                       conversations={catalog?.conversations}
                       historyLoading={catalog?.historyLoading}
                       historyError={catalog?.historyError}

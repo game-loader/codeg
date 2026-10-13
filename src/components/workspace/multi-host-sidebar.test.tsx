@@ -68,6 +68,7 @@ describe("multi-host workspace navigation", () => {
         onManageConnections={vi.fn()}
       />
     )
+    fireEvent.click(screen.getByRole("button", { name: "machines" }))
     fireEvent.click(screen.getAllByTitle("/repo")[1])
     expect(onOpenFolder).toHaveBeenCalledWith("remote:2", folder, 2)
     fireEvent.click(

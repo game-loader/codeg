@@ -50,7 +50,8 @@ interface TerminalContextValue {
   createTerminalInDirectory: (
     workingDir: string,
     title?: string,
-    shell?: string
+    shell?: string,
+    folderId?: number
   ) => Promise<string | null>
   createTerminalWithCommand: (
     title: string,
@@ -226,7 +227,12 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   )
 
   const createTerminalInDirectory = useCallback(
-    async (workingDir: string, title?: string, shell?: string) => {
+    async (
+      workingDir: string,
+      title?: string,
+      shell?: string,
+      folderId?: number
+    ) => {
       if (!workingDir) return null
 
       setIsOpen(true)
@@ -238,7 +244,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
         ...prev,
         {
           id,
-          folderId: currentFolderId,
+          folderId: folderId ?? currentFolderId,
           title: title ?? defaultTitle,
           workingDir,
           shell: resolveTerminalShell(shell),

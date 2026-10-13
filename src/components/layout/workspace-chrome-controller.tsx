@@ -14,6 +14,8 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useIsActiveChatMode } from "@/hooks/use-is-active-chat-mode"
 import { useSidebarContext } from "@/contexts/sidebar-context"
+import { useWorkspaceRuntimeVisibility } from "@/contexts/workspace-runtime-visibility-context"
+import { UNIFIED_SIDEBAR_TOGGLE_EVENT } from "@/lib/unified-sidebar-events"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
 
@@ -55,6 +57,7 @@ import { WorkspaceFolderDialog } from "@/components/layout/workspace-folder-dial
  * visible bar. Renders no visible chrome — only the dialogs.
  */
 export function WorkspaceChromeController() {
+  const { managed } = useWorkspaceRuntimeVisibility()
   const backendStoreSelection = useBackendStoreSelection()
 
   const ownsEvent = useRuntimeEventScope()
@@ -231,7 +234,9 @@ export function WorkspaceChromeController() {
       }
       if (matchShortcutEvent(e, shortcuts.toggle_sidebar)) {
         e.preventDefault()
-        toggle()
+        if (managed)
+          window.dispatchEvent(new Event(UNIFIED_SIDEBAR_TOGGLE_EVENT))
+        else toggle()
         return
       }
       if (matchShortcutEvent(e, shortcuts.toggle_terminal)) {
@@ -414,6 +419,7 @@ export function WorkspaceChromeController() {
     return () => document.removeEventListener("keydown", handleKeyDown)
   }, [
     ownsEvent,
+    managed,
     activeFolder,
     handleOpenFolder,
     handleOpenSettings,

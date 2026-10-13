@@ -7052,6 +7052,17 @@
     }
   },
   "MultiHost": {
+    "executionLocation": "执行位置",
+    "chooseLocation": "选择机器和工作目录",
+    "locationActions": "工作目录操作",
+    "openFolder": "打开文件夹",
+    "files": "文件",
+    "git": "Git 更改",
+    "terminal": "终端",
+    "folderlessChats": "无文件夹聊天",
+    "recentSessions": "最近会话",
+    "rootLocation": "根目录",
+    "worktreeLocation": "工作树",
     "historyLoading": "正在加载会话",
     "projects": "项目",
     "catalogView": "目录视图",
@@ -7121,7 +7132,7 @@
     "horizontal": "左右分屏",
     "vertical": "上下分屏",
     "chooseSecond": "选择另一台机器",
-    "showMachines": "显示机器",
-    "hideMachines": "隐藏机器"
+    "showMachines": "显示侧边栏",
+    "hideMachines": "隐藏侧边栏"
   }
 }

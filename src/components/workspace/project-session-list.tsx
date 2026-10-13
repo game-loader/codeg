@@ -1,6 +1,12 @@
 "use client"
 
-import { useState } from "react"
+import { useState, type ReactNode } from "react"
+import {
+  ownedSession,
+  DEFAULT_HISTORY_OPTIONS,
+  type HistoryOptions,
+  type OwnedProjectSession,
+} from "@/lib/backend/project-history"
 import { useTranslations } from "next-intl"
 import {
   ChevronDown,
@@ -23,12 +29,19 @@ export interface CatalogRowActions {
   onNewSession?(key: BackendKey, folder: FolderDetail, generation: number): void
   onOpenConversation?(
     key: BackendKey,
-    folder: FolderDetail,
+    folder: FolderDetail | null,
     conversation: DbConversationSummary,
     generation: number
   ): void
   onWorktrees(key: BackendKey, folder: FolderDetail, generation: number): void
   onRetry?(key: BackendKey, generation: number): void
+  renderSession?(session: OwnedProjectSession): ReactNode
+  onLocationTool?(
+    key: BackendKey,
+    folder: FolderDetail,
+    generation: number,
+    tool: "files" | "git" | "terminal"
+  ): void
 }
 
 interface SetupRowsProps extends CatalogRowActions {
@@ -37,6 +50,7 @@ interface SetupRowsProps extends CatalogRowActions {
   conversations?: readonly DbConversationSummary[]
   historyLoading?: boolean
   historyError?: string | null
+  options?: HistoryOptions
 }
 
 function FolderHistory({
@@ -46,6 +60,7 @@ function FolderHistory({
   conversations = [],
   historyLoading,
   historyError,
+  options = DEFAULT_HISTORY_OPTIONS,
   ...actions
 }: SetupRowsProps & { folder: FolderDetail }) {
   const t = useTranslations("MultiHost")
@@ -57,13 +72,21 @@ function FolderHistory({
   const sessions = conversations
     .filter(
       (c) =>
-        c.folder_id === folder.id && c.kind !== "chat" && c.parent_id == null
+        (c.folder_id === folder.id ||
+          (!options.showWorktrees &&
+            folder === setup.folder &&
+            setup.children.some((f) => f.id === c.folder_id))) &&
+        c.kind !== "chat" &&
+        c.parent_id == null &&
+        (options.showCompleted || !!c.pinned_at || c.status !== "completed")
     )
     .sort((a, b) => {
       if (a.pinned_at && b.pinned_at) return compareByPinnedAtDesc(a, b)
       if (a.pinned_at) return -1
       if (b.pinned_at) return 1
-      return compareByUpdatedAtDesc(a, b)
+      return options.sortMode === "updated"
+        ? compareByUpdatedAtDesc(a, b)
+        : b.created_at.localeCompare(a.created_at)
     })
   const label = worktree
     ? (folder.git_branch ?? folder.alias ?? folder.name)
@@ -172,31 +195,47 @@ function FolderHistory({
           {!historyLoading && !historyError && sessions.length === 0 && (
             <p className="text-xs text-muted-foreground">{t("noSessions")}</p>
           )}
-          {sessions.slice(0, limit).map((session) => (
-            <button
-              key={`${session.folder_id}:${session.agent_type}:${session.id}`}
-              type="button"
-              className="flex w-full items-center gap-1 rounded px-1 py-1.5 text-left text-xs hover:bg-sidebar-accent"
-              onClick={() =>
-                actions.onOpenConversation?.(
-                  setup.backendKey,
-                  folder,
-                  session,
-                  setup.generation
-                )
-              }
-            >
-              {session.pinned_at && (
-                <Pin aria-label={t("pinned")} className="size-3 shrink-0" />
-              )}
-              <span className="truncate">
-                {session.title || t("untitledSession")}
-              </span>
-              <span className="ml-auto shrink-0 text-muted-foreground">
-                {session.agent_type}
-              </span>
-            </button>
-          ))}
+          {sessions.slice(0, limit).map((session) =>
+            actions.renderSession ? (
+              <div key={`${session.agent_type}:${session.id}`}>
+                {actions.renderSession(
+                  ownedSession(
+                    setup.backendKey,
+                    setup.generation,
+                    [setup.folder, ...setup.children].find(
+                      (f) => f.id === session.folder_id
+                    ) ?? folder,
+                    setup.folder,
+                    session
+                  )
+                )}
+              </div>
+            ) : (
+              <button
+                key={`${session.folder_id}:${session.agent_type}:${session.id}`}
+                type="button"
+                className="flex w-full items-center gap-1 rounded px-1 py-1.5 text-left text-xs hover:bg-sidebar-accent"
+                onClick={() =>
+                  actions.onOpenConversation?.(
+                    setup.backendKey,
+                    folder,
+                    session,
+                    setup.generation
+                  )
+                }
+              >
+                {session.pinned_at && (
+                  <Pin aria-label={t("pinned")} className="size-3 shrink-0" />
+                )}
+                <span className="truncate">
+                  {session.title || t("untitledSession")}
+                </span>
+                <span className="ml-auto shrink-0 text-muted-foreground">
+                  {session.agent_type}
+                </span>
+              </button>
+            )
+          )}
           {sessions.length > limit && (
             <Button
               size="sm"
@@ -224,13 +263,15 @@ export function ProjectSetupRows(props: SetupRowsProps) {
         {...props}
         folder={props.setup.folder}
       />
-      {props.setup.children.map((child) => (
-        <FolderHistory
-          key={`${child.id}:${child.path}`}
-          {...props}
-          folder={child}
-        />
-      ))}
+      {(props.options?.showWorktrees === false ? [] : props.setup.children).map(
+        (child) => (
+          <FolderHistory
+            key={`${child.id}:${child.path}`}
+            {...props}
+            folder={child}
+          />
+        )
+      )}
     </div>
   )
 }

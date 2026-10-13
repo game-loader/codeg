@@ -1,3 +1,4 @@
+import userEvent from "@testing-library/user-event"
 import { useEffect, useMemo, useState } from "react"
 import {
   act,
@@ -99,6 +100,46 @@ vi.mock("@/contexts/acp-connections-context", () => ({
 vi.mock("@/contexts/task-context", () => ({
   useTaskContext: () => ({ addTask: vi.fn(), updateTask: vi.fn() }),
 }))
+
+function projectFor(aside: HTMLElement, key: BackendKey) {
+  return [
+    ...aside.querySelectorAll<HTMLElement>("section[data-project-key]"),
+  ].find((project) =>
+    [...project.querySelectorAll<HTMLOptionElement>("option")].some((option) =>
+      option.value.includes(key)
+    )
+  )!
+}
+function chooseLocation(project: HTMLElement, key: BackendKey, path: string) {
+  const select = within(project).getByRole("combobox", {
+    name: messages.MultiHost.executionLocation,
+  })
+  const option = [...select.querySelectorAll("option")].find(
+    (option) => option.value.includes(key) && option.value.includes(path)
+  )!
+  fireEvent.change(select, { target: { value: option.value } })
+}
+async function locationAction(
+  project: HTMLElement,
+  key: BackendKey,
+  path: string,
+  action: string
+) {
+  chooseLocation(project, key, path)
+  await userEvent.click(
+    within(project).getByRole("button", {
+      name: messages.MultiHost.locationActions,
+    })
+  )
+  await userEvent.click(screen.getByRole("menuitem", { name: action }))
+}
+async function openLocation(
+  project: HTMLElement,
+  key: BackendKey,
+  path: string
+) {
+  await locationAction(project, key, path, messages.MultiHost.openFolder)
+}
 
 function connection(id: number): RemoteWorkspaceConnection {
   return {
@@ -344,25 +385,36 @@ it.each(["Projects", "Machines"])(
     const aside = document.querySelector("aside")! as HTMLElement
     await waitFor(() => expect(mocks.runtimes.has("remote:2")).toBe(true))
     if (mode === "Machines")
-      fireEvent.click(within(aside).getByRole("button", { name: "Machines" }))
+      fireEvent.click(
+        within(aside).getByRole("button", { name: "Machines", pressed: false })
+      )
     const runtime = mocks.runtimes.get("remote:1")!
     const draft = vi.spyOn(
       runtime.stores.tabs.getState(),
       "openNewConversationTab"
     )
-    const rows = aside.querySelector(
-      '[data-backend-key="remote:1"][data-runtime-generation]'
-    )! as HTMLElement
-    fireEvent.click(within(rows).getByTitle("/same/repo"))
+    const rows =
+      mode === "Machines"
+        ? (aside.querySelector(
+            '[data-backend-key="remote:1"][data-runtime-generation]'
+          )! as HTMLElement)
+        : projectFor(aside, "remote:1")
+    if (mode === "Machines")
+      fireEvent.click(within(rows).getByTitle("/same/repo"))
+    else await openLocation(rows, "remote:1", "/same/repo")
     expect(runtime.stores.workspace.getState().activeFolderId).toBe(1)
-    expect(
-      within(rows).getByText(messages.MultiHost.rootSessions)
-    ).toBeInTheDocument()
-    fireEvent.click(within(rows).getByTitle("/same/worktree"))
+    if (mode === "Machines")
+      expect(
+        within(rows).getByText(messages.MultiHost.rootSessions)
+      ).toBeInTheDocument()
+    if (mode === "Machines")
+      fireEvent.click(within(rows).getByTitle("/same/worktree"))
+    else await openLocation(rows, "remote:1", "/same/worktree")
     expect(runtime.stores.workspace.getState().activeFolderId).toBe(2)
-    expect(
-      within(rows).getByText(messages.MultiHost.worktreeSessions)
-    ).toBeInTheDocument()
+    if (mode === "Machines")
+      expect(
+        within(rows).getByText(messages.MultiHost.worktreeSessions)
+      ).toBeInTheDocument()
     expect(runtime.stores.tabs.getState().tabs).toHaveLength(0)
     expect(draft).not.toHaveBeenCalled()
     // The explicit button reaches the same action while the panel stays on
@@ -372,9 +424,10 @@ it.each(["Projects", "Machines"])(
       folderId,
       agentType: "codex",
     }))
+    if (mode === "Projects") chooseLocation(rows, "remote:1", "/same/repo")
     fireEvent.click(
       within(rows).getAllByRole("button", {
-        name: "New Session · Machine A",
+        name: mode === "Projects" ? "New Session" : "New Session · Machine A",
       })[0]
     )
     expect(draft).toHaveBeenCalledTimes(1)
@@ -566,12 +619,11 @@ describe("single-window machine integration", () => {
         screen.getByRole("tab", { name: "file.ts Machine B" })
       ).toHaveAttribute("aria-selected", "true")
     )
-    const b = screen
-      .getByTestId("probe-remote:2")
-      .closest("[data-runtime-generation]")! as HTMLElement
-    fireEvent.change(within(b).getByLabelText("Workspaces"), {
-      target: { value: "tasks" },
-    })
+    fireEvent.click(
+      within(document.querySelector("aside")!).getByRole("button", {
+        name: messages.Folder.sidebar.tasks,
+      })
+    )
     expect(screen.getByTestId("probe-remote:2")).toHaveTextContent("tasks")
     expect(screen.getByTestId("probe-remote:1")).toHaveTextContent(
       "conversations"
@@ -626,27 +678,42 @@ it.each(["Projects", "Machines"])(
     await mount()
     const aside = document.querySelector("aside")! as HTMLElement
     if (mode === "Machines")
-      fireEvent.click(within(aside).getByRole("button", { name: "Machines" }))
+      fireEvent.click(
+        within(aside).getByRole("button", { name: "Machines", pressed: false })
+      )
     const a = mocks.runtimes.get("remote:1")!,
       b = mocks.runtimes.get("remote:2")!
     const openA = vi.spyOn(a.stores.tabs.getState(), "openTab")
     const openB = vi.spyOn(b.stores.tabs.getState(), "openTab")
     const draftA = vi.spyOn(a.stores.tabs.getState(), "openNewConversationTab")
-    const aRows = aside.querySelector(
-      '[data-backend-key="remote:1"][data-runtime-generation]'
-    )! as HTMLElement
-    const bRows = aside.querySelector(
-      '[data-backend-key="remote:2"][data-runtime-generation]'
-    )! as HTMLElement
-    fireEvent.click(within(aRows).getByTitle("/same/repo"))
+    const aRows =
+      mode === "Machines"
+        ? (aside.querySelector(
+            '[data-backend-key="remote:1"][data-runtime-generation]'
+          )! as HTMLElement)
+        : projectFor(aside, "remote:1")
+    const bRows =
+      mode === "Machines"
+        ? (aside.querySelector(
+            '[data-backend-key="remote:2"][data-runtime-generation]'
+          )! as HTMLElement)
+        : projectFor(aside, "remote:2")
+    if (mode === "Machines")
+      fireEvent.click(within(aRows).getByTitle("/same/repo"))
+    else await openLocation(aRows, "remote:1", "/same/repo")
     expect(a.stores.workspace.getState().activeFolderId).toBe(1)
     expect(a.stores.tabs.getState().tabs).toHaveLength(0)
-    fireEvent.click(within(bRows).getByTitle("/same/repo"))
+    if (mode === "Machines")
+      fireEvent.click(within(bRows).getByTitle("/same/repo"))
+    else await openLocation(bRows, "remote:2", "/same/repo")
     expect(screen.getByTestId("probe-remote:2")).toHaveAttribute(
       "data-focused",
       "true"
     )
-    expect(within(aRows).queryByText("Existing worktree")).toBeNull()
+    if (mode === "Machines")
+      expect(within(aRows).queryByText("Existing worktree")).toBeNull()
+    else
+      expect(within(aRows).getByText("Existing worktree")).toBeInTheDocument()
     fireEvent.click(within(aRows).getByText("Existing root"))
     expect(openA).toHaveBeenCalledWith(1, 1, "codex", false, "Existing root")
     expect(openB).not.toHaveBeenCalled()
@@ -655,8 +722,12 @@ it.each(["Projects", "Machines"])(
       "data-focused",
       "true"
     )
-    fireEvent.click(within(aRows).getByTitle("/same/worktree"))
-    fireEvent.click(within(bRows).getByTitle("/same/repo"))
+    if (mode === "Machines")
+      fireEvent.click(within(aRows).getByTitle("/same/worktree"))
+    else await openLocation(aRows, "remote:1", "/same/worktree")
+    if (mode === "Machines")
+      fireEvent.click(within(bRows).getByTitle("/same/repo"))
+    else await openLocation(bRows, "remote:2", "/same/repo")
     fireEvent.click(within(aRows).getByText("Existing worktree"))
     expect(openA).toHaveBeenLastCalledWith(
       2,
@@ -666,41 +737,50 @@ it.each(["Projects", "Machines"])(
       "Existing worktree"
     )
     expect(openB).not.toHaveBeenCalled()
+    if (mode === "Projects") chooseLocation(aRows, "remote:1", "/same/repo")
     fireEvent.click(
-      within(aRows).getByRole("button", { name: "New Session · Machine A" })
+      within(aRows).getByRole("button", {
+        name: mode === "Projects" ? "New Session" : "New Session · Machine A",
+      })
     )
     expect(draftA).toHaveBeenCalledWith(1, "/same/repo")
     const draft = a.stores.tabs
       .getState()
       .tabs.find((tab) => tab.conversationId === null)!
-    fireEvent.click(within(bRows).getByTitle("/same/repo"))
-    fireEvent.click(
-      within(aRows).getByRole("button", {
-        name: "Manage worktrees · Machine A",
-      })
-    )
+    if (mode === "Machines")
+      fireEvent.click(within(bRows).getByTitle("/same/repo"))
+    else await openLocation(bRows, "remote:2", "/same/repo")
+    if (mode === "Machines")
+      fireEvent.click(
+        within(aRows).getByRole("button", {
+          name: "Manage worktrees · Machine A",
+        })
+      )
+    else
+      await locationAction(aRows, "remote:1", "/same/repo", "Manage worktrees")
     expect(mocks.worktreeDialog).toHaveBeenLastCalledWith(
       expect.objectContaining({
         client: a.client,
         repository: expect.objectContaining({ id: 1, path: "/same/repo" }),
       })
     )
-    fireEvent.click(within(aRows).getByTitle("/same/repo"))
-    const advanced = vi.spyOn(a.getSnapshot()!, "toggleSidebar")
+    if (mode === "Machines")
+      fireEvent.click(within(aRows).getByTitle("/same/repo"))
+    else await openLocation(aRows, "remote:1", "/same/repo")
     const runtimeNode = screen
       .getByTestId("probe-remote:1")
       .closest("[data-runtime-generation]")! as HTMLElement
-    fireEvent.click(
-      within(runtimeNode).getByRole("button", {
+    expect(
+      within(runtimeNode).queryByRole("button", {
         name: messages.Folder.sidebar.title,
       })
-    )
-    expect(advanced).toHaveBeenCalledOnce()
+    ).toBeNull()
     const aNode = screen.getByTestId("probe-remote:1"),
       bNode = screen.getByTestId("probe-remote:2")
     fireEvent.click(
       within(aside).getByRole("button", {
         name: mode === "Projects" ? "Machines" : "Projects",
+        pressed: false,
       })
     )
     expect(screen.getByTestId("probe-remote:1")).toBe(aNode)
@@ -715,12 +795,8 @@ it.each(["Projects", "Machines"])(
 it("rejects captured worktree-dialog completion after replacing its runtime", async () => {
   await mount()
   const aside = document.querySelector("aside")! as HTMLElement
-  const aRows = aside.querySelector(
-    '[data-backend-key="remote:1"][data-runtime-generation]'
-  )! as HTMLElement
-  fireEvent.click(
-    within(aRows).getByRole("button", { name: "Manage worktrees · Machine A" })
-  )
+  const aRows = projectFor(aside, "remote:1")
+  await locationAction(aRows, "remote:1", "/same/repo", "Manage worktrees")
   const oldCallback = mocks.worktreeDialog.mock.calls[
     mocks.worktreeDialog.mock.calls.length - 1
   ][0] as {
@@ -797,15 +873,8 @@ it("publishes delayed metadata and conversation-only/loading/error updates witho
     'section[data-project-key="github:o/r"]'
   )! as HTMLElement
   expect(project).not.toBeNull()
-  expect(project.querySelectorAll("[data-runtime-generation]")).toHaveLength(2)
-  const rowsA = project.querySelector(
-    '[data-backend-key="remote:1"]'
-  )! as HTMLElement
-  const rowsB = project.querySelector(
-    '[data-backend-key="remote:2"]'
-  )! as HTMLElement
-  fireEvent.click(within(rowsA).getByTitle("/same/repo"))
-  fireEvent.click(within(rowsB).getByTitle("/same/repo"))
+  expect(project.querySelectorAll("[data-session-key]")).toHaveLength(4)
+  expect(within(project).queryByRole("button", { name: /History/ })).toBeNull()
   const identityProbes = mocks.remotes.get(1)!.call.mock.calls.length
   act(() =>
     a.stores.workspace.setState({
@@ -816,20 +885,24 @@ it("publishes delayed metadata and conversation-only/loading/error updates witho
         ),
     })
   )
-  expect(within(rowsA).getByText("Updated history")).toBeInTheDocument()
-  expect(within(rowsB).queryByText("Updated history")).toBeNull()
+  expect(within(project).getByText("Updated history")).toBeInTheDocument()
+  expect(
+    project.querySelectorAll('[data-session-owner="remote:2"]')[0]
+  ).not.toHaveTextContent("Updated history")
   act(() =>
     a.stores.workspace.setState({
       conversationsLoading: true,
       conversationsError: "Host A history failed",
     })
   )
-  expect(within(rowsA).getByRole("status")).toHaveTextContent(
-    messages.MultiHost.historyLoading
-  )
-  expect(within(rowsA).getByRole("alert")).toHaveTextContent(
+  expect(
+    within(
+      project.querySelector('[data-history-owner="remote:1"]')! as HTMLElement
+    ).getByRole("status")
+  ).toHaveTextContent(messages.MultiHost.historyLoading)
+  expect(within(project).getByRole("alert")).toHaveTextContent(
     "Host A history failed"
   )
-  expect(within(rowsB).queryByRole("alert")).toBeNull()
+  expect(within(project).getAllByRole("alert")).toHaveLength(1)
   expect(mocks.remotes.get(1)!.call.mock.calls.length).toBe(identityProbes)
 })
