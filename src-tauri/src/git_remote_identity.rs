@@ -14,14 +14,21 @@ pub(crate) fn normalize_remote(remote: &str, name: &str) -> Option<RepositoryPro
     } else {
         let (authority, path) = remote.split_once(':')?;
         // scp syntax must identify a network host, never a drive or local path.
-        if authority.contains('/') || authority.len() == 1 || path.starts_with('/') {
+        if authority.contains('/') || authority.len() == 1 {
             return None;
         }
+        let path = path.strip_prefix('/').unwrap_or(path);
         format!("ssh://{authority}/{path}")
     };
     // Validate before URL parsing: WHATWG parsing erases dot segments.
-    let raw_path = url_text.split_once("://")?.1.split_once('/')?.1;
-    let raw_path = raw_path.split(['?', '#']).next()?;
+    // Query/fragment slashes cannot supply a missing repository path.
+    let raw_path = url_text
+        .split(['?', '#'])
+        .next()?
+        .split_once("://")?
+        .1
+        .split_once('/')?
+        .1;
     let repository_path = raw_path
         .trim_end_matches('/')
         .strip_suffix(".git")
@@ -239,6 +246,101 @@ mod tests {
             "git@",
         ] {
             assert!(!wire.contains(secret));
+        }
+    }
+
+    #[test]
+    fn pathless_query_and_fragment_are_not_repository_paths() {
+        for scheme in ["http", "https", "ssh"] {
+            for host in ["git.example.com", "github.com"] {
+                for suffix in [
+                    "?access_token=/QUERY_SECRET/Repo.git",
+                    "#access_token=/FRAGMENT_SECRET/Repo.git",
+                    "?access_token=QUERY_SECRET#access_token=/FRAGMENT_SECRET/Repo.git",
+                ] {
+                    let remote =
+                        format!("{scheme}://USERNAME_SECRET:PASSWORD_SECRET@{host}{suffix}");
+                    assert!(normalize(&remote).is_none(), "accepted a pathless remote");
+                }
+            }
+        }
+        let identity = normalize(
+            "https://USERNAME_SECRET:PASSWORD_SECRET@git.example.com/Team/Repo.git?access_token=/QUERY_SECRET/Other.git#access_token=/FRAGMENT_SECRET/Other.git",
+        )
+        .unwrap();
+        assert_eq!(
+            identity,
+            normalize("https://git.example.com/Team/Repo.git").unwrap()
+        );
+        let wire = serde_json::to_string(&identity).unwrap();
+        for secret in [
+            "USERNAME_SECRET",
+            "PASSWORD_SECRET",
+            "QUERY_SECRET",
+            "FRAGMENT_SECRET",
+            "access_token",
+        ] {
+            assert!(!wire.contains(secret));
+        }
+    }
+
+    #[test]
+    fn pathless_upstream_query_and_fragment_fall_back_to_origin() {
+        for suffix in [
+            "?access_token=/QUERY_SECRET/Repo.git",
+            "#access_token=/FRAGMENT_SECRET/Repo.git",
+        ] {
+            let output = format!(
+                "upstream\thttps://USERNAME_SECRET:PASSWORD_SECRET@git.example.com{suffix} (fetch)\norigin\thttps://git.example.com/Team/Repo.git (fetch)\n"
+            );
+            let identity = select_identity(&output).unwrap();
+            assert_eq!(
+                identity,
+                normalize("https://git.example.com/Team/Repo.git").unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn absolute_scp_network_paths_match_ssh_urls_and_upstream_wins() {
+        let scp = "git@git.example.com:/srv/git/Team/Repo.git";
+        let identity = normalize(scp).unwrap();
+        assert_eq!(
+            identity.project_key,
+            "git:git.example.com/srv/git/Team/Repo"
+        );
+        assert_eq!(
+            identity,
+            normalize("ssh://git@git.example.com/srv/git/Team/Repo.git").unwrap()
+        );
+        assert_eq!(
+            normalize("git@github.com:/Team/Repo.git"),
+            normalize("ssh://git@github.com/Team/Repo.git")
+        );
+        let output = format!(
+            "origin\thttps://git.example.com/Fork/Repo.git (fetch)\nupstream\t{scp} (fetch)\n"
+        );
+        let selected = select_identity(&output).unwrap();
+        assert_eq!(selected.remote_name, "upstream");
+        assert_eq!(selected.project_key, identity.project_key);
+    }
+
+    #[test]
+    fn absolute_scp_paths_preserve_local_alias_and_dot_segment_exclusions() {
+        for remote in [
+            "/srv/git/Team/Repo.git",
+            "file:///srv/git/Team/Repo.git",
+            "C:/srv/git/Team/Repo.git",
+            "C:\\srv\\git\\Team\\Repo.git",
+            "git@github-work:/srv/git/Team/Repo.git",
+            "github-work:/srv/git/Team/Repo.git",
+            "git@git.example.com:/srv/../Team/Repo.git",
+            "git@git.example.com:/srv/./Team/Repo.git",
+            "git@git.example.com://srv/git/Team/Repo.git",
+            "ssh://git@git.example.com/srv/../Team/Repo.git?token=/QUERY_SECRET",
+            "https://git.example.com/Team/./Repo.git#token=/FRAGMENT_SECRET",
+        ] {
+            assert!(normalize(remote).is_none(), "accepted an invalid remote");
         }
     }
 
