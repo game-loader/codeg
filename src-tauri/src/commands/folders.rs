@@ -3967,15 +3967,7 @@ pub async fn git_list_remotes(path: String) -> Result<Vec<GitRemote>, AppCommand
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut seen = HashSet::new();
     let mut remotes = Vec::new();
-    for line in stdout.lines() {
-        // Format: "name\turl (fetch|push)"
-        if !line.ends_with("(fetch)") {
-            continue;
-        }
-        let Some((name, rest)) = line.split_once('\t') else {
-            continue;
-        };
-        let url = rest.trim_end_matches("(fetch)").trim();
+    for (name, url) in crate::git_remote_identity::fetch_remotes(&stdout) {
         if seen.insert(name.to_string()) {
             remotes.push(GitRemote {
                 name: name.to_string(),

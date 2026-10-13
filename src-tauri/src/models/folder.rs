@@ -4,6 +4,38 @@ use serde::{Deserialize, Serialize};
 use super::agent::AgentType;
 use crate::db::entities::folder::FolderKind;
 
+/// Safe source metadata, independent of every execution/resource binding.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RepositoryProjectIdentity {
+    pub project_key: String,
+    pub provider: RepositoryProjectProvider,
+    pub host: String,
+    pub repository_path: String,
+    pub remote_name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepositoryProjectProvider {
+    Github,
+    Git,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepositoryProjectIdentityStatus {
+    Resolved,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct RepositoryProjectIdentityEntry {
+    pub folder_id: i32,
+    pub path: Option<String>,
+    pub status: RepositoryProjectIdentityStatus,
+    pub identity: Option<RepositoryProjectIdentity>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FolderHistoryEntry {
     pub id: i32,

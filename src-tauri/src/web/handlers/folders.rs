@@ -14,6 +14,25 @@ pub struct FolderIdParams {
     pub folder_id: i32,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryProjectIdentityParams {
+    pub folder_ids: Vec<i32>,
+}
+
+pub async fn list_repository_project_identities(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<RepositoryProjectIdentityParams>,
+) -> Result<Json<Vec<RepositoryProjectIdentityEntry>>, AppCommandError> {
+    Ok(Json(
+        crate::commands::project_catalog::list_repository_project_identities_core(
+            &state.db,
+            params.folder_ids,
+        )
+        .await?,
+    ))
+}
+
 pub async fn load_folder_history(
     Extension(state): Extension<Arc<AppState>>,
 ) -> Result<Json<Vec<FolderHistoryEntry>>, AppCommandError> {

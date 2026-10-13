@@ -319,6 +319,10 @@ pub fn build_router(
         )
         // ─── Folders ───
         .route(
+            "/list_repository_project_identities",
+            post(handlers::folders::list_repository_project_identities),
+        )
+        .route(
             "/load_folder_history",
             post(handlers::folders::load_folder_history),
         )
