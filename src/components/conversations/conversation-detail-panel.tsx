@@ -1,6 +1,7 @@
 "use client"
 
 import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useWorkspaceRuntimeVisibility } from "@/contexts/workspace-runtime-visibility-context"
 import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
 import { useConversationRuntimeActions as standaloneUseConversationRuntimeActions } from "@/stores/conversation-runtime-store"
 import { reparentedViewRuntimeConversationId as standaloneReparentedViewRuntimeConversationId } from "@/stores/tab-store"
@@ -2699,6 +2700,7 @@ function SplitStripCornerReserve({ side }: { side: "left" | "right" }) {
 
 export function ConversationDetailPanel() {
   const backendStoreSelection = useBackendStoreSelection()
+  const { managed } = useWorkspaceRuntimeVisibility()
 
   const { getAgentLabel } = useAgentDisplay()
   const backendStores = useBackendStores({
@@ -2993,9 +2995,10 @@ export function ConversationDetailPanel() {
     }
   }, [getExportData, t, addTask, updateTask])
 
-  // Ensure no-tab state is immediately bridged to a real new-conversation tab.
+  // Managed catalog selection only activates context; New Session creates the
+  // draft. TabProvider still owns initial recovery in both workspace modes.
   useEffect(() => {
-    if (!folder) return
+    if (managed || !folder) return
 
     if (hasNoTabs) {
       openNewConversationTab(
@@ -3003,7 +3006,13 @@ export function ConversationDetailPanel() {
         newConversation?.workingDir ?? folder.path
       )
     }
-  }, [folder, hasNoTabs, newConversation?.workingDir, openNewConversationTab])
+  }, [
+    managed,
+    folder,
+    hasNoTabs,
+    newConversation?.workingDir,
+    openNewConversationTab,
+  ])
 
   // Split-group render model: the layout tree only ever produces PERCENTAGE
   // RECTS — every group shell is an absolutely-positioned SIBLING keyed by its

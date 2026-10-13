@@ -278,13 +278,19 @@ function validIdentity(
       value.provider,
       value.host,
       value.repository_path,
-      value.remote_name,
     ].every(
       (v) =>
         typeof v === "string" &&
         v.length > 0 &&
         v.length <= 8192 &&
         !/[\s@?#\\]|:\/\//.test(v)
-    ) && /^(github|git):/.test(value.project_key)
+    ) &&
+    /^(github|git):/.test(value.project_key) &&
+    // The upstream fetch-row contract treats the remote name as metadata,
+    // allowing punctuation such as @. Keep controls and raw URLs out of cache.
+    typeof value.remote_name === "string" &&
+    value.remote_name.length > 0 &&
+    value.remote_name.length <= 8192 &&
+    !/[\u0000-\u001f\u007f-\u009f]|:\/\//.test(value.remote_name)
   )
 }

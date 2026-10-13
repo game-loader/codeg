@@ -1,4 +1,3 @@
-import { isProjectIdentityUnsupported } from "./project-catalog"
 import type {
   AttachHandlers,
   AttachOptions,
@@ -49,10 +48,13 @@ export class FencedTransport implements Transport {
     options?: CallOptions
   ): Promise<T> {
     this.assertCurrent()
+    // Metadata has its own refresh sequence and availability state. Its results
+    // must not change resource connectivity before the store accepts them.
+    const metadata = command === "list_repository_project_identities"
     try {
       const result = await this.inner.call<T>(command, args, options)
       this.assertCurrent()
-      this.lifetime.setStatus("connected")
+      if (!metadata) this.lifetime.setStatus("connected")
       return result
     } catch (error) {
       this.assertCurrent()
@@ -64,10 +66,7 @@ export class FencedTransport implements Transport {
         this.lifetime.setStatus("unauthorized")
       } else if (
         (code === "network_error" || code === "network") &&
-        !(
-          command === "list_repository_project_identities" &&
-          isProjectIdentityUnsupported(error)
-        )
+        !metadata
       ) {
         this.lifetime.setStatus("offline")
       }

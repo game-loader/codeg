@@ -6,6 +6,8 @@ import {
 } from "./project-catalog"
 import type { FolderDetail, RepositoryProjectIdentityEntry } from "@/lib/types"
 import type { BackendDescriptor } from "./registry"
+import { FencedTransport } from "./fenced-transport"
+import { createBackendClient } from "./client"
 
 const folder = (
   id = 1,
@@ -121,6 +123,90 @@ describe("logical project projection", () => {
 })
 
 describe("runtime identity store", () => {
+  it("keeps connected status and the latest snapshot when an older fenced metadata refresh times out", async () => {
+    const first = deferred<RepositoryProjectIdentityEntry[]>()
+    const second = deferred<RepositoryProjectIdentityEntry[]>()
+    const inner = {
+      call: vi.fn().mockResolvedValue([]),
+      subscribe: vi.fn().mockResolvedValue(() => {}),
+      isDesktop: () => true,
+    }
+    let status = "connecting"
+    const fenced = new FencedTransport(inner, {
+      generation: 1,
+      isCurrent: () => true,
+      setStatus: (next) => {
+        status = next
+      },
+    })
+    const client = createBackendClient({
+      key: "remote:1",
+      remoteConnectionId: 1,
+      name: "A",
+      transport: fenced,
+    })
+    await client.api.getFolder(1)
+    expect(status).toBe("connected")
+    inner.call
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    const store = new ProjectIdentityStore(
+      client.api.listRepositoryProjectIdentities,
+      () => true
+    )
+    const old = store.setFolders([folder()])
+    const latest = store.refresh()
+    second.resolve([identity()])
+    await latest
+    const accepted = store.getSnapshot()
+    first.reject({ code: "network_error", message: "Remote request timed out" })
+    await old
+    expect(status).toBe("connected")
+    expect(store.getSnapshot()).toBe(accepted)
+    expect(accepted).toMatchObject({ loading: false, unavailable: false })
+    expect(accepted.entries.get(1)?.identity?.project_key).toBe(
+      "github:owner/repo"
+    )
+    fenced.destroy()
+  })
+
+  it("accepts metadata remote names independently and groups the same source across hosts", async () => {
+    const a = identity(1, "/a")
+    a.identity!.remote_name = "team@forge"
+    const b = identity(1, "/b")
+    const stores = [a, b].map(
+      (entry) =>
+        new ProjectIdentityStore(
+          async () => [entry],
+          () => true
+        )
+    )
+    await Promise.all(
+      stores.map((store, i) =>
+        store.setFolders([folder(1, i === 0 ? "/a" : "/b")])
+      )
+    )
+    const hosts = [host("remote:1"), host("remote:2")]
+    const catalogs = new Map(
+      hosts.map((h, i) => [
+        h.key,
+        {
+          folders: [folder(1, i === 0 ? "/a" : "/b")],
+          identities: stores[i].getSnapshot().entries,
+        },
+      ])
+    )
+    expect(stores[0].getSnapshot().unavailable).toBe(false)
+    expect(stores[0].getSnapshot().entries.get(1)?.identity?.remote_name).toBe(
+      "team@forge"
+    )
+    const projects = projectCatalog(hosts, catalogs)
+    expect(projects).toHaveLength(1)
+    expect(projects[0].setups.map((setup) => setup.backendKey)).toEqual([
+      "remote:1",
+      "remote:2",
+    ])
+  })
   it("coalesces loads and keeps latest refresh successes, failures and loading", async () => {
     const first = deferred<RepositoryProjectIdentityEntry[]>(),
       second = deferred<RepositoryProjectIdentityEntry[]>()
@@ -290,5 +376,28 @@ it.each([404, 405, 501])(
     await store.setFolders([folder(), folder(2)])
     expect(store.getSnapshot().capability).toBe("unsupported")
     expect(fetch).toHaveBeenCalledTimes(1)
+  }
+)
+
+it.each([
+  "",
+  "origin\n",
+  "team\u007fforge",
+  "team\u0085forge",
+  "https://token@host/repo.git",
+])(
+  "rejects an invalid or raw-URL metadata remote name %j without replacing accepted metadata",
+  async (remoteName) => {
+    const fetch = vi.fn().mockResolvedValue([identity()])
+    const store = new ProjectIdentityStore(fetch, () => true)
+    await store.setFolders([folder()])
+    const invalid = identity()
+    invalid.identity!.remote_name = remoteName
+    fetch.mockResolvedValue([invalid])
+    await store.refresh()
+    expect(store.getSnapshot().unavailable).toBe(true)
+    expect(store.getSnapshot().entries.get(1)?.identity?.remote_name).toBe(
+      "origin"
+    )
   }
 )

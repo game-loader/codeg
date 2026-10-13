@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { MultiHostWorkspace } from "./multi-host-workspace"
+import { ConversationDetailPanel } from "@/components/conversations/conversation-detail-panel"
 import { useBackendClient } from "@/contexts/backend-client-context"
 import { useBackendStores } from "@/contexts/backend-stores-context"
 import { useWorkspaceRuntimeVisibility } from "@/contexts/workspace-runtime-visibility-context"
@@ -90,6 +91,13 @@ vi.mock("./host-worktree-dialog", () => ({
     mocks.worktreeDialog(props)
     return null
   },
+}))
+vi.mock("@/contexts/acp-connections-context", () => ({
+  useAcpActions: () => ({ disconnectIfIdle: vi.fn() }),
+  useAcpEvent: () => {},
+}))
+vi.mock("@/contexts/task-context", () => ({
+  useTaskContext: () => ({ addTask: vi.fn(), updateTask: vi.fn() }),
 }))
 
 function connection(id: number): RemoteWorkspaceConnection {
@@ -302,6 +310,79 @@ async function mount() {
   await waitFor(() => expect(screen.getAllByRole("tab")).toHaveLength(6))
   return result
 }
+
+function EmptyConversationPanel({ runtime }: { runtime: BackendRuntime }) {
+  useEffect(() => {
+    mocks.runtimes.set(runtime.client.key, runtime)
+    const { tabs, workspace } = runtime.stores
+    tabs.runRecoveryOnce()
+    expect(tabs.getState().tabs[0]).toMatchObject({ isChat: true, folderId: 0 })
+    tabs.getState().closeTab(tabs.getState().tabs[0].id)
+    tabs.runRecoveryOnce()
+    expect(tabs.getState().tabs).toHaveLength(0)
+    const root = folder(runtime.client.name)
+    const child = { ...root, id: 2, parent_id: 1, path: "/same/worktree" }
+    workspace.setState({
+      allFolders: [root, child],
+      folders: [root, child],
+      foldersLoading: false,
+    })
+  }, [runtime])
+  return <ConversationDetailPanel />
+}
+
+it.each(["Projects", "Machines"])(
+  "selects root/worktree context without creating a draft in %s with the real empty panel mounted",
+  async (mode) => {
+    const view = render(
+      <MultiHostWorkspace
+        renderWorkspace={(runtime) => (
+          <EmptyConversationPanel runtime={runtime} />
+        )}
+      />
+    )
+    const aside = document.querySelector("aside")! as HTMLElement
+    await waitFor(() => expect(mocks.runtimes.has("remote:2")).toBe(true))
+    if (mode === "Machines")
+      fireEvent.click(within(aside).getByRole("button", { name: "Machines" }))
+    const runtime = mocks.runtimes.get("remote:1")!
+    const draft = vi.spyOn(
+      runtime.stores.tabs.getState(),
+      "openNewConversationTab"
+    )
+    const rows = aside.querySelector(
+      '[data-backend-key="remote:1"][data-runtime-generation]'
+    )! as HTMLElement
+    fireEvent.click(within(rows).getByTitle("/same/repo"))
+    expect(runtime.stores.workspace.getState().activeFolderId).toBe(1)
+    expect(
+      within(rows).getByText(messages.MultiHost.rootSessions)
+    ).toBeInTheDocument()
+    fireEvent.click(within(rows).getByTitle("/same/worktree"))
+    expect(runtime.stores.workspace.getState().activeFolderId).toBe(2)
+    expect(
+      within(rows).getByText(messages.MultiHost.worktreeSessions)
+    ).toBeInTheDocument()
+    expect(runtime.stores.tabs.getState().tabs).toHaveLength(0)
+    expect(draft).not.toHaveBeenCalled()
+    // The explicit button reaches the same action while the panel stays on
+    // its empty render path; tab/composer rendering is outside this regression.
+    draft.mockImplementation((folderId) => ({
+      tabId: "explicit",
+      folderId,
+      agentType: "codex",
+    }))
+    fireEvent.click(
+      within(rows).getAllByRole("button", {
+        name: "New Session · Machine A",
+      })[0]
+    )
+    expect(draft).toHaveBeenCalledTimes(1)
+    expect(draft).toHaveBeenCalledWith(1, "/same/repo")
+    view.unmount()
+    draft.mockRestore()
+  }
+)
 
 describe("single-window machine integration", () => {
   it("retains all provider trees through machine selection, both splits and collapse", async () => {
