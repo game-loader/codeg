@@ -79,6 +79,12 @@ The core implementation lives in a focused command/service module and is registe
 
 ## Desktop projection and view
 
+### Repository and worktree session history (user clarification)
+
+The user reported that selecting a repository in the new single-window catalog hides its existing sessions. Source verification shows `openFolder` currently creates a new-conversation tab and embedded `SidebarProvider` starts closed. The new catalog must make existing session history reachable directly: selecting a repository/worktree expands its history and activates its owning host/context, without creating a draft. An explicit New Session action creates drafts. Under a repository setup, keep root sessions and worktree sessions in distinct labeled subsections; never flatten different hosts or worktrees into one ambiguous list. Existing completed/pinned sessions remain reachable, with normal child/delegation visibility semantics. Clicking a history row opens its existing conversation through the owning runtime's `openTab`, never a new conversation or another host.
+
+Project aggregation is the outer display layer. Session history remains scoped to a concrete host setup/worktree, including when the logical project spans machines. Preserve per-host loading/error state, explicit retry, and the full existing sidebar for advanced session actions. Switching the catalog view cannot discard or recreate drafts, active conversations or terminal state. Extend tests with intentionally colliding conversation and folder IDs across hosts, root-versus-worktree filtering, completed/pinned visibility, existing-session selection and explicit-only draft creation.
+
 The owning `BackendRuntime` holds its identity loader/cache. Its fenced transport and runtime generation gate every result; a per-refresh sequence also rejects older results within the same generation. Runtime disposal clears the cache and subscriptions.
 
 Load identities after the existing opened-folder catalog is available, including known root ancestors of open worktree children. Newly opened folders trigger a probe. Explicit host refresh also refreshes identities. Do not re-run Git probes merely because conversations or unrelated runtime view state changed.
@@ -94,6 +100,8 @@ Add safe wire DTOs and a bound `CodegClient` method for the batch endpoint. Each
 The folders page uses a pure logical-project projection with setup references carrying server profile UUID, configuration revision, folder ID and path. Add the same Projects / Servers view choice, defaulting to Projects. Existing server management, per-server folder browser/clone entry points and iPad two-server pane controls remain available.
 
 Selecting a setup or its child calls the existing `registry.openProject(folderID, on: owner)` with the original owner. Opening worktree management fixes that owner before presentation. Switching grouping cannot dismiss or replace retained session drafts, project runtimes, terminal emulators or split-pane bindings. Folderless chat remains folderless.
+
+The native folder detail must also expose its existing sessions directly, with a clear root/worktree distinction rather than forcing users to return to the global Chats tab. Existing conversation selection uses the owning workspace model, while New Task remains an explicit action. The existing files/Git/terminal runtime is preserved across this presentation change.
 
 Identity refresh is separate from the frequent ActivityModel conversation pulse. A successful initial/project-catalog refresh and an explicit pull-to-refresh can update identities; ordinary conversation polling must not repeatedly probe Git.
 
