@@ -385,6 +385,9 @@ it.each([
   "team\u007fforge",
   "team\u0085forge",
   "https://token@host/repo.git",
+  "git@github.com:owner/repo.git",
+  "git@git.example.com:/srv/git/Team/Repo.git",
+  "git.example.com:owner/repo.git",
 ])(
   "rejects an invalid or raw-URL metadata remote name %j without replacing accepted metadata",
   async (remoteName) => {

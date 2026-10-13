@@ -300,10 +300,11 @@ function validIdentity(
     ) &&
     /^(github|git):/.test(value.project_key) &&
     // The upstream fetch-row contract treats the remote name as metadata,
-    // allowing punctuation such as @. Keep controls and raw URLs out of cache.
+    // allowing punctuation such as @. Colon is not valid in a Git ref name
+    // and also marks SCP-style raw URLs; reject it alongside controls/schemes.
     typeof value.remote_name === "string" &&
     value.remote_name.length > 0 &&
     value.remote_name.length <= 8192 &&
-    !/[\u0000-\u001f\u007f-\u009f]|:\/\//.test(value.remote_name)
+    !/[\u0000-\u001f\u007f-\u009f:]|:\/\//.test(value.remote_name)
   )
 }
