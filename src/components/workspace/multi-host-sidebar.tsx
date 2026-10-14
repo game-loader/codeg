@@ -265,6 +265,7 @@ export function MultiHostSidebar({
             collapsedProjects: collapse ? projects.map((p) => p.key) : [],
           }))
           setCollapsedSections(collapse ? ["chats", "recent"] : [])
+          if (!collapse) setCollapsedChatHosts([])
           if (preferences.mode === "machines")
             for (const host of hosts)
               if (collapsed.includes(host.key) !== collapse)

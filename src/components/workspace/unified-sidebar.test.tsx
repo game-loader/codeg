@@ -439,6 +439,18 @@ it("keeps existing folderless chats and focused New Chat/search/navigation reach
     })
   )
   expect(within(groupB).getByText("remote:2 chat")).toBeVisible()
+  fireEvent.click(toggleB)
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: messages.Folder.sidebar.collapseAllGroups,
+    })
+  )
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: messages.Folder.sidebar.expandAllGroups,
+    })
+  )
+  expect(within(chats).getByText("remote:2 chat")).toBeVisible()
   fireEvent.click(within(chats).getByText("remote:1 chat"))
   expect(a.stores.tabs.getState().tabs[0]).toMatchObject({
     conversationId: 3,
