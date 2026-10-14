@@ -71,7 +71,6 @@ import {
 import { WorkbenchRouteActionsProvider } from "@/contexts/workbench-route-context"
 import { UnifiedRuntimeNavigation } from "./unified-sidebar-controls"
 import { OwnedSessionCard } from "./owned-session-card"
-import type { OwnedProjectSession } from "@/lib/backend/project-history"
 import { UNIFIED_SIDEBAR_TOGGLE_EVENT } from "@/lib/unified-sidebar-events"
 
 interface HostSummary extends HostFolderCatalog {
