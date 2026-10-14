@@ -207,10 +207,10 @@ export function MultiHostSidebar({
     ],
     historyOptions
   ).slice(0, 10)
-  const renderHistory = (sessions: typeof chats, showLocation = true) =>
+  const renderHistory = (sessions: typeof chats) =>
     sessions.map((session) => (
       <div key={session.key}>
-        {renderSession?.(session, { showLocation }) ?? (
+        {renderSession?.(session) ?? (
           <button
             type="button"
             className="w-full text-left text-xs py-1"
@@ -224,11 +224,6 @@ export function MultiHostSidebar({
             }
           >
             {session.conversation.title || t("untitledSession")}
-            {showLocation && (
-              <span className="block text-muted-foreground">
-                {hosts.find((h) => h.key === session.backendKey)?.name}
-              </span>
-            )}
           </button>
         )}
       </div>
@@ -419,7 +414,7 @@ export function MultiHostSidebar({
                     </button>
                     {expanded && (
                       <div className="ml-3 border-l pl-2">
-                        {renderHistory(sessions, false)}
+                        {renderHistory(sessions)}
                       </div>
                     )}
                   </div>

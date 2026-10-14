@@ -447,7 +447,7 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                   strip whose tail spacer is a window-drag region, and the
                   TOP-edge strips re-create the corner reserves themselves (see
                   SplitStripCornerReserve in conversation-detail-panel). */}
-                {!isConvSplit && (
+                {!managed && !isConvSplit && (
                   <div className="flex h-10 shrink-0 items-stretch bg-muted ws-transparent-bg">
                     <ChromeReserve width={leftCornerWidth} />
                     <div className="flex min-w-0 flex-1 items-stretch">
@@ -568,13 +568,17 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                     hairline bottom border (ws-strip-line) sits under the reserves
                     and inactive tabs, arching over the active tab (the active
                     browser-tab-item's `::after`) — same as the conversation column. */}
-                <div className="flex h-10 shrink-0 items-stretch bg-muted ws-transparent-bg">
-                  {fileHoldsLeft && <ChromeReserve width={leftCornerWidth} />}
-                  <div className="flex min-w-0 flex-1 items-stretch">
-                    <FileWorkspaceTabBar />
+                {!managed && (
+                  <div className="flex h-10 shrink-0 items-stretch bg-muted ws-transparent-bg">
+                    {fileHoldsLeft && <ChromeReserve width={leftCornerWidth} />}
+                    <div className="flex min-w-0 flex-1 items-stretch">
+                      <FileWorkspaceTabBar />
+                    </div>
+                    {fileHoldsRight && (
+                      <ChromeReserve width={rightCornerWidth} />
+                    )}
                   </div>
-                  {fileHoldsRight && <ChromeReserve width={rightCornerWidth} />}
-                </div>
+                )}
                 {/* Pane activation on the file content + its detail header, not
                     the top bar (see the conversation section). */}
                 <div

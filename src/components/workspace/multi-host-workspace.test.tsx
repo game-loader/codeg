@@ -451,9 +451,11 @@ describe("single-window machine integration", () => {
     expect(b).toHaveAttribute("data-visible", "false")
     expect(b.closest("[data-runtime-generation]")).toHaveAttribute("inert")
     fireEvent.click(screen.getByRole("button", { name: "Side by side" }))
-    fireEvent.change(screen.getByLabelText("Second machine"), {
-      target: { value: "remote:2" },
-    })
+    expect(screen.queryByLabelText("Second machine")).toBeNull()
+    fireEvent.pointerDown(screen.getByTestId("probe-local"))
+    fireEvent.click(
+      screen.getByRole("tab", { name: "Same conversation Machine B" })
+    )
     expect(a).toHaveAttribute("data-visible", "true")
     expect(b).toHaveAttribute("data-visible", "true")
     fireEvent.click(screen.getByRole("button", { name: "Top and bottom" }))
@@ -484,9 +486,10 @@ describe("single-window machine integration", () => {
       })[1]
     )
     fireEvent.click(screen.getByRole("button", { name: "Side by side" }))
-    fireEvent.change(screen.getByLabelText("Second machine"), {
-      target: { value: "remote:2" },
-    })
+    fireEvent.pointerDown(screen.getByTestId("probe-local"))
+    fireEvent.click(
+      screen.getByRole("tab", { name: "Same conversation Machine B" })
+    )
     fireEvent.click(screen.getByRole("button", { name: "Send remote:1" }))
     fireEvent.click(screen.getByRole("button", { name: "Send remote:2" }))
     fireEvent.click(screen.getByRole("button", { name: "Approve remote:1" }))

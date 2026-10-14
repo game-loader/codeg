@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
-import { Pin } from "lucide-react"
 import { SidebarConversationCard } from "@/components/conversations/sidebar-conversation-card"
 import { useSubsessionSync } from "@/hooks/use-subsession-sync"
 import {
@@ -20,7 +19,6 @@ export function OwnedSessionCard({
   isCurrent,
   actions,
   depth = 0,
-  showLocation = true,
 }: {
   runtime: BackendRuntime
   session: OwnedProjectSession
@@ -28,7 +26,6 @@ export function OwnedSessionCard({
   isCurrent(session: OwnedProjectSession): boolean
   actions: CatalogRowActions
   depth?: number
-  showLocation?: boolean
 }) {
   const t = useTranslations("MultiHost")
   const [expanded, setExpanded] = useState(false)
@@ -99,6 +96,7 @@ export function OwnedSessionCard({
       data-session-owner={session.backendKey}
       data-runtime-generation={session.generation}
       data-session-selected={tab?.id === activeTabId}
+      title={`${hostName} · ${locationLabel}`}
     >
       <SidebarConversationCard
         conversation={conversation}
@@ -164,19 +162,6 @@ export function OwnedSessionCard({
         expanded={expanded}
         onToggleExpand={toggleExpanded}
       />
-      {showLocation && (
-        <p
-          className="flex items-center gap-1 pl-7 text-[0.625rem] text-muted-foreground"
-          title={`${hostName} · ${locationLabel}`}
-        >
-          {conversation.pinned_at && (
-            <Pin className="size-2.5 shrink-0" aria-label={t("pinned")} />
-          )}
-          <span className="truncate">
-            {hostName} · {locationLabel}
-          </span>
-        </p>
-      )}
       {error && (
         <p role="alert" className="text-xs text-destructive">
           {error}

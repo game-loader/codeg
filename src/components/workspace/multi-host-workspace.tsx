@@ -892,8 +892,7 @@ function WindowWorkspace({
     }
   }
   const renderSession: NonNullable<CatalogRowActions["renderSession"]> = (
-    session,
-    options
+    session
   ) => {
     const runtime = registry.get(session.backendKey)
     if (!runtime || runtime.generation !== session.generation) return null
@@ -910,7 +909,6 @@ function WindowWorkspace({
               runtime={runtime}
               session={session}
               hostName={runtime.client.name}
-              showLocation={options?.showLocation}
               isCurrent={(row) =>
                 resolveCatalogRuntime(
                   registry,
@@ -1069,6 +1067,10 @@ function WindowWorkspace({
         selected={selected}
         onSelect={selectTab}
         onClose={closeTab}
+        onPin={(ref) => registry.get(ref.backendKey)?.getSnapshot()?.pin?.(ref)}
+        onNewConversation={focusedView?.newChat}
+        paneMaximized={focusedView?.paneMaximized}
+        onToggleMaximized={focusedView?.togglePaneMaximized}
       />
       <RecoveryBuffers />
       {connectionError && (
@@ -1198,52 +1200,7 @@ function WindowWorkspace({
                 onFocus={() => setFocused(host.key)}
               >
                 <RuntimeObserver runtime={runtime} onChange={onSummary} />
-                <div
-                  className={cn(
-                    "flex h-8 items-center gap-2 border-b px-2 text-xs",
-                    focused === host.key && "bg-muted"
-                  )}
-                >
-                  <select
-                    aria-label={t(
-                      host.key === layout.secondary ? "secondary" : "primary"
-                    )}
-                    value={host.key}
-                    onChange={(event) => {
-                      const key = event.target.value as BackendKey
-                      setFocused(key)
-                      changeLayout((previous) =>
-                        host.key === previous.secondary
-                          ? {
-                              ...previous,
-                              secondary: key,
-                              primary:
-                                key === previous.primary
-                                  ? host.key
-                                  : previous.primary,
-                            }
-                          : {
-                              ...previous,
-                              primary: key,
-                              secondary:
-                                key === previous.secondary
-                                  ? host.key
-                                  : previous.secondary,
-                            }
-                      )
-                    }}
-                  >
-                    {hosts.map((machine) => (
-                      <option key={machine.key} value={machine.key}>
-                        {machine.name}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="text-muted-foreground">
-                    {t(host.status)}
-                  </span>
-                </div>
-                <div className="relative h-[calc(100%-2rem)] min-h-0">
+                <div className="relative h-full min-h-0">
                   {renderWorkspace(runtime)}
                 </div>
                 {(host.status === "offline" ||

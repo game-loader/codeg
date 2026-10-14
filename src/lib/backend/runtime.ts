@@ -185,6 +185,9 @@ export interface RuntimeView {
   auxOpen: boolean
   select(ref: WindowResourceRef): void
   close(ref: WindowResourceRef): void
+  pin?(ref: WindowResourceRef): void
+  paneMaximized?: boolean
+  togglePaneMaximized?(): void
   restoreFile(ref: Extract<WindowResourceRef, { kind: "file" }>): Promise<void>
   navigate(route: WorkbenchRouteId): void
   search(): void

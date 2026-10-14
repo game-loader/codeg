@@ -356,9 +356,9 @@ describe("ConversationDetailPanel split-group render model", () => {
   // TOP-edge strips re-create the corner reserves (traffic lights / caption
   // buttons / chrome clusters) the unsplit row normally provides.
   it("replaces the unsplit title-bar row with in-strip drag surfaces while split", () => {
-    // Layout: the whole h-10 conversation top bar is gated on !isConvSplit;
+    // Legacy layout: the top bar is hidden in managed windows and while split;
     // the old always-rendered row with a split drag-region branch is gone.
-    expect(workspaceLayoutSource).toContain("{!isConvSplit && (")
+    expect(workspaceLayoutSource).toContain("{!managed && !isConvSplit && (")
     expect(workspaceLayoutSource).not.toContain("hasConvTabs && !isConvSplit")
 
     // Panel: TOP-edge group strips carry the corner reserves themselves.

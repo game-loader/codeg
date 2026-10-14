@@ -101,7 +101,7 @@ describe("corner reserve slide", () => {
     // The conversation column holds the left corner in both modes: its row
     // opens with an unconditional left reserve.
     expect(layout).toMatch(
-      /\{!isConvSplit && \(\s*<div className="flex h-10 [^"]*">\s*<ChromeReserve width=\{leftCornerWidth\} \/>/
+      /\{!managed && !isConvSplit && \(\s*<div className="flex h-10 [^"]*">\s*<ChromeReserve width=\{leftCornerWidth\} \/>/
     )
   })
 

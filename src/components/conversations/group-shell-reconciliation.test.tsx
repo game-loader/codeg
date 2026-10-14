@@ -161,7 +161,7 @@ describe("split group shell source shape", () => {
     const shellStart = source.indexOf("const renderGroupShell = (groupId")
     expect(shellStart).toBeGreaterThan(-1)
     const shellBody = source.slice(shellStart, shellStart + 6000)
-    const stripIdx = shellBody.indexOf("{isSplit && (")
+    const stripIdx = shellBody.indexOf("{isSplit && !managed && (")
     const headerIdx = shellBody.indexOf("{isSplit && selTab && (")
     const contentIdx = shellBody.indexOf(
       '<div className="relative min-h-0 flex-1 overflow-hidden">'

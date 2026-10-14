@@ -101,7 +101,8 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
   const hydrated = stores.tabs((state) => state.tabsHydrated)
   const { fileTabs, activeFileTabId } = useWorkspaceFileTabs()
   const workspace = useWorkspaceActions()
-  const { activePane } = useWorkspaceView()
+  const { activePane, mode, filesMaximized, conversationMaximized } =
+    useWorkspaceView()
   const { openConversations, routeId, setRoute } = useWorkbenchRoute()
   const sidebar = useSidebarContext()
   const aux = useAuxPanelContext()
@@ -171,6 +172,8 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
         title: tab.title,
         machineName: runtime.client.name,
         running: tab.status === "in_progress",
+        status: tab.status as ConversationStatus | undefined,
+        isPinned: tab.isPinned,
       })
     ),
     ...fileTabs.map(
@@ -220,6 +223,20 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
     },
     [key, workspace, stores]
   )
+
+  const pin = useCallback(
+    (ref: WindowResourceRef) => {
+      if (ref.backendKey === key && ref.kind === "conversation")
+        stores.tabs.getState().pinTab(ref.id)
+    },
+    [key, stores]
+  )
+  const togglePaneMaximized =
+    activePane === "files"
+      ? workspace.toggleFilesMaximized
+      : workspace.toggleConversationMaximized
+  const paneMaximized =
+    activePane === "files" ? filesMaximized : conversationMaximized
 
   const restoreFile = useCallback(
     async (ref: Extract<WindowResourceRef, { kind: "file" }>) => {
@@ -325,6 +342,9 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
       auxOpen: aux.isOpen,
       select,
       close,
+      pin,
+      paneMaximized,
+      togglePaneMaximized: mode === "fusion" ? togglePaneMaximized : undefined,
       restoreFile,
       navigate,
       newChat,
@@ -360,6 +380,10 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
       aux.toggle,
       select,
       close,
+      pin,
+      paneMaximized,
+      mode,
+      togglePaneMaximized,
       restoreFile,
       search,
       captureDirtyFiles,

@@ -3258,7 +3258,7 @@ export function ConversationDetailPanel() {
             corner reserves that row normally carries. The top-right one also
             takes over the unsplit strip's maximize/restore button — the
             column has one, so only one strip may carry it. */}
-        {isSplit && (
+        {isSplit && !managed && (
           <div className="flex h-10 shrink-0 items-stretch bg-muted ws-transparent-bg">
             {touchesLeft && <SplitStripCornerReserve side="left" />}
             <TabBar groupId={groupId} maximizeControl={touchesRight} />

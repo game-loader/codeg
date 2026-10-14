@@ -369,8 +369,12 @@ it("shows colliding root/worktree IDs directly in one project, opens their fixed
   expect(a.stores.tabs.getState().tabs).toHaveLength(0)
   expect(draftA).not.toHaveBeenCalled()
   expect(draftB).not.toHaveBeenCalled()
-  expect(row(project, "remote:2", "remote:2 worktree")).toHaveTextContent(
+  expect(row(project, "remote:2", "remote:2 worktree")).toHaveAttribute(
+    "title",
     "Machine 2 · feature · /worktree"
+  )
+  expect(row(project, "remote:2", "remote:2 worktree")).not.toHaveTextContent(
+    "/worktree"
   )
   const select = within(project).getByRole("combobox", {
     name: "Execution location",
@@ -601,7 +605,8 @@ it("renders and opens a delegation child's own worktree and creates a conversati
       .mock.calls.some(([command]) => command === "list_child_conversations")
   ).toBe(false)
   const child = await expandChild(project, 2)
-  expect(child).toHaveTextContent("Machine 1 · feature · /worktree")
+  expect(child).toHaveAttribute("title", "Machine 1 · feature · /worktree")
+  expect(child).not.toHaveTextContent("/worktree")
   expect(JSON.parse(child.dataset.sessionKey!)).toEqual([
     "remote:1",
     a.generation,
@@ -637,7 +642,8 @@ it("resolves a delegation child in another unopened root checkout from the owner
     })
   )
   const child = await expandChild(project, 5)
-  expect(child).toHaveTextContent("Machine 1 · Root · /other-checkout")
+  expect(child).toHaveAttribute("title", "Machine 1 · Root · /other-checkout")
+  expect(child).not.toHaveTextContent("/other-checkout")
   fireEvent.click(within(child).getByText("remote:1 child"))
   expect(a.stores.workspace.getState().activeFolderId).toBe(5)
   expect(a.stores.tabs.getState().tabs[0]).toMatchObject({
