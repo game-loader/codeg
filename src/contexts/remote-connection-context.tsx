@@ -9,19 +9,29 @@ import {
   useState,
   type ReactNode,
 } from "react"
-import { Loader2 } from "lucide-react"
+import { Loader2, Monitor } from "lucide-react"
 import { useSearchParams } from "next/navigation"
 import { useTranslations } from "next-intl"
+import { Button } from "@/components/ui/button"
 import {
   clearRemoteDesktopTransport,
   configureRemoteDesktopTransport,
   getTransport,
   invalidateRemoteDesktopTransport,
 } from "@/lib/transport"
-import { REMOTE_CONFIGURATION_CHANGED_MESSAGE } from "@/lib/transport/remote-errors"
+import {
+  isRemoteConfigurationChanged,
+  REMOTE_CONFIGURATION_CHANGED_MESSAGE,
+} from "@/lib/transport/remote-errors"
+import type { RemoteDesktopTransport } from "@/lib/transport/remote-desktop-transport"
+import { RemoteConnectionStatus } from "@/components/connection/remote-connection-status"
 import { resetBackendScopedStores } from "@/stores/backend-scoped-store-reset"
-import { getRemoteWorkspaceConnection } from "@/lib/remote-workspace"
+import {
+  getRemoteWorkspaceConnection,
+  openLocalWorkspace,
+} from "@/lib/remote-workspace"
 import { toErrorMessage } from "@/lib/app-error"
+import { isDesktop } from "@/lib/platform"
 import type { RemoteWorkspaceConnection } from "@/lib/types"
 
 interface RemoteConnectionContextValue {
@@ -97,6 +107,52 @@ export function useResetBackendScopedStoresOnIdentityChange(
       resetBackendScopedStores()
     }
   }, [backendKey])
+}
+
+/**
+ * A remote window the gate cannot let through: the connection could not be
+ * loaded, or its credentials expired. Nothing of the workspace is rendered —
+ * no status bar, so no Quick actions — and Windows has no application menu,
+ * so this screen carries the way back to the local workspace itself. The
+ * expired notice also asks for the token to be updated, which is done from
+ * another window.
+ *
+ * Desktop only: a web client has no local workspace window to bring up.
+ */
+function RemoteConnectionDeadEnd({ message }: { message: string }) {
+  return (
+    <div className="flex h-screen flex-col items-center justify-center gap-3 bg-background p-6 text-center text-sm">
+      <p className="text-destructive">{message}</p>
+      {isDesktop() && <OpenLocalWorkspaceButton />}
+    </div>
+  )
+}
+
+function OpenLocalWorkspaceButton() {
+  const t = useTranslations("RemoteWorkspace")
+  // Said here rather than in a toast: the window's toaster belongs to the
+  // workspace this screen replaces.
+  const [failure, setFailure] = useState<string | null>(null)
+
+  const handleClick = () => {
+    setFailure(null)
+    openLocalWorkspace().catch((err) => setFailure(toErrorMessage(err)))
+  }
+
+  return (
+    <>
+      <Button variant="outline" size="sm" onClick={handleClick}>
+        <Monitor />
+        {t("openLocalWorkspace")}
+      </Button>
+      {failure !== null && (
+        <div role="alert" className="text-xs">
+          <p className="text-destructive">{t("openLocalFailed")}</p>
+          <p className="text-muted-foreground">{failure}</p>
+        </div>
+      )}
+    </>
+  )
 }
 
 export function RemoteConnectionGate({ children }: { children: ReactNode }) {
@@ -192,6 +248,7 @@ export function RemoteConnectionGate({ children }: { children: ReactNode }) {
           token: next.token,
           windowInstanceId: remoteWindowId,
           configRevision: next.config_revision,
+          // Network outages leave the workspace mounted while the proxy retries.
           onUnauthorized: () => {
             if (!cancelled) {
               setState((prev) => ({ ...prev, expired: true }))
@@ -215,9 +272,16 @@ export function RemoteConnectionGate({ children }: { children: ReactNode }) {
           })
           .catch((err) => {
             if (cancelled) return
-            retired.current = true
-            invalidateRemoteDesktopTransport()
-            setState((prev) => ({ ...prev, error: toErrorMessage(err) }))
+            if (isRemoteConfigurationChanged(err)) {
+              retire()
+              return
+            }
+            // The transport exposes a stopped IPC subscription through its
+            // status pill and can retry it in place, preserving dirty forms.
+            console.warn(
+              "[RemoteConnectionGate] event subscription failed:",
+              err
+            )
           })
       })
       .catch((err) => {
@@ -291,23 +355,28 @@ export function RemoteConnectionGate({ children }: { children: ReactNode }) {
 
   if (error) {
     return (
-      <div className="flex h-screen items-center justify-center bg-background p-6 text-sm text-destructive">
-        {t("connectionLoadFailed", { message: error })}
-      </div>
+      <RemoteConnectionDeadEnd
+        message={t("connectionLoadFailed", { message: error })}
+      />
     )
   }
 
   if (expired) {
     return (
-      <div className="flex h-screen items-center justify-center bg-background p-6 text-sm text-destructive">
-        {t("connectionExpired", { name: connection?.name ?? "" })}
-      </div>
+      <RemoteConnectionDeadEnd
+        message={t("connectionExpired", { name: connection?.name ?? "" })}
+      />
     )
   }
 
   return (
     <RemoteConnectionContext.Provider value={value}>
       {children}
+      {hasRemoteConnection && (
+        <RemoteConnectionStatus
+          transport={getTransport() as RemoteDesktopTransport}
+        />
+      )}
     </RemoteConnectionContext.Provider>
   )
 }

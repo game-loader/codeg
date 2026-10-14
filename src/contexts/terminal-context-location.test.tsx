@@ -9,9 +9,14 @@ const fixtures = vi.hoisted(() => ({
       .mockResolvedValue({ default_shell: null }),
     terminalKill: vi.fn().mockResolvedValue(undefined),
   },
-  platform: { getTransport: () => ({ subscribe: async () => () => {} }) },
+  platform: {
+    getTransport: () => ({ subscribe: async () => () => {} }),
+    getActiveRemoteConnectionId: () => null,
+    isLocalDesktop: () => false,
+  },
 }))
 vi.mock("@/contexts/backend-client-context", () => ({
+  useOptionalBackendClient: () => null,
   useBackendApi: () => fixtures.api,
   useBackendPlatform: () => fixtures.platform,
 }))

@@ -11,6 +11,8 @@ import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { FolderAliasLabel } from "./folder-alias-label"
 import { InfoItem, SessionIdentityChips } from "./session-details-content"
+import { ConversationTagChip } from "./conversation-tag-chip"
+import { useResolvedTags } from "@/hooks/use-conversation-tags"
 
 interface SidebarConversationHoverDetailsProps {
   conversation: DbConversationSummary
@@ -68,6 +70,8 @@ export function SidebarConversationHoverDetails({
 
   const t = useTranslations("Folder.sessionDetails")
   const tSidebar = useTranslations("Folder.sidebar")
+  const tTags = useTranslations("ConversationTags")
+  const tags = useResolvedTags(conversation.tag_ids)
 
   const folderId = conversation.folder_id
   // `allFolders` rather than `folders`: a conversation can live in a folder the
@@ -121,6 +125,20 @@ export function SidebarConversationHoverDetails({
           agentType={conversation.agent_type}
           model={model}
         />
+        {/* Every tag, wrapping: the row itself shows at most two. */}
+        {tags.length > 0 && (
+          <div
+            className="flex flex-wrap gap-1"
+            aria-label={tTags("tags")}
+            role="list"
+          >
+            {tags.map((tag) => (
+              <span key={tag.id} role="listitem" className="min-w-0 max-w-full">
+                <ConversationTagChip tag={tag} className="max-w-full" />
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* A plain stack rather than a grid: every field here is a folder, a

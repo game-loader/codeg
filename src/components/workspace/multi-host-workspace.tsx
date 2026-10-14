@@ -100,6 +100,11 @@ function RuntimeObserver({
     runtime.projectIdentities.getSnapshot,
     runtime.projectIdentities.getSnapshot
   )
+  const tags = useSyncExternalStore(
+    runtime.stores.conversationTags.subscribe,
+    runtime.stores.conversationTags.getState,
+    runtime.stores.conversationTags.getInitialState
+  )
   const folders = useMemo(
     () =>
       historyCatalogFolders(
@@ -122,6 +127,8 @@ function RuntimeObserver({
       historyLoading: state.conversationsLoading,
       historyError: state.conversationsError,
       activeFolderId: state.activeFolderId,
+      tags: tags.tags,
+      tagsHydrated: tags.hydrated,
       view,
     })
   }, [
@@ -134,6 +141,8 @@ function RuntimeObserver({
     state.conversationsError,
     state.activeFolderId,
     identities,
+    tags.tags,
+    tags.hydrated,
     view,
   ])
   return null
@@ -432,6 +441,8 @@ export function MultiHostWorkspace({
         before.historyLoading === summary.historyLoading &&
         before.historyError === summary.historyError &&
         before.activeFolderId === summary.activeFolderId &&
+        before.tags === summary.tags &&
+        before.tagsHydrated === summary.tagsHydrated &&
         before.view === summary.view
       )
         return previous

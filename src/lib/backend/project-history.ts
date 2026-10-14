@@ -1,7 +1,69 @@
-import type { DbConversationSummary, FolderDetail } from "@/lib/types"
+import type {
+  ConversationTagDetail,
+  DbConversationSummary,
+  FolderDetail,
+} from "@/lib/types"
 import type { BackendKey } from "./types"
 import type { ProjectSetup } from "./project-catalog"
 import type { SidebarSortMode } from "@/lib/sidebar-view-mode-storage"
+import {
+  isTagFilterActive,
+  matchesTagFilter,
+  pruneTagFilter,
+  type TagFilter,
+} from "@/lib/conversation-tags"
+
+/** Tags, like sessions, belong to one runtime (docs/logical-projects.md). */
+export interface OwnedTagFilter {
+  backendKey: BackendKey
+  generation: number
+  filter: TagFilter
+}
+
+export interface HostTagCatalog {
+  generation?: number
+  tags?: readonly ConversationTagDetail[]
+  tagsHydrated?: boolean
+}
+
+/** Retire replaced owners; missing definitions mean deletion only after load. */
+export function pruneOwnedTagFilter(
+  selection: OwnedTagFilter | null,
+  hosts: readonly { key: BackendKey; generation: number }[],
+  catalogs: ReadonlyMap<BackendKey, HostTagCatalog>
+): OwnedTagFilter | null {
+  if (!selection) return null
+  if (
+    !hosts.some(
+      (host) =>
+        host.key === selection.backendKey &&
+        host.generation === selection.generation
+    )
+  )
+    return null
+  const catalog = catalogs.get(selection.backendKey)
+  if (catalog?.generation !== selection.generation || !catalog.tagsHydrated)
+    return selection
+  const filter = pruneTagFilter(
+    selection.filter,
+    new Map((catalog.tags ?? []).map((tag) => [tag.id, tag]))
+  )
+  return filter === selection.filter ? selection : { ...selection, filter }
+}
+
+export function matchesOwnedTagFilter(
+  backendKey: BackendKey,
+  generation: number,
+  conversation: Pick<DbConversationSummary, "tag_ids">,
+  selection?: OwnedTagFilter | null
+): boolean {
+  if (!selection || !isTagFilterActive(selection.filter)) return true
+  return (
+    selection.backendKey === backendKey &&
+    selection.generation === generation &&
+    matchesTagFilter(conversation, selection.filter)
+  )
+}
 
 export interface OwnedProjectSession {
   key: string
@@ -16,6 +78,7 @@ export interface HistoryOptions {
   showCompleted: boolean
   showWorktrees: boolean
   sortMode: SidebarSortMode
+  tagFilter?: OwnedTagFilter | null
 }
 
 export const DEFAULT_HISTORY_OPTIONS: HistoryOptions = {
@@ -55,9 +118,15 @@ export function sortOwnedSessions(
   return sessions
     .filter(
       (row) =>
-        options.showCompleted ||
-        !!row.conversation.pinned_at ||
-        row.conversation.status !== "completed"
+        (options.showCompleted ||
+          !!row.conversation.pinned_at ||
+          row.conversation.status !== "completed") &&
+        matchesOwnedTagFilter(
+          row.backendKey,
+          row.generation,
+          row.conversation,
+          options.tagFilter
+        )
     )
     .slice()
     .sort((a, b) => {

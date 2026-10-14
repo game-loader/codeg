@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   params: new URLSearchParams(),
   getConnection: vi.fn(),
   configure: vi.fn(),
+  status: vi.fn(),
   invoke: vi.fn(),
   listen: vi.fn(),
   callbacks: new Map<string, (event: { payload: unknown }) => void>(),
@@ -68,6 +69,13 @@ vi.mock("@/lib/transport", async () => {
     isDesktop: () => true,
   }
 })
+
+vi.mock("@/components/connection/remote-connection-status", () => ({
+  RemoteConnectionStatus: (props: unknown) => {
+    mocks.status(props)
+    return <div>Remote status</div>
+  },
+}))
 
 import { RemoteConnectionGate } from "./remote-connection-context"
 import {
@@ -131,7 +139,7 @@ beforeEach(() => {
           message: "Remote connection configuration changed; reopen",
         }
       }
-      mocks.callbacks.get("remote-ws-event-1")?.({
+      mocks.callbacks.get(`remote-ws-event-${args.connectionId}`)?.({
         payload: {
           configRevision: args.configRevision,
           channel: "__ready__",
@@ -319,5 +327,70 @@ describe("operation popup destination fencing", () => {
     expect(mocks.mounted).not.toHaveBeenCalled()
     expect(mocks.configure).not.toHaveBeenCalled()
     expect(mocks.getConnection).not.toHaveBeenCalled()
+  })
+})
+
+async function renderGate() {
+  await act(async () => {
+    render(
+      <RemoteConnectionGate>
+        <div>Workspace stays open</div>
+      </RemoteConnectionGate>
+    )
+  })
+  return mocks.configure.mock.calls[
+    mocks.configure.mock.calls.length - 1
+  ][0] as RemoteTransportConfig
+}
+
+describe("RemoteConnectionGate failure recovery", () => {
+  beforeEach(() => {
+    mocks.params = new URLSearchParams(
+      "remoteConnectionId=17&remoteWindowId=window-instance"
+    )
+    mocks.getConnection.mockResolvedValue({
+      ...connection,
+      id: 17,
+      name: "Remote workspace",
+      base_url: "http://remote.test:3210",
+      token: "test-token",
+    })
+  })
+
+  // A socket that is merely down never reaches the gate: the transport
+  // keeps retrying it in its own state, which the status pill shows.
+  it("shows credential expiry once the transport reports a refused token", async () => {
+    const config = await renderGate()
+    expect(screen.queryByText(/expired/i)).not.toBeInTheDocument()
+
+    act(() => config.onUnauthorized?.())
+
+    expect(screen.queryByText("Workspace stays open")).not.toBeInTheDocument()
+    expect(screen.queryByText("Remote status")).not.toBeInTheDocument()
+    expect(screen.getByText(/expired/i)).toBeInTheDocument()
+  })
+
+  it("binds recovery to the existing transport instead of reloading the window", async () => {
+    await renderGate()
+    const props = mocks.status.mock.calls[mocks.status.mock.calls.length - 1][0]
+    expect(props.transport).toBe(mocks.transport)
+    expect(props).not.toHaveProperty("onReconnect")
+    expect(mocks.configure).toHaveBeenCalledTimes(1)
+    expect(screen.getByText("Workspace stays open")).toBeInTheDocument()
+  })
+
+  it("keeps the workspace and original revision mounted after an IPC subscription failure", async () => {
+    mocks.invoke.mockImplementation(async (command) => {
+      if (command === "remote_ws_subscribe") {
+        throw { code: "network_error", message: "IPC unavailable" }
+      }
+    })
+    await renderGate()
+    await waitFor(() => expect(mocks.callbacks.size).toBe(0))
+    expect(screen.getByText("Workspace stays open")).toBeInTheDocument()
+    expect(screen.getByText("Remote status")).toBeInTheDocument()
+    expect(mocks.invalidated).toBe(false)
+    expect(mocks.remote?.configRevision).toBe("revision-a")
+    expect(mocks.configure).toHaveBeenCalledOnce()
   })
 })

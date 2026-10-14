@@ -24,6 +24,36 @@ function setup() {
   }
 }
 
+it("forwards initial readiness only to the current backend generation", () => {
+  let ready!: () => void
+  let current = true
+  const off = vi.fn()
+  const setStatus = vi.fn()
+  const transport = new FencedTransport(
+    {
+      call: vi.fn(),
+      subscribe: vi.fn(),
+      isDesktop: () => true,
+      onReady: (callback) => {
+        ready = callback
+        return off
+      },
+    },
+    { generation: 1, isCurrent: () => current, setStatus }
+  )
+  const notified = vi.fn()
+  const unsubscribe = transport.onReady(notified)
+  ready()
+  expect(notified).toHaveBeenCalledTimes(1)
+  expect(setStatus).toHaveBeenCalledWith("connected")
+  current = false
+  ready()
+  expect(notified).toHaveBeenCalledTimes(1)
+  expect(setStatus).toHaveBeenCalledTimes(1)
+  unsubscribe()
+  expect(off).toHaveBeenCalledTimes(1)
+})
+
 it.each(["network_error", "network"])(
   "preserves ordinary resource success and %s status behavior while isolating metadata",
   async (code) => {

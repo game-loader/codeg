@@ -1,10 +1,8 @@
 "use client"
 
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useBackendApi } from "@/contexts/backend-client-context"
 import type { BackendApi } from "@/lib/backend/types"
-import * as legacyBackendApi from "@/lib/api"
-import { useCallback, useEffect, useRef, useState } from "react"
-
 import { toErrorMessage } from "@/lib/app-error"
 import type { AgentOptionsSnapshot, AgentType } from "@/lib/types"
 
@@ -19,18 +17,23 @@ interface CachedSnapshot {
   ts: number
 }
 
-// Keyed by (agent, folderPath): the same agent probed in two target folders can
-// surface different folder/project-scoped slash commands or options, so a folder
-// switch must not return another folder's cached snapshot. JSON.stringify is a
-// collision-free composite key (and avoids a literal NUL separator).
+// Keyed by (backend client, agent, folderPath, model): probes in different
+// folders can surface different folder/project-scoped slash commands or
+// options, so a folder switch must not return another folder's cached
+// snapshot — and an agent that derives one option's choices from another's
+// value (opencode lists `effort` per model) answers differently per model.
+// JSON.stringify is a collision-free composite key (and avoids a literal NUL
+// separator).
 const snapshotCache = new Map<string, CachedSnapshot>()
 const inflight = new Map<string, Promise<AgentOptionsSnapshot>>()
 
 const clientIds = new WeakMap<BackendApi, number>()
 let nextClientId = 0
+
 function cacheKey(
   agent: AgentType,
   folderPath: string | null,
+  model: string | null,
   backendApi: BackendApi
 ): string {
   let id = clientIds.get(backendApi)
@@ -38,15 +41,16 @@ function cacheKey(
     id = ++nextClientId
     clientIds.set(backendApi, id)
   }
-  return JSON.stringify([id, agent, folderPath ?? null])
+  return JSON.stringify([id, agent, folderPath ?? null, model])
 }
 
 function readCache(
   agent: AgentType,
   folderPath: string | null,
+  model: string | null,
   backendApi: BackendApi
 ): AgentOptionsSnapshot | null {
-  const key = cacheKey(agent, folderPath, backendApi)
+  const key = cacheKey(agent, folderPath, model, backendApi)
   const entry = snapshotCache.get(key)
   if (!entry) return null
   if (Date.now() - entry.ts > CACHE_TTL_MS) {
@@ -59,20 +63,23 @@ function readCache(
 function fetchOptions(
   agent: AgentType,
   folderPath: string | null,
-  backendApi: BackendApi = legacyBackendApi
+  model: string | null,
+  backendApi: BackendApi
 ): Promise<AgentOptionsSnapshot> {
-  const key = cacheKey(agent, folderPath, backendApi)
+  const key = cacheKey(agent, folderPath, model, backendApi)
   let promise = inflight.get(key)
   if (!promise) {
     promise = backendApi
-      .describeAgentOptions(agent, folderPath)
+      .describeAgentOptions(agent, folderPath, model ? { model } : null)
       .then((snapshot) => {
-        snapshotCache.set(key, { snapshot, ts: Date.now() })
-        inflight.delete(key)
+        if (inflight.get(key) === promise) {
+          snapshotCache.set(key, { snapshot, ts: Date.now() })
+          inflight.delete(key)
+        }
         return snapshot
       })
       .catch((err) => {
-        inflight.delete(key)
+        if (inflight.get(key) === promise) inflight.delete(key)
         throw err
       })
     inflight.set(key, promise)
@@ -112,13 +119,19 @@ export function useAgentOptions(
   /** When false, the automatic probe is suppressed (no transient CLI spawn) —
    *  for editors whose agent-override section is collapsed. `ensure()` still
    *  probes on demand at save time. */
-  enabled: boolean = true
+  enabled: boolean = true,
+  /** The host's current config selections — only `model` is consumed: the
+   *  probe applies it before snapshotting so agent-derived option lists
+   *  (opencode's per-model `effort`) match the selection. Changing it
+   *  re-probes; the snapshot cache is keyed by it. */
+  preferredConfigValues?: Record<string, string> | null
 ): AgentOptionsState {
   const backendApi = useBackendApi()
-
+  const preferredModel = preferredConfigValues?.model ?? null
   // Snapshot and its producer live in ONE state value so they can never be
   // rendered out of step — see `snapshotAgentType`.
   const [loaded, setLoaded] = useState<{
+    backendApi: BackendApi
     agent: AgentType
     snapshot: AgentOptionsSnapshot
   } | null>(null)
@@ -127,19 +140,24 @@ export function useAgentOptions(
   const reqRef = useRef(0)
 
   const load = useCallback(
-    (agent: AgentType, folder: string | null, force: boolean) => {
+    (
+      agent: AgentType,
+      folder: string | null,
+      model: string | null,
+      force: boolean
+    ) => {
       // Bump FIRST so a cache hit also invalidates any still-in-flight probe for a
-      // previously-selected (agent, folder) — otherwise that slow probe's late
-      // result would overwrite the snapshot for the now-current one.
+      // previously-selected (agent, folder, model) — otherwise that slow probe's
+      // late result would overwrite the snapshot for the now-current one.
       const id = ++reqRef.current
-      const key = cacheKey(agent, folder, backendApi)
+      const key = cacheKey(agent, folder, model, backendApi)
       if (force) {
         snapshotCache.delete(key)
         inflight.delete(key)
       } else {
-        const cached = readCache(agent, folder, backendApi)
+        const cached = readCache(agent, folder, model, backendApi)
         if (cached) {
-          setLoaded({ agent, snapshot: cached })
+          setLoaded({ backendApi, agent, snapshot: cached })
           setError(null)
           setLoading(false)
           return
@@ -148,10 +166,10 @@ export function useAgentOptions(
       setLoading(true)
       setError(null)
       setLoaded(null)
-      fetchOptions(agent, folder, backendApi)
+      fetchOptions(agent, folder, model, backendApi)
         .then((fresh) => {
           if (reqRef.current !== id) return
-          setLoaded({ agent, snapshot: fresh })
+          setLoaded({ backendApi, agent, snapshot: fresh })
           setLoading(false)
         })
         .catch((e) => {
@@ -164,28 +182,34 @@ export function useAgentOptions(
   )
 
   useEffect(() => {
+    // Invalidate pending results as soon as the target changes, including
+    // the debounce window before the replacement probe starts.
+    reqRef.current += 1
     if (!enabled) return
-    // Debounce so switching agents/folders quickly doesn't fire a probe (CLI
-    // spawn) per click; the last (agent, folder) landed on wins.
+    // Debounce so switching agents/folders/models quickly doesn't fire a probe
+    // (CLI spawn) per click; the last (agent, folder, model) landed on wins.
     const handle = window.setTimeout(() => {
-      void load(agentType, folderPath, false)
+      void load(agentType, folderPath, preferredModel, false)
     }, 250)
-    return () => window.clearTimeout(handle)
-  }, [agentType, folderPath, load, enabled])
+    return () => {
+      window.clearTimeout(handle)
+      reqRef.current += 1
+    }
+  }, [agentType, folderPath, preferredModel, load, enabled])
 
   const reload = useCallback(
-    () => load(agentType, folderPath, true),
-    [agentType, folderPath, load]
+    () => load(agentType, folderPath, preferredModel, true),
+    [agentType, folderPath, preferredModel, load]
   )
 
   const ensure = useCallback(async (): Promise<AgentOptionsSnapshot | null> => {
-    // Resolve against the CURRENT (agent, folder), not the retained React
-    // `snapshot`: after an agent/folder switch the previous snapshot lingers until
-    // the debounced re-probe lands, and returning it here would pin the wrong
-    // agent's/folder's defaults into the save. The module cache + inflight map are
-    // keyed by (agent, folder), so a hit is instant and a switch rides the
-    // effect's in-flight probe (no double spawn).
-    const cached = readCache(agentType, folderPath, backendApi)
+    // Resolve against the CURRENT (agent, folder, model), not the retained
+    // React `snapshot`: after an agent/folder/model switch the previous snapshot
+    // lingers until the debounced re-probe lands, and returning it here would
+    // pin the wrong agent's/folder's/model's defaults into the save. The module
+    // cache + inflight map are keyed by (agent, folder, model), so a hit is
+    // instant and a switch rides the effect's in-flight probe (no double spawn).
+    const cached = readCache(agentType, folderPath, preferredModel, backendApi)
     if (cached) return cached
     // Bound the wait so a wedged probe degrades to "save with raw overrides"
     // rather than hanging the save.
@@ -195,17 +219,20 @@ export function useAgentOptions(
     })
     try {
       return await Promise.race([
-        fetchOptions(agentType, folderPath, backendApi).catch(() => null),
+        fetchOptions(agentType, folderPath, preferredModel, backendApi).catch(
+          () => null
+        ),
         timeout,
       ])
     } finally {
       if (timer !== undefined) window.clearTimeout(timer)
     }
-  }, [agentType, folderPath, backendApi])
+  }, [agentType, folderPath, preferredModel, backendApi])
 
+  const visible = loaded?.backendApi === backendApi ? loaded : null
   return {
-    snapshot: loaded?.snapshot ?? null,
-    snapshotAgentType: loaded?.agent ?? null,
+    snapshot: visible?.snapshot ?? null,
+    snapshotAgentType: visible?.agent ?? null,
     loading,
     error,
     reload,

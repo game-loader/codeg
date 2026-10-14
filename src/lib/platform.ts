@@ -102,6 +102,11 @@ export function createBackendPlatform(binding: BackendApiBinding) {
     return transport.onReconnect?.(callback) ?? null
   }
 
+  /** Includes first readiness after this backend started offline. */
+  function onTransportReady(callback: () => void): UnsubscribeFn | null {
+    return transport.onReady?.(callback) ?? null
+  }
+
   /**
    * Per-connection Subscribe-with-Snapshot stream. Returns `null` only on
    * the desktop Tauri transport (which uses local IPC and is race-free, so
@@ -165,7 +170,12 @@ export function createBackendPlatform(binding: BackendApiBinding) {
   }): Promise<string | string[] | null> {
     if (isDesktop() && remoteConnectionId === null) {
       const { open } = await import("@tauri-apps/plugin-dialog")
-      return open(options ?? {})
+      // Keep native folder pickers able to create the directory they select.
+      return open(
+        options?.directory
+          ? { ...options, canCreateDirectories: true }
+          : (options ?? {})
+      )
     }
     // Web fallback: for directory selection, prompt for server-side path.
     // For file selection, use a hidden file input.
@@ -195,6 +205,7 @@ export function createBackendPlatform(binding: BackendApiBinding) {
     isRemoteDesktopWindow,
     subscribe,
     onTransportReconnect,
+    onTransportReady,
     getEventStream,
     openUrl,
     openPath,
@@ -231,6 +242,9 @@ export const subscribe: BackendPlatform["subscribe"] = (...args) =>
 export const onTransportReconnect: BackendPlatform["onTransportReconnect"] = (
   ...args
 ) => getDefaultBackendPlatform().onTransportReconnect(...args)
+export const onTransportReady: BackendPlatform["onTransportReady"] = (
+  ...args
+) => getDefaultBackendPlatform().onTransportReady(...args)
 export const getEventStream: BackendPlatform["getEventStream"] = (...args) =>
   getDefaultBackendPlatform().getEventStream(...args)
 export const openPath: BackendPlatform["openPath"] = (...args) =>

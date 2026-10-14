@@ -106,6 +106,8 @@ import type {
   FolderDetail,
   RepositoryProjectIdentityEntry,
   FolderGroupDetail,
+  ConversationBranchTag,
+  ConversationTagDetail,
   SidebarLayoutEntry,
   FolderLinkDetail,
   FolderLinkPlan,
@@ -830,6 +832,17 @@ export interface CodegMcpServiceStatus {
   /** False in runtimes that never bound a socket — hide the start button
    * rather than offer one that can only fail. */
   can_start: boolean
+}
+
+// ─── Generative UI (the ui-render skill) ────────────────────────────────
+
+/** Mirror of Rust `GenerativeUiSkillInfo`. */
+export interface GenerativeUiSkillInfo {
+  /** The skill's name: its folder, and what the user types (`/ui-render`). */
+  id: string
+  /** The central skill store holds a skill of that name the user made, so
+   *  Codeg leaves the skill alone until it is renamed. */
+  conflict: boolean
 }
 
 // ─── Live feedback settings + submit ───────────────────────────────────
@@ -2906,6 +2919,60 @@ export function createBackendApi(binding: BackendApiBinding) {
     return transport.call("set_folder_group", { folderId, groupId })
   }
 
+  async function listConversationTags(): Promise<ConversationTagDetail[]> {
+    return transport.call("list_conversation_tags", {})
+  }
+
+  /** A null folder makes a global tag; children resolve to their root family. */
+  async function createConversationTag(args: {
+    folderId: number | null
+    name: string
+    color: string
+  }): Promise<ConversationTagDetail> {
+    return transport.call("create_conversation_tag", args)
+  }
+
+  async function updateConversationTag(
+    tagId: number,
+    patch: { name?: string; color?: string }
+  ): Promise<ConversationTagDetail> {
+    return transport.call("update_conversation_tag", { tagId, ...patch })
+  }
+
+  async function deleteConversationTag(tagId: number): Promise<void> {
+    return transport.call("delete_conversation_tag", { tagId })
+  }
+
+  async function reorderConversationTags(tagIds: number[]): Promise<void> {
+    return transport.call("reorder_conversation_tags", { tagIds })
+  }
+
+  async function getConversationBranchTag(): Promise<ConversationBranchTag> {
+    return transport.call("get_conversation_branch_tag", {})
+  }
+
+  async function updateConversationBranchTag(
+    setting: ConversationBranchTag
+  ): Promise<ConversationBranchTag> {
+    return transport.call("update_conversation_branch_tag", {
+      enabled: setting.enabled,
+      color: setting.color,
+    })
+  }
+
+  /** Apply a delta to the original conversation and return its fresh summary. */
+  async function updateConversationTags(args: {
+    conversationId: number
+    add?: number[]
+    remove?: number[]
+  }): Promise<DbConversationSummary> {
+    return transport.call("update_conversation_tags", {
+      conversationId: args.conversationId,
+      add: args.add ?? [],
+      remove: args.remove ?? [],
+    })
+  }
+
   async function updateFolderColor(
     folderId: number,
     color: FolderThemeColor
@@ -4473,6 +4540,14 @@ export function createBackendApi(binding: BackendApiBinding) {
     return transport.call("list_directory_entries", { path })
   }
 
+  /** Create one new directory on this client's filesystem host. */
+  async function createDirectory(
+    parentPath: string,
+    name: string
+  ): Promise<string> {
+    return transport.call("create_directory", { parentPath, name })
+  }
+
   async function listDirectoryWithFiles(
     path: string
   ): Promise<DirectoryItem[]> {
@@ -5198,9 +5273,9 @@ export function createBackendApi(binding: BackendApiBinding) {
 
   /**
    * Recent output of an already-running terminal, for a viewer attaching to a
-   * PTY it did not spawn (a canvas terminal card coming back from another
-   * route). `alive: false` is the settled answer "nothing to attach to" — spawn
-   * instead; it is never an error, so callers don't have to parse one.
+   * PTY it did not spawn (a canvas terminal card or restored panel tab).
+   * `alive: false, exists: true` carries retained final output; `exists: false`
+   * means no session is known. Older backends omit `exists`.
    *
    * Subscribe to `terminal://output/<id>` BEFORE calling this, and drop the
    * events whose `seq` is at or below the returned `seq` — that overlap is
@@ -5214,6 +5289,12 @@ export function createBackendApi(binding: BackendApiBinding) {
 
   async function terminalKill(terminalId: string): Promise<void> {
     return transport.call("terminal_kill", { terminalId })
+  }
+
+  /** End the process while retaining its final output until terminalKill.
+   * Older servers without keepOutput close and forget the terminal instead. */
+  async function terminalStop(terminalId: string): Promise<void> {
+    return transport.call("terminal_kill", { terminalId, keepOutput: true })
   }
 
   async function terminalList(): Promise<TerminalInfo[]> {
@@ -5476,6 +5557,26 @@ export function createBackendApi(binding: BackendApiBinding) {
     return transport.call("set_codeg_mcp_tool_group", { key, enabled })
   }
 
+  async function generativeUiSkillInfo(): Promise<GenerativeUiSkillInfo> {
+    return transport.call("generative_ui_skill_info")
+  }
+
+  async function generativeUiListAllInstallStatuses(): Promise<
+    ExpertInstallStatus[]
+  > {
+    return transport.call("generative_ui_list_all_install_statuses")
+  }
+
+  async function generativeUiApplyLinks(
+    ops: LinkOp[]
+  ): Promise<LinkOpResult[]> {
+    return transport.call("generative_ui_apply_links", { ops })
+  }
+
+  async function generativeUiReadContent(): Promise<string> {
+    return transport.call("generative_ui_read_content")
+  }
+
   async function getFeedbackSettings(): Promise<FeedbackSettings> {
     return transport.call("get_feedback_settings")
   }
@@ -5565,7 +5666,15 @@ export function createBackendApi(binding: BackendApiBinding) {
    * Does NOT touch chat-side `selectorsCache` or `localStorage` preferences. */
   async function describeAgentOptions(
     agentType: AgentType,
-    workingDir?: string | null
+    workingDir?: string | null,
+    /** Config selections to apply on the probe session before reading the
+     *  snapshot. Callers pass the model: an agent that derives one option's
+     *  choices from another's value (opencode lists `effort` per model) then
+     *  answers for the user's selection instead of its own default model. An
+     *  applied option still reports the agent's own pick as its `current_value`
+     *  (what it runs when left unset), so a "Default" label keeps naming the
+     *  agent's model rather than the selection. */
+    configValues?: Record<string, string> | null
   ): Promise<AgentOptionsSnapshot> {
     // The backend probe has its own 60s timeout (`ConnectionManager::
     // probe_agent_options`) plus 500ms grace + poll/serialization
@@ -5578,6 +5687,7 @@ export function createBackendApi(binding: BackendApiBinding) {
       {
         agentType,
         workingDir: workingDir ?? null,
+        configValues: configValues ?? null,
       },
       { timeoutMs: 70_000 }
     )
@@ -6289,6 +6399,14 @@ export function createBackendApi(binding: BackendApiBinding) {
     deleteFolderGroup,
     applySidebarLayout,
     setFolderGroup,
+    listConversationTags,
+    createConversationTag,
+    updateConversationTag,
+    deleteConversationTag,
+    reorderConversationTags,
+    getConversationBranchTag,
+    updateConversationBranchTag,
+    updateConversationTags,
     updateFolderColor,
     updateFolderAlias,
     updateFolderDefaultAgent,
@@ -6446,6 +6564,7 @@ export function createBackendApi(binding: BackendApiBinding) {
     workTaskTemplateDelete,
     getHomeDirectory,
     listDirectoryEntries,
+    createDirectory,
     listDirectoryWithFiles,
     uploadAttachment,
     uploadLocalPathToRemote,
@@ -6482,6 +6601,7 @@ export function createBackendApi(binding: BackendApiBinding) {
     terminalResize,
     terminalSnapshot,
     terminalKill,
+    terminalStop,
     terminalList,
     startWebServer,
     stopWebServer,
@@ -6520,6 +6640,10 @@ export function createBackendApi(binding: BackendApiBinding) {
     getCodegMcpServiceStatus,
     startCodegMcpService,
     setCodegMcpToolGroup,
+    generativeUiSkillInfo,
+    generativeUiListAllInstallStatuses,
+    generativeUiApplyLinks,
+    generativeUiReadContent,
     getFeedbackSettings,
     setFeedbackSettings,
     submitSessionFeedback,
@@ -7019,6 +7143,28 @@ export const applySidebarLayout: BackendApi["applySidebarLayout"] = (...args) =>
   getDefaultBackendApi().applySidebarLayout(...args)
 export const setFolderGroup: BackendApi["setFolderGroup"] = (...args) =>
   getDefaultBackendApi().setFolderGroup(...args)
+export const listConversationTags: BackendApi["listConversationTags"] = (
+  ...args
+) => getDefaultBackendApi().listConversationTags(...args)
+export const createConversationTag: BackendApi["createConversationTag"] = (
+  ...args
+) => getDefaultBackendApi().createConversationTag(...args)
+export const updateConversationTag: BackendApi["updateConversationTag"] = (
+  ...args
+) => getDefaultBackendApi().updateConversationTag(...args)
+export const deleteConversationTag: BackendApi["deleteConversationTag"] = (
+  ...args
+) => getDefaultBackendApi().deleteConversationTag(...args)
+export const reorderConversationTags: BackendApi["reorderConversationTags"] = (
+  ...args
+) => getDefaultBackendApi().reorderConversationTags(...args)
+export const getConversationBranchTag: BackendApi["getConversationBranchTag"] =
+  (...args) => getDefaultBackendApi().getConversationBranchTag(...args)
+export const updateConversationBranchTag: BackendApi["updateConversationBranchTag"] =
+  (...args) => getDefaultBackendApi().updateConversationBranchTag(...args)
+export const updateConversationTags: BackendApi["updateConversationTags"] = (
+  ...args
+) => getDefaultBackendApi().updateConversationTags(...args)
 export const updateFolderColor: BackendApi["updateFolderColor"] = (...args) =>
   getDefaultBackendApi().updateFolderColor(...args)
 export const updateFolderAlias: BackendApi["updateFolderAlias"] = (...args) =>
@@ -7371,6 +7517,8 @@ export const getHomeDirectory: BackendApi["getHomeDirectory"] = (...args) =>
 export const listDirectoryEntries: BackendApi["listDirectoryEntries"] = (
   ...args
 ) => getDefaultBackendApi().listDirectoryEntries(...args)
+export const createDirectory: BackendApi["createDirectory"] = (...args) =>
+  getDefaultBackendApi().createDirectory(...args)
 export const listDirectoryWithFiles: BackendApi["listDirectoryWithFiles"] = (
   ...args
 ) => getDefaultBackendApi().listDirectoryWithFiles(...args)
@@ -7454,6 +7602,8 @@ export const terminalSnapshot: BackendApi["terminalSnapshot"] = (...args) =>
   getDefaultBackendApi().terminalSnapshot(...args)
 export const terminalKill: BackendApi["terminalKill"] = (...args) =>
   getDefaultBackendApi().terminalKill(...args)
+export const terminalStop: BackendApi["terminalStop"] = (...args) =>
+  getDefaultBackendApi().terminalStop(...args)
 export const terminalList: BackendApi["terminalList"] = (...args) =>
   getDefaultBackendApi().terminalList(...args)
 export const startWebServer: BackendApi["startWebServer"] = (...args) =>
@@ -7552,6 +7702,18 @@ export const startCodegMcpService: BackendApi["startCodegMcpService"] = (
 export const setCodegMcpToolGroup: BackendApi["setCodegMcpToolGroup"] = (
   ...args
 ) => getDefaultBackendApi().setCodegMcpToolGroup(...args)
+export const generativeUiSkillInfo: BackendApi["generativeUiSkillInfo"] = (
+  ...args
+) => getDefaultBackendApi().generativeUiSkillInfo(...args)
+export const generativeUiListAllInstallStatuses: BackendApi["generativeUiListAllInstallStatuses"] =
+  (...args) =>
+    getDefaultBackendApi().generativeUiListAllInstallStatuses(...args)
+export const generativeUiApplyLinks: BackendApi["generativeUiApplyLinks"] = (
+  ...args
+) => getDefaultBackendApi().generativeUiApplyLinks(...args)
+export const generativeUiReadContent: BackendApi["generativeUiReadContent"] = (
+  ...args
+) => getDefaultBackendApi().generativeUiReadContent(...args)
 export const getFeedbackSettings: BackendApi["getFeedbackSettings"] = (
   ...args
 ) => getDefaultBackendApi().getFeedbackSettings(...args)

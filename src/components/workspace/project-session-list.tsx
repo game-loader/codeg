@@ -3,6 +3,7 @@
 import { useState, type ReactNode } from "react"
 import {
   ownedSession,
+  matchesOwnedTagFilter,
   DEFAULT_HISTORY_OPTIONS,
   type HistoryOptions,
   type OwnedProjectSession,
@@ -81,7 +82,13 @@ function FolderHistory({
             setup.children.some((f) => f.id === c.folder_id))) &&
         c.kind !== "chat" &&
         c.parent_id == null &&
-        (options.showCompleted || !!c.pinned_at || c.status !== "completed")
+        (options.showCompleted || !!c.pinned_at || c.status !== "completed") &&
+        matchesOwnedTagFilter(
+          setup.backendKey,
+          setup.generation,
+          c,
+          options.tagFilter
+        )
     )
     .sort((a, b) => {
       if (a.pinned_at && b.pinned_at) return compareByPinnedAtDesc(a, b)

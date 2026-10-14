@@ -9,6 +9,7 @@ export const defaultBackendPlatform: BackendPlatform = {
   isRemoteDesktopWindow: () => platform.isRemoteDesktopWindow(),
   subscribe: (event, handler) => platform.subscribe(event, handler),
   onTransportReconnect: (callback) => platform.onTransportReconnect(callback),
+  onTransportReady: (callback) => platform.onTransportReady(callback),
   getEventStream: () => platform.getEventStream(),
   openUrl: (url) => platform.openUrl(url),
   openPath: (path) => platform.openPath(path),

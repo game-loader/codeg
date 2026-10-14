@@ -1,5 +1,9 @@
 import type { BackendClient } from "./types"
 import {
+  createConversationTagsStore,
+  useConversationTagsStore,
+} from "@/stores/conversation-tags-store"
+import {
   createAppWorkspaceStore,
   useAppWorkspaceStore,
 } from "@/stores/app-workspace-store"
@@ -32,6 +36,10 @@ export function createBackendStores(client: BackendClient) {
   const storage = createBackendStoreStorage(client.key)
   const workspace = createAppWorkspaceStore(client.api, storage)
   const conversationRuntime = createConversationRuntimeStore(client.api)
+  const conversationTags = createConversationTagsStore(
+    client.api,
+    client.platform
+  )
   const tabs = createTabStore(
     client.api,
     storage,
@@ -48,6 +56,7 @@ export function createBackendStores(client: BackendClient) {
     workspace,
     tabs,
     conversationRuntime,
+    conversationTags,
     academic,
     canvas,
     canvasBoards,
@@ -59,6 +68,7 @@ export function createBackendStores(client: BackendClient) {
       disposed = true
       // Unsubscribe tabs before clearing their workspace dependency.
       tabs.dispose()
+      conversationTags.dispose()
       conversationRuntime.dispose()
       workspace.dispose()
       academic.dispose()
@@ -78,6 +88,7 @@ export const defaultBackendStores: BackendStores = {
   workspace: useAppWorkspaceStore,
   tabs: useTabStore,
   conversationRuntime: useConversationRuntimeStore,
+  conversationTags: useConversationTagsStore,
   academic: useAcademicStore,
   canvas: useCanvasStore,
   canvasBoards: useCanvasBoardsStore,

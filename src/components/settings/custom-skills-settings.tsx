@@ -58,9 +58,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-
 import { invalidateAgentSkillsCache } from "@/hooks/use-agent-skills"
-
+import { useLatestCall } from "@/hooks/use-latest-call"
 import { piUsesCustomAgentDir } from "@/lib/pi-config"
 import {
   defaultCustomSkillTemplate,
@@ -79,33 +78,37 @@ import { cn } from "@/lib/utils"
 // Custom skills have no curated category taxonomy — they live under one group.
 const CATEGORY_ORDER: Record<string, number> = { custom: 1 }
 
-// Built-in pack skill ids (experts / office / science) — the same union the
-// backend treats as "reserved". When one of these packs is enabled for an agent
-// it's symlinked into the agent's skill directory, so it surfaces in the agent's
-// skill list; but it's codeg's OWN bundled skill, not the user's, and is
-// deliberately excluded from the custom central store. We hide them from the
-// import-from-agent picker so users only ever see (and re-import) their own
+// Built-in pack skill ids (experts / office / science / ui-render) — the same
+// union the backend treats as "reserved". When one of these packs is enabled for
+// an agent it's symlinked into the agent's skill directory, so it surfaces in
+// the agent's skill list; but it's codeg's OWN bundled skill, not the user's,
+// and is deliberately excluded from the custom central store. We hide them from
+// the import-from-agent picker so users only ever see (and re-import) their own
 // agent skills. The set is static per session (bundled at compile time), so it's
 // fetched once and cached at module scope. A load failure degrades to
 // "no filtering" rather than blocking imports.
-let reservedSkillIdsCache: Set<string> | null = null
+const reservedSkillIdsCache = new WeakMap<BackendApi, Set<string>>()
 
 async function loadReservedSkillIds(
   backendApi: BackendApi = legacyBackendApi
 ): Promise<Set<string>> {
-  if (reservedSkillIdsCache) return reservedSkillIdsCache
+  const cached = reservedSkillIdsCache.get(backendApi)
+  if (cached) return cached
   try {
-    const [experts, science, office] = await Promise.all([
+    const [experts, science, office, generativeUi] = await Promise.all([
       backendApi.expertsList(),
       backendApi.scienceList(),
       backendApi.officecliListSkills(),
+      // Older servers can still filter the other bundled packs.
+      backendApi.generativeUiSkillInfo().catch(() => null),
     ])
     const ids = new Set<string>([
       ...experts.map((e) => e.metadata.id),
       ...science.map((s) => s.metadata.id),
       ...office.map((o) => o.id),
+      ...(generativeUi ? [generativeUi.id] : []),
     ])
-    reservedSkillIdsCache = ids
+    reservedSkillIdsCache.set(backendApi, ids)
     return ids
   } catch (err) {
     console.warn(
@@ -172,7 +175,11 @@ export function CustomSkillsBody({
   const [deleteIds, setDeleteIds] = useState<string[] | null>(null)
   const [deleting, setDeleting] = useState(false)
 
+  // A late answer from an earlier Refresh must not overwrite a newer one.
+  const beginLoad = useLatestCall()
+
   const refresh = useCallback(async () => {
+    const current = beginLoad()
     setLoading(true)
     setLoadError(null)
     try {
@@ -180,6 +187,7 @@ export function CustomSkillsBody({
         backendApi.customList(),
         backendApi.acpListAgents(),
       ])
+      if (!current()) return
       setSkills(list)
       // `skills_capable` is derived backend-side from `skill_storage_spec`:
       // every built-in today, custom agents only once they declare the shared
@@ -192,13 +200,14 @@ export function CustomSkillsBody({
       )
       setReloadKey((k) => k + 1)
     } catch (err) {
+      if (!current()) return
       setLoadError(toErrorMessage(err))
       setSkills([])
       setAgents([])
     } finally {
-      setLoading(false)
+      if (current()) setLoading(false)
     }
-  }, [backendApi])
+  }, [beginLoad, backendApi])
 
   useEffect(() => {
     refresh().catch((err) => {
@@ -382,9 +391,9 @@ export function CustomSkillsBody({
         // Only global-scope skills belong in the shared store (project skills
         // are workspace-specific). We pass no workspace, so the result is
         // already global-only; filter defensively. Also drop codeg's own
-        // built-in pack skills (experts / office / science): when enabled they
-        // symlink into the agent's dir and would otherwise appear here, but they
-        // aren't the user's own skills to re-import.
+        // built-in pack skills (experts / office / science / ui-render): once
+        // enabled they symlink into the agent's dir and would otherwise appear
+        // here, but they aren't the user's own skills to re-import.
         const globals = result.skills.filter(
           (s) => s.scope === "global" && !reserved.has(s.id)
         )

@@ -48,6 +48,7 @@ mod m20260907_000001_canvas_node_path;
 mod m20260920_000001_academic;
 mod m20260929_000001_canvas_board;
 mod m20260930_000001_agent_setting_drop_adapter_channel;
+mod m20261006_000001_conversation_tag;
 mod m20261011_000001_remote_connection_revision;
 pub struct Migrator;
 
@@ -103,7 +104,63 @@ impl MigratorTrait for Migrator {
             Box::new(m20260920_000001_academic::Migration),
             Box::new(m20260929_000001_canvas_board::Migration),
             Box::new(m20260930_000001_agent_setting_drop_adapter_channel::Migration),
+            Box::new(m20261006_000001_conversation_tag::Migration),
             Box::new(m20261011_000001_remote_connection_revision::Migration),
         ]
+    }
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+
+    struct PreviousMultiHost;
+    struct PreviousUpstream;
+
+    #[async_trait::async_trait]
+    impl MigratorTrait for PreviousMultiHost {
+        fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+            Migrator::migrations()
+                .into_iter()
+                .filter(|migration| migration.name() != "m20261006_000001_conversation_tag")
+                .collect()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MigratorTrait for PreviousUpstream {
+        fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+            Migrator::migrations()
+                .into_iter()
+                .filter(|migration| migration.name() != "m20261011_000001_remote_connection_revision")
+                .collect()
+        }
+    }
+
+    async fn assert_combined_schema(db: &sea_orm::DatabaseConnection) {
+        Migrator::up(db, None).await.unwrap();
+        let manager = SchemaManager::new(db);
+        assert!(manager.has_table("conversation_tag").await.unwrap());
+        assert!(manager.has_table("conversation_tag_link").await.unwrap());
+        assert!(manager
+            .has_column("remote_workspace_connection", "config_revision")
+            .await
+            .unwrap());
+        assert!(Migrator::get_pending_migrations(db).await.unwrap().is_empty());
+        Migrator::up(db, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn upgrades_existing_multi_host_database_with_earlier_tag_migration() {
+        let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
+        PreviousMultiHost::up(&db, None).await.unwrap();
+        assert_combined_schema(&db).await;
+    }
+
+    #[tokio::test]
+    async fn upgrades_existing_upstream_database_with_connection_revisions() {
+        let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
+        PreviousUpstream::up(&db, None).await.unwrap();
+        assert_combined_schema(&db).await;
     }
 }

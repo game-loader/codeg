@@ -372,7 +372,12 @@ export function AgentToolsSettingsSection() {
             .then((applied) => {
               // Refresh the module-cached flag so open conversations show/hide
               // the feedback bar without a full reload.
-              if (client) primeFeedbackEnabled(applied.enabled, backendApi)
+              if (client)
+                primeFeedbackEnabled(
+                  applied.enabled,
+                  backendApi,
+                  backendPlatform
+                )
               else primeFeedbackEnabled(applied.enabled)
               return { feedback: applied.enabled }
             })

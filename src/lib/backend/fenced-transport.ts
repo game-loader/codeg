@@ -103,6 +103,16 @@ export class FencedTransport implements Transport {
     )
   }
 
+  onReady(callback: () => void): UnsubscribeFn {
+    return (
+      this.inner.onReady?.(() => {
+        if (!this.isCurrent()) return
+        this.lifetime.setStatus("connected")
+        callback()
+      }) ?? (() => {})
+    )
+  }
+
   async waitForReady(): Promise<void> {
     this.assertCurrent()
     await this.inner.waitForReady?.()

@@ -16,14 +16,16 @@ import { ExpertsBody } from "@/components/settings/experts-settings"
 import { ScienceBody } from "@/components/settings/science-settings"
 import { OfficeToolsBody } from "@/components/settings/office-tools-settings"
 import { CustomSkillsBody } from "@/components/settings/custom-skills-settings"
-
-import { isDesktop } from "@/lib/transport"
+import { GenerativeUiBody } from "@/components/settings/generative-ui-settings"
 import { toErrorMessage } from "@/lib/app-error"
 
-type SkillPackTab = "experts" | "science" | "office" | "custom"
+type SkillPackTab = "experts" | "science" | "office" | "ui" | "custom"
 
 function normalizeTab(raw: string | null): SkillPackTab {
-  return raw === "science" || raw === "office" || raw === "custom"
+  return raw === "science" ||
+    raw === "office" ||
+    raw === "ui" ||
+    raw === "custom"
     ? raw
     : "experts"
 }
@@ -37,8 +39,9 @@ const TRIGGER_ACTIVE =
 /**
  * Unified "Skill Packs" settings hub — a shared generic header + a fixed
  * top-right toolbar over a tabbed switcher for the three curated,
- * codeg-managed skill bundles (Experts, Science, Office). Each tab renders the
- * existing per-pack body verbatim.
+ * codeg-managed skill bundles (Experts, Science, Office), the generative-UI
+ * skill that teaches agents the chat's cards (UI), and the user's own skills
+ * (Custom). Each tab renders the existing per-pack body verbatim.
  */
 export function SkillPacksSettings() {
   const backendApi = useBackendApi()
@@ -83,10 +86,7 @@ export function SkillPacksSettings() {
   const handleOpenCentralDir = useCallback(async () => {
     try {
       const path = await backendApi.expertsOpenCentralDir()
-      if (
-        isDesktop() &&
-        backendPlatform.getActiveRemoteConnectionId() === null
-      ) {
+      if (backendPlatform.isLocalDesktop()) {
         // Desktop: reveal the folder. `revealItemInDir` (not `openPath`) is
         // deliberate — the opener plugin's scope rejects `openPath` for the
         // hidden `~/.codeg/...` path.
@@ -123,6 +123,9 @@ export function SkillPacksSettings() {
             </TabsTrigger>
             <TabsTrigger value="office" className={TRIGGER_ACTIVE}>
               {t("tabs.office")}
+            </TabsTrigger>
+            <TabsTrigger value="ui" className={TRIGGER_ACTIVE}>
+              {t("tabs.ui")}
             </TabsTrigger>
             <TabsTrigger value="custom" className={TRIGGER_ACTIVE}>
               {t("tabs.custom")}
@@ -174,6 +177,9 @@ export function SkillPacksSettings() {
           className="mt-0 flex-1 min-h-0 flex flex-col"
         >
           <OfficeToolsBody onRegisterRefresh={registerRefresh} />
+        </TabsContent>
+        <TabsContent value="ui" className="mt-0 flex-1 min-h-0 flex flex-col">
+          <GenerativeUiBody onRegisterRefresh={registerRefresh} />
         </TabsContent>
         <TabsContent
           value="custom"

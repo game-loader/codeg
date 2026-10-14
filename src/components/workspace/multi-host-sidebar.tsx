@@ -30,15 +30,22 @@ import {
   saveCatalogPreferences,
   type CatalogPreferences,
 } from "@/lib/backend/window-layout"
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
-import { UnifiedHistoryControls } from "./unified-sidebar-controls"
+import {
+  UnifiedHistoryControls,
+  UnifiedTagFilterBar,
+  UnifiedTagFilterButton,
+} from "./unified-sidebar-controls"
 import {
   DEFAULT_HISTORY_OPTIONS,
   ownedSession,
   projectHistory,
+  pruneOwnedTagFilter,
   sortOwnedSessions,
+  type HostTagCatalog,
   type HistoryOptions,
+  type OwnedTagFilter,
 } from "@/lib/backend/project-history"
 import { projectCatalog } from "@/lib/backend/project-catalog"
 import {
@@ -60,7 +67,7 @@ import {
   saveSectionOrder,
 } from "@/lib/sidebar-view-mode-storage"
 
-export interface HostFolderCatalog {
+export interface HostFolderCatalog extends HostTagCatalog {
   folders: readonly FolderDetail[]
   loading: boolean
   generation?: number
@@ -115,6 +122,23 @@ export function MultiHostSidebar({
   const [preferencesLoaded, setPreferencesLoaded] = useState(false)
   const [options, setOptions] = useState<HistoryOptions>(
     DEFAULT_HISTORY_OPTIONS
+  )
+  // Numeric tag IDs are intentionally never loaded from ambient preferences.
+  const [rawTagFilter, setRawTagFilter] = useState<OwnedTagFilter | null>(null)
+  const tagFilter = useMemo(
+    () => pruneOwnedTagFilter(rawTagFilter, hosts, catalogs),
+    [rawTagFilter, hosts, catalogs]
+  )
+  useEffect(() => {
+    // Forget deleted definitions permanently, even if a later load is pending.
+    if (tagFilter !== rawTagFilter) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setRawTagFilter(tagFilter)
+    }
+  }, [tagFilter, rawTagFilter])
+  const historyOptions = useMemo(
+    () => ({ ...options, tagFilter }),
+    [options, tagFilter]
   )
   const [navItems, setNavItems] = useState<SidebarNavItemVisibility>({})
   const [showRecent, setShowRecent] = useState(true)
@@ -172,16 +196,16 @@ export function MultiHostSidebar({
         .filter((c) => c.kind === "chat" && c.parent_id == null)
         .map((c) => ownedSession(host.key, host.generation, null, null, c))
     }),
-    options
+    historyOptions
   )
   const recent = sortOwnedSessions(
     [
       ...projectCatalog(hosts, catalogs).flatMap((project) =>
-        projectHistory(project.setups, catalogs, options)
+        projectHistory(project.setups, catalogs, historyOptions)
       ),
       ...chats,
     ],
-    options
+    historyOptions
   ).slice(0, 10)
   const renderHistory = (sessions: typeof chats, showLocation = true) =>
     sessions.map((session) => (
@@ -239,6 +263,15 @@ export function MultiHostSidebar({
       {renderNavigation?.(navItems)}
       <UnifiedHistoryControls
         options={options}
+        tagFilterControls={
+          <UnifiedTagFilterButton
+            hosts={hosts}
+            catalogs={catalogs}
+            focusedHost={focusedHost}
+            selection={tagFilter}
+            onChange={setRawTagFilter}
+          />
+        }
         onOptions={(value) => {
           setOptions(value)
           saveShowCompleted(value.showCompleted)
@@ -286,6 +319,8 @@ export function MultiHostSidebar({
               ))
         }
         onLocate={() => {
+          // Locating must reveal the selected conversation even when filtered.
+          setRawTagFilter(null)
           setPreferences((value) => ({
             ...value,
             mode: "projects",
@@ -302,13 +337,19 @@ export function MultiHostSidebar({
           )
         }}
       />
+      <UnifiedTagFilterBar
+        hosts={hosts}
+        catalogs={catalogs}
+        selection={tagFilter}
+        onChange={setRawTagFilter}
+      />
       <div className="min-h-0 flex-1 overflow-y-auto p-2 flex flex-col">
         <div style={{ order: sectionOrder.indexOf("folders") }}>
           {preferences.mode === "projects" && (
             <MultiHostProjects
               hosts={hosts}
               catalogs={catalogs}
-              options={options}
+              options={historyOptions}
               collapsed={preferences.collapsedProjects}
               onToggle={(key) =>
                 setPreferences((value) => ({
@@ -409,7 +450,12 @@ export function MultiHostSidebar({
           </section>
         )}
         {hosts.map((host) => {
-          const catalog = catalogs.get(host.key)
+          const candidate = catalogs.get(host.key)
+          const catalog =
+            candidate?.generation === undefined ||
+            candidate.generation === host.generation
+              ? candidate
+              : undefined
           const folders = catalog?.folders ?? []
           const roots = folders.filter(
             (folder) =>
@@ -535,7 +581,7 @@ export function MultiHostSidebar({
                         ),
                       }}
                       hostName={host.name}
-                      options={options}
+                      options={historyOptions}
                       conversations={catalog?.conversations}
                       historyLoading={catalog?.historyLoading}
                       historyError={catalog?.historyError}

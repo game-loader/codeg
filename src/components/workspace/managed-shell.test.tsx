@@ -56,6 +56,8 @@ const bindings = {
   useState: React.useState,
   useEffect: React.useEffect,
   useCallback: React.useCallback,
+  useMemo: React.useMemo,
+  useLayoutEffect: React.useLayoutEffect,
   useWorkspaceRuntimeVisibility,
   useOptionalBackendClient: () => null,
   scopePanelId,
@@ -155,7 +157,7 @@ it("allocates zero sidebar width on managed SSR, hydration and toggles while pre
           legacy.container.querySelector(
             '[data-panel-id="folder-shell-left-panel"]'
           )! as HTMLElement
-        ).style.flexGrow
+        ).style.flexBasis.replace("px", "")
       )
     ).toBeGreaterThan(0)
   )

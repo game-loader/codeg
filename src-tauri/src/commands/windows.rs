@@ -1010,13 +1010,14 @@ pub async fn open_import_sessions_window(
 /// focus alone then left the app with nothing on screen once settings was
 /// closed too.
 ///
-/// Single source of truth for the sequence: the tray / dock / single-instance
-/// path (`show_main_window`) and the auxiliary-window owner restores must not
-/// drift apart again. `unminimize` is inert when the window isn't minimized
-/// (macOS returns early; Windows first syncs the flag from `IsIconic`, so the
-/// diff it applies is empty), and `show` preserves the maximized flag — a
-/// tray-hidden maximized workspace comes back maximized.
-fn show_and_focus_window(app: &AppHandle, label: &str) {
+/// Single source of truth for the sequence: the tray (`show_main_window`),
+/// Dock / second-launch activation (`workspace_windows::activate_workspace`)
+/// and the auxiliary-window owner restores must not drift apart again.
+/// `unminimize` is inert when the window isn't minimized (macOS returns early;
+/// Windows first syncs the flag from `IsIconic`, so the diff it applies is
+/// empty), and `show` preserves the maximized flag — a tray-hidden maximized
+/// workspace comes back maximized.
+pub(crate) fn show_and_focus_window(app: &AppHandle, label: &str) {
     if label == "main" {
         LOCAL_WORKSPACE_ACTIVATION.record_restore();
     }
@@ -2508,7 +2509,11 @@ fn wait_for_macos_fullscreen_space_release(window: &tauri::WebviewWindow) {
     std::thread::sleep(MACOS_FULLSCREEN_EXIT_SETTLE);
 }
 
-/// Explicitly return to the local workspace (tray menu and local deep links).
+/// Bring the hidden / minimized main workspace window back to the
+/// foreground. Used by:
+///   * "Open Local Workspace" (the macOS Window menu, `open_local_workspace`)
+///   * tray icon left-click and "Show Workspace" menu item
+///   * explicit local-workspace and deep-link actions
 #[cfg(feature = "tauri-runtime")]
 pub fn show_main_window(app: &AppHandle) {
     show_and_focus_window(app, "main");
@@ -2518,21 +2523,7 @@ pub fn show_main_window(app: &AppHandle) {
 /// over a remote workspace. Auxiliary windows are not workspace candidates.
 #[cfg(feature = "tauri-runtime")]
 pub fn show_workspace_window(app: &AppHandle) {
-    let windows = app.webview_windows();
-    let candidates = windows
-        .values()
-        .filter(|window| activation::is_workspace(window.label()))
-        .map(|window| {
-            (
-                window.label(),
-                window.is_visible().unwrap_or(false),
-                window.is_focused().unwrap_or(false),
-                window.is_minimized().unwrap_or(false),
-            )
-        });
-    if let Some(label) = activation::activation_target(candidates) {
-        show_and_focus_window(app, label);
-    }
+    crate::commands::workspace_windows::activate_workspace(app);
 }
 
 pub(crate) fn has_remote_workspace(app: &AppHandle) -> bool {
@@ -2580,6 +2571,16 @@ pub(crate) fn hide_main_window_for_remote(app: &AppHandle) {
         }
         show_workspace_window(&app_after_drain);
     });
+}
+
+/// The frontend's "Open local workspace": Quick actions in a remote workspace
+/// window, and the screens a remote window shows instead of its workspace
+/// when its connection cannot be used. Reached through the shell transport, so
+/// it needs nothing from the remote server.
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub fn open_local_workspace(app: AppHandle) {
+    show_main_window(&app);
 }
 
 #[cfg(feature = "tauri-runtime")]

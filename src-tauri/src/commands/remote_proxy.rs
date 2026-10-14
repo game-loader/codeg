@@ -27,6 +27,7 @@
 //! the inner-attribute form here would duplicate the predicate.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,6 +38,7 @@ use base64::{
     Engine as _,
 };
 use futures_util::{SinkExt, Stream, StreamExt};
+use sea_orm::DatabaseConnection;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, EventTarget, State, WebviewWindow};
 use tokio::sync::{mpsc, watch, Mutex, RwLock};
@@ -44,7 +46,7 @@ use tokio_tungstenite::tungstenite::{
     client::IntoClientRequest,
     handshake::client::Request,
     http::{HeaderMap, HeaderValue},
-    Message,
+    Error as WsError, Message,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -78,6 +80,18 @@ use crate::workspace_transfer::{
 /// `remote_http_call`, which then uses `RequestBuilder::timeout` to override
 /// this default for that single request.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Upper bound on per-request timeout overrides. Caps how much a caller can
+/// extend the default — protects against a buggy / malicious JS caller
+/// supplying a huge value and locking a Tauri command worker on a hung
+/// remote. 10 minutes is comfortably above every existing override (the
+/// longest today is 70s for `describeAgentOptions`).
+const HTTP_TIMEOUT_MAX: Duration = Duration::from_secs(600);
+
+const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const WS_SEND_TIMEOUT: Duration = Duration::from_secs(8);
+const WS_PING_INTERVAL: Duration = Duration::from_secs(15);
+const WS_SILENCE_LIMIT: Duration = Duration::from_secs(45);
 
 /// Exponential backoff bounds for WS reconnect. 1s/2s/4s/8s/16s/32s.
 const WS_BACKOFF_INITIAL_SECS: u64 = 1;
@@ -200,7 +214,7 @@ pub(crate) fn connection_redirect_policy() -> reqwest::redirect::Policy {
 /// failure. Without this the host-pinning error reaches the user as a bare
 /// "error following redirect" and looks like a bug rather than a decision.
 pub(crate) use super::remote_binding::request_error_detail;
-use super::remote_binding::{ws_connect_is_unauthorized, RemoteBinding, RemoteBindingState};
+use super::remote_binding::{RemoteBinding, RemoteBindingState};
 
 /// Tauri-managed singleton.
 pub struct RemoteProxyState {
@@ -281,7 +295,7 @@ impl RemoteProxyState {
         }
         if subscribers.is_empty() {
             tasks.remove(&id);
-            let _ = entry.shutdown_tx.send(true);
+            entry.shutdown_tx.send_replace(true);
         }
         (
             disconnected.into_iter().collect(),
@@ -368,23 +382,15 @@ impl RemoteProxyState {
     /// no subscribers remain. A stale unsubscribe from a destroyed transport
     /// only removes its own ID and cannot affect any other transport.
     async fn remove_subscription(self: &Arc<Self>, connection_id: i32, subscription_id: &str) {
-        let shutdown_tx = {
-            let mut tasks = self.tasks.lock().await;
-            let entry = match tasks.get(&connection_id) {
-                Some(e) => e.clone(),
-                None => return,
-            };
-            let mut subs = entry.subscribers.lock().await;
-            subs.remove(subscription_id);
-            if subs.is_empty() {
-                tasks.remove(&connection_id);
-                Some(entry.shutdown_tx.clone())
-            } else {
-                None
-            }
+        let mut tasks = self.tasks.lock().await;
+        let Some(entry) = tasks.get(&connection_id).cloned() else {
+            return;
         };
-        if let Some(tx) = shutdown_tx {
-            let _ = tx.send(true);
+        let mut subs = entry.subscribers.lock().await;
+        subs.remove(subscription_id);
+        if subs.is_empty() {
+            entry.shutdown_tx.send_replace(true);
+            tasks.remove(&connection_id);
         }
     }
 
@@ -398,12 +404,11 @@ impl RemoteProxyState {
         label: &str,
         window_instance_id: &str,
     ) {
-        let shutdown_txs = {
+        {
             let mut destroyed = self.destroyed_window_instances.lock().await;
             destroyed.insert(window_instance_id.to_string());
             let mut tasks = self.tasks.lock().await;
             let connection_ids: Vec<i32> = tasks.keys().copied().collect();
-            let mut shutdown_txs = Vec::new();
 
             for connection_id in connection_ids {
                 let entry = match tasks.get(&connection_id) {
@@ -419,16 +424,12 @@ impl RemoteProxyState {
                 if is_empty {
                     if let Some(stored) = tasks.get(&connection_id) {
                         if Arc::ptr_eq(stored, &entry) {
+                            entry.shutdown_tx.send_replace(true);
                             tasks.remove(&connection_id);
-                            shutdown_txs.push(entry.shutdown_tx.clone());
                         }
                     }
                 }
             }
-            shutdown_txs
-        };
-        for tx in shutdown_txs {
-            let _ = tx.send(true);
         }
     }
 }
@@ -474,10 +475,14 @@ pub async fn remote_http_call(
         connection_id,
         &command,
         args,
-        timeout_ms,
+        timeout_ms.map(clamp_http_timeout_ms),
         config_revision.as_deref(),
     )
     .await
+}
+
+fn clamp_http_timeout_ms(ms: u64) -> u64 {
+    ms.min(HTTP_TIMEOUT_MAX.as_millis() as u64)
 }
 
 // ─── Multipart upload proxy ───────────────────────────────────────────
@@ -1686,7 +1691,7 @@ pub async fn remote_ws_subscribe(
     // the same lock order as `mark_window_instance_destroyed`. This prevents a
     // window destroy event from slipping between the tombstone check and the
     // subscription insert.
-    let needs_new_task = {
+    let existing_entry = {
         let destroyed = proxy_arc.destroyed_window_instances.lock().await;
         if destroyed.contains(&subscriber.window_instance_id) {
             return Ok(());
@@ -1697,15 +1702,14 @@ pub async fn remote_ws_subscribe(
                 let mut subs = entry.subscribers.lock().await;
                 subs.insert(subscription_id.clone(), subscriber.clone());
                 drop(subs);
-                let is_ready = *entry.ready.read().await;
-                Some(is_ready)
+                Some(entry.clone())
             }
             None => None,
         }
     };
 
-    if let Some(is_ready) = needs_new_task {
-        if is_ready {
+    if let Some(entry) = existing_entry {
+        acknowledge_ready_subscriber(&entry, &binding, || {
             emit_internal_to_label(
                 &app,
                 &label,
@@ -1713,7 +1717,8 @@ pub async fn remote_ws_subscribe(
                 WS_READY_CHANNEL,
                 &binding.connection.config_revision,
             );
-        }
+        })
+        .await;
         return Ok(());
     }
 
@@ -1732,7 +1737,7 @@ pub async fn remote_ws_subscribe(
 
     // Insert under the proxy lock. If a concurrent subscribe raced us, fold
     // our subscription into the existing entry and abort our task spawn.
-    {
+    let raced_entry = {
         let destroyed = proxy_arc.destroyed_window_instances.lock().await;
         if destroyed.contains(&subscriber.window_instance_id) {
             return Ok(());
@@ -1744,9 +1749,24 @@ pub async fn remote_ws_subscribe(
                 .lock()
                 .await
                 .insert(subscription_id, subscriber);
-            return Ok(());
+            Some(existing.clone())
+        } else {
+            tasks.insert(connection_id, entry.clone());
+            None
         }
-        tasks.insert(connection_id, entry.clone());
+    };
+    if let Some(existing) = raced_entry {
+        acknowledge_ready_subscriber(&existing, &binding, || {
+            emit_internal_to_label(
+                &app,
+                &label,
+                &event_name,
+                WS_READY_CHANNEL,
+                &binding.connection.config_revision,
+            );
+        })
+        .await;
+        return Ok(());
     }
 
     let task_app = app.clone();
@@ -1758,8 +1778,8 @@ pub async fn remote_ws_subscribe(
         run_ws_task(
             task_app,
             task_proxy,
-            connection_id,
             task_db,
+            connection_id,
             task_entry,
             shutdown_rx,
             outbound_rx,
@@ -1855,13 +1875,14 @@ pub async fn remote_ws_unsubscribe(
 
 // ─── WS background task ───────────────────────────────────────────────
 
-/// Reconnects until released, reloading credentials on every attempt. Only
-/// an explicit HTTP 401 terminates the stream as unauthorized.
+/// Maintains one socket per task, with revision-fenced delivery and terminal
+/// retirement. Network waits are bounded and cancelled by shutdown or a saved
+/// configuration change; only an explicit current-binding HTTP 401 retires it.
 async fn run_ws_task(
     app: AppHandle,
     proxy: Arc<RemoteProxyState>,
+    db: DatabaseConnection,
     connection_id: i32,
-    db: sea_orm::DatabaseConnection,
     entry: Arc<WsTaskEntry>,
     shutdown_rx: watch::Receiver<bool>,
     outbound_rx: mpsc::Receiver<String>,
@@ -1883,66 +1904,186 @@ async fn run_ws_task(
     .await;
 }
 
-async fn run_ws_task_core<F: std::future::Future<Output = ()>>(
+async fn run_ws_task_core<F: Future<Output = ()>>(
     proxy: Arc<RemoteProxyState>,
     connection_id: i32,
-    db: sea_orm::DatabaseConnection,
+    db: DatabaseConnection,
     entry: Arc<WsTaskEntry>,
     receivers: (watch::Receiver<bool>, mpsc::Receiver<String>),
-    mut emit: impl FnMut(&str, &Value),
+    emit: impl FnMut(&str, &Value),
     mut unauthorized_selected: impl FnMut() -> F,
 ) {
     let (mut shutdown_rx, mut outbound_rx) = receivers;
-    let mut fail_count: u32 = 0;
+    let initial = tokio::select! {
+        biased;
+        _ = shutdown_rx.changed() => None,
+        binding = proxy.bindings.bind(&db, connection_id, None) => binding.ok(),
+    };
+    if let Some(binding) = initial {
+        // Each callback future owns its captures. A FnMut callback must not
+        // return a future borrowing its captured emitter or observer.
+        let emit = Arc::new(Mutex::new(emit));
+        run_ws_connection(
+            WsTarget::bound(binding),
+            |last_known| {
+                let proxy = proxy.clone();
+                let db = db.clone();
+                async move {
+                    stored_ws_target(db, connection_id, last_known, &proxy.bindings).await
+                }
+            },
+            &mut shutdown_rx,
+            &mut outbound_rx,
+            |target, event| {
+                let proxy = proxy.clone();
+                let entry = entry.clone();
+                let emit = emit.clone();
+                let selected = matches!(event, WsEvent::Unauthorized)
+                    .then(&mut unauthorized_selected);
+                async move {
+                    if let Some(selected) = selected {
+                        selected.await;
+                    }
+                    let binding = target.binding.as_ref().expect("native WS target is bound");
+                    let mut emit = emit.lock().await;
+                    match event {
+                        WsEvent::Unauthorized => {
+                            retire_unauthorized_ws_task(&proxy, &entry, binding, &mut *emit).await
+                        }
+                        WsEvent::Frame(frame) => {
+                            deliver_ws_envelope(&proxy, &entry, binding, frame, &mut *emit).await
+                        }
+                    }
+                }
+            },
+        )
+        .await;
+    }
+    remove_ws_task_entry(&proxy, connection_id, &entry).await;
+}
 
+/// Socket credentials plus the issuing generation for native delivery.
+/// Socket-only tests inject unbound targets into the same network loop.
+#[derive(Clone)]
+struct WsTarget {
+    url: String,
+    token: String,
+    headers: HeaderMap,
+    binding: Option<Arc<RemoteBinding>>,
+}
+
+impl WsTarget {
+    fn of(connection: &RemoteWorkspaceConnectionInfo) -> Self {
+        Self {
+            url: http_url_to_ws_url(&connection.base_url, WS_EVENTS_PATH),
+            token: connection.token.trim().to_owned(),
+            headers: connection.headers.to_header_map(),
+            binding: None,
+        }
+    }
+
+    fn bound(binding: RemoteBinding) -> Self {
+        let mut target = Self::of(&binding.connection);
+        target.binding = Some(Arc::new(binding));
+        target
+    }
+
+    fn invalidated(&self) -> CancellationToken {
+        self.binding
+            .as_ref()
+            .map(|binding| binding.invalidated.clone())
+            .unwrap_or_default()
+    }
+}
+
+/// Retries reload credentials under the generation gate. A transient DB
+/// failure may reuse a current binding, but never an invalidated generation.
+async fn stored_ws_target(
+    db: DatabaseConnection,
+    connection_id: i32,
+    last_known: WsTarget,
+    bindings: &RemoteBindingState,
+) -> Option<WsTarget> {
+    match bindings.bind(&db, connection_id, None).await {
+        Ok(binding) => Some(WsTarget::bound(binding)),
+        Err(err) if matches!(err.code, AppErrorCode::NotFound) => None,
+        Err(_) => {
+            tracing::warn!("[RemoteProxy] could not reload remote connection {connection_id}");
+            (!last_known.invalidated().is_cancelled()).then_some(last_known)
+        }
+    }
+}
+
+enum WsEvent {
+    Frame(Value),
+    /// A selected handshake result, distinct from a remote JSON envelope.
+    Unauthorized,
+}
+
+/// Injectable network lifecycle shared by native binding/retirement tests
+/// and socket-only tests. The delivery result rejects selected stale frames;
+/// a rejected 401 retries with a freshly loaded binding instead of exiting.
+async fn run_ws_connection<R, RFut, F, Fut>(
+    mut target: WsTarget,
+    mut refresh_target: R,
+    shutdown_rx: &mut watch::Receiver<bool>,
+    outbound_rx: &mut mpsc::Receiver<String>,
+    mut emit: F,
+) where
+    R: FnMut(WsTarget) -> RFut,
+    RFut: Future<Output = Option<WsTarget>>,
+    F: FnMut(WsTarget, WsEvent) -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let mut fail_count: u32 = 0;
+    let mut refresh = false;
     'reconnect: loop {
-        if *shutdown_rx.borrow() {
+        if *shutdown_rx.borrow() || shutdown_rx.has_changed().is_err() {
             break;
         }
-
-        let binding = match proxy.bindings.bind(&db, connection_id, None).await {
-            Ok(binding) => binding,
-            Err(_) => break,
-        };
-        let conn = &binding.connection;
-        let ws_url = http_url_to_ws_url(&conn.base_url, WS_EVENTS_PATH);
-        let custom_headers = conn.headers.to_header_map();
-        // Never carry old resource attach/input frames into a new connection.
+        if refresh {
+            let current = tokio::select! {
+                biased;
+                _ = shutdown_rx.changed() => break,
+                current = refresh_target(target.clone()) => current,
+            };
+            match current {
+                Some(current) => target = current,
+                None => break,
+            }
+        }
+        refresh = true;
+        let invalidated = target.invalidated();
+        // Never carry old resource attach/input frames across generations or
+        // sockets. Clear again after connect to cover the handshake interval.
         while outbound_rx.try_recv().is_ok() {}
-
         let connect_result = tokio::select! {
             biased;
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
+            _ = shutdown_rx.changed() => break,
+            _ = invalidated.cancelled() => continue,
+            result = connect_with_subprotocol_auth(&target.url, WS_EVENT_PROTOCOL, &target.token, &target.headers) => result,
+        };
+        let mut socket = match connect_result {
+            Ok(socket) => socket,
+            Err(WsConnectError::Unauthorized) => {
+                if emit(target.clone(), WsEvent::Unauthorized).await {
                     break;
                 }
                 continue;
             }
-            _ = binding.invalidated.cancelled() => continue,
-            res = connect_with_subprotocol_auth(&ws_url, WS_EVENT_PROTOCOL, conn.token.trim(), &custom_headers) => res,
-        };
-
-        let mut socket = match connect_result {
-            Ok(s) => s,
             Err(err) => {
-                // Do not log handshake response headers/body: they can contain credentials.
-                tracing::warn!("[RemoteProxy] WS connect failed for connection {connection_id}");
+                // Classification excludes response headers/body and tokens.
+                tracing::warn!("[RemoteProxy] WS connect failed: {err}");
+                emit(
+                    target.clone(),
+                    WsEvent::Frame(lifecycle_frame(WS_DISCONNECTED_CHANNEL)),
+                )
+                .await;
                 fail_count = fail_count.saturating_add(1);
-                if ws_connect_is_unauthorized(&err) {
-                    // The native runner uses an immediately ready observer;
-                    // tests can suspend an already selected handshake result.
-                    unauthorized_selected().await;
-                    if !retire_unauthorized_ws_task(&proxy, &entry, &binding, &mut emit).await {
-                        continue;
-                    }
-                    break;
-                }
-                emit_bound_internal(&proxy, &entry, &binding, WS_DISCONNECTED_CHANNEL, &mut emit)
-                    .await;
                 if tokio::select! {
                     biased;
-                    _ = binding.invalidated.cancelled() => false,
-                    stop = backoff_sleep(&mut shutdown_rx, fail_count) => stop,
+                    _ = invalidated.cancelled() => false,
+                    stop = backoff_sleep(shutdown_rx, fail_count) => stop,
                 } {
                     break;
                 }
@@ -1950,95 +2091,85 @@ async fn run_ws_task_core<F: std::future::Future<Output = ()>>(
             }
         };
 
-        // Connect succeeded — reset fail count. We do not emit `__ready__`
-        // here; the remote server emits the real `__ready__` only after it
-        // has subscribed to its broadcaster, and that is the readiness
-        // contract the frontend relies on.
+        // Readiness comes only from the server after broadcaster admission.
         fail_count = 0;
-
-        // Read loop. Exits on shutdown, error, or remote close.
+        while outbound_rx.try_recv().is_ok() {}
+        let mut last_received = tokio::time::Instant::now();
+        let mut ping = tokio::time::interval_at(last_received + WS_PING_INTERVAL, WS_PING_INTERVAL);
+        ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 biased;
-                changed = shutdown_rx.changed() => {
-                    if changed.is_ok() && *shutdown_rx.borrow() {
-                        // Drop the socket promptly; a close-frame flush must
-                        // not delay window/connection teardown.
-                        break 'reconnect;
+                _ = shutdown_rx.changed() => break 'reconnect,
+                _ = invalidated.cancelled() => break,
+                _ = ping.tick() => {
+                    if last_received.elapsed() >= WS_SILENCE_LIMIT {
+                        break;
                     }
-                }
-                _ = binding.invalidated.cancelled() => {
-                    break;
+                    let sent = tokio::select! {
+                        biased;
+                        _ = shutdown_rx.changed() => break 'reconnect,
+                        _ = invalidated.cancelled() => break,
+                        sent = send_ws_message(&mut socket, Message::Ping(Vec::new().into())) => sent,
+                    };
+                    if !sent { break; }
                 }
                 outbound = outbound_rx.recv() => match outbound {
                     Some(text) => {
                         let sent = tokio::select! {
                             biased;
                             _ = shutdown_rx.changed() => break 'reconnect,
-                            _ = binding.invalidated.cancelled() => break,
-                            sent = socket.send(Message::Text(text.into())) => sent,
+                            _ = invalidated.cancelled() => break,
+                            sent = send_ws_message(&mut socket, Message::Text(text.into())) => sent,
                         };
-                        if let Err(err) = sent {
-                            tracing::error!(
-                                "[RemoteProxy] outbound send failed on connection {connection_id}: {err}"
-                            );
-                            break;
-                        }
+                        if !sent { break; }
                     }
-                    None => {
-                        // Sender side dropped — only happens at proxy state
-                        // teardown; treat as graceful exit.
-                        // Drop the socket promptly; a close-frame flush must
-                        // not delay window/connection teardown.
-                        break 'reconnect;
-                    }
+                    None => break 'reconnect,
                 },
                 msg = socket.next() => match msg {
                     Some(Ok(Message::Text(text))) => {
-                        match forward_text_message(&proxy, &entry, &binding, &text, &mut emit).await {
-                            Ok(false) => break,
-                            Ok(true) => {},
-                            Err(err) => tracing::warn!("[RemoteProxy] failed to forward WS message on connection {connection_id}: {err}"),
+                        last_received = tokio::time::Instant::now();
+                        match serde_json::from_str::<Value>(&text) {
+                            Ok(frame) if frame.is_object() => {
+                                if !emit(target.clone(), WsEvent::Frame(frame)).await { break; }
+                            }
+                            _ => tracing::warn!("[RemoteProxy] invalid WS JSON envelope"),
                         }
                     }
                     Some(Ok(Message::Binary(_))) => {
-                        // Server only emits text frames today; ignore binary.
+                        last_received = tokio::time::Instant::now();
                     }
                     Some(Ok(Message::Ping(payload))) => {
-                        tokio::select! {
+                        last_received = tokio::time::Instant::now();
+                        let sent = tokio::select! {
                             biased;
                             _ = shutdown_rx.changed() => break 'reconnect,
-                            _ = binding.invalidated.cancelled() => break,
-                            _ = socket.send(Message::Pong(payload)) => {},
-                        }
+                            _ = invalidated.cancelled() => break,
+                            sent = send_ws_message(&mut socket, Message::Pong(payload)) => sent,
+                        };
+                        if !sent { break; }
                     }
-                    Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => {}
-                    Some(Ok(Message::Close(_))) | None => {
-                        break;
+                    Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => {
+                        last_received = tokio::time::Instant::now();
                     }
-                    Some(Err(err)) => {
-                        tracing::error!(
-                            "[RemoteProxy] WS read error on connection {connection_id}: {err}"
-                        );
-                        break;
-                    }
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
                 },
             }
         }
-
-        // Disconnected (not via shutdown). Notify and try again.
-        emit_bound_internal(&proxy, &entry, &binding, WS_DISCONNECTED_CHANNEL, &mut emit).await;
-        fail_count += 1;
+        emit(
+            target.clone(),
+            WsEvent::Frame(lifecycle_frame(WS_DISCONNECTED_CHANNEL)),
+        )
+        .await;
+        fail_count = fail_count.saturating_add(1);
         if tokio::select! {
             biased;
-            _ = binding.invalidated.cancelled() => false,
-            stop = backoff_sleep(&mut shutdown_rx, fail_count) => stop,
+            _ = invalidated.cancelled() => false,
+            stop = backoff_sleep(shutdown_rx, fail_count) => stop,
         } {
             break;
         }
     }
-
-    remove_ws_task_entry(&proxy, connection_id, &entry).await;
 }
 
 async fn remove_ws_task_entry(
@@ -2047,17 +2178,26 @@ async fn remove_ws_task_entry(
     entry: &Arc<WsTaskEntry>,
 ) {
     *entry.ready.write().await = false;
-
-    // Cleanup: remove our entry from the proxy state. We only remove if
-    // the stored Arc still points to us — a fresh resubscribe between
-    // our shutdown signal and this cleanup could have already replaced
-    // it, and we mustn't blow away the newer entry.
+    entry.shutdown_tx.send_replace(true);
     let mut tasks = proxy.tasks.lock().await;
-    if let Some(stored) = tasks.get(&connection_id) {
-        if Arc::ptr_eq(stored, entry) {
-            tasks.remove(&connection_id);
-        }
+    if tasks
+        .get(&connection_id)
+        .is_some_and(|stored| Arc::ptr_eq(stored, entry))
+    {
+        // The old runner cannot remove a replacement installed by a new
+        // subscribe. Its own Arc is already marked retired.
+        tasks.remove(&connection_id);
     }
+}
+
+type RemoteWsSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn send_ws_message(socket: &mut RemoteWsSocket, message: Message) -> bool {
+    matches!(
+        tokio::time::timeout(WS_SEND_TIMEOUT, socket.send(message)).await,
+        Ok(Ok(()))
+    )
 }
 
 /// A terminal 401 must retire the issuing task before update or subscription
@@ -2090,11 +2230,14 @@ async fn retire_unauthorized_ws_task(
 /// `true` if shutdown was requested during the wait — caller should exit
 /// its loop in that case.
 async fn backoff_sleep(shutdown_rx: &mut watch::Receiver<bool>, fail_count: u32) -> bool {
+    if *shutdown_rx.borrow() {
+        return true;
+    }
     let shift = fail_count.saturating_sub(1).min(8) as u64;
     let secs = (WS_BACKOFF_INITIAL_SECS << shift).min(WS_BACKOFF_MAX_SECS);
     tokio::select! {
         biased;
-        changed = shutdown_rx.changed() => changed.is_ok() && *shutdown_rx.borrow(),
+        changed = shutdown_rx.changed() => changed.is_err() || *shutdown_rx.borrow(),
         _ = tokio::time::sleep(Duration::from_secs(secs)) => false,
     }
 }
@@ -2105,23 +2248,6 @@ async fn backoff_sleep(shutdown_rx: &mut watch::Receiver<bool>, fail_count: u32)
 /// We re-emit the payload as-is into the Tauri event named
 /// `remote-ws-event-{connection_id}`, but only to webview labels listed in
 /// the subscriber set — never broadcast.
-async fn forward_text_message(
-    proxy: &RemoteProxyState,
-    entry: &Arc<WsTaskEntry>,
-    binding: &RemoteBinding,
-    text: &str,
-    emit: impl FnMut(&str, &Value),
-) -> Result<bool, String> {
-    // Validate the JSON shape minimally to surface server-side bugs
-    // (malformed frames) without dropping the frame entirely.
-    let envelope: Value =
-        serde_json::from_str(text).map_err(|e| format!("invalid WS frame: {e}"))?;
-    if !envelope.is_object() {
-        return Err("invalid WS envelope".into());
-    }
-    Ok(deliver_ws_envelope(proxy, entry, binding, envelope, emit).await)
-}
-
 /// The issuing binding fences ready writes, subscriber selection, and the
 /// actual IPC emit under the same read gate as registration. The revision in
 /// every envelope additionally lets new JS runtimes discard queued old IPC.
@@ -2177,23 +2303,6 @@ async fn deliver_ws_envelope_locked(
     true
 }
 
-async fn emit_bound_internal(
-    proxy: &RemoteProxyState,
-    entry: &Arc<WsTaskEntry>,
-    binding: &RemoteBinding,
-    channel: &'static str,
-    emit: impl FnMut(&str, &Value),
-) -> bool {
-    deliver_ws_envelope(
-        proxy,
-        entry,
-        binding,
-        serde_json::json!({"channel": channel, "payload": null}),
-        emit,
-    )
-    .await
-}
-
 fn emit_internal_to_label(
     app: &AppHandle,
     label: &str,
@@ -2211,6 +2320,24 @@ fn emit_internal_to_label(
     }
 }
 
+/// Caller holds the connection read gate through this acknowledgement.
+async fn acknowledge_ready_subscriber(
+    entry: &WsTaskEntry,
+    binding: &RemoteBinding,
+    mut emit_ready: impl FnMut(),
+) {
+    // Holding readiness through IPC prevents a ready ack overtaking a
+    // disconnect. Both subscription insertion paths use this helper.
+    let ready = entry.ready.read().await;
+    if *ready && !*entry.shutdown_tx.borrow() && !binding.invalidated.is_cancelled() {
+        emit_ready();
+    }
+}
+
+fn lifecycle_frame(channel: &'static str) -> Value {
+    serde_json::json!({ "channel": channel, "payload": Value::Null })
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────
 
 /// Connect to a remote WebSocket with subprotocol-based token auth, speaking
@@ -2220,25 +2347,43 @@ fn emit_internal_to_label(
 /// is what browser WebSocket clients use because browsers cannot set arbitrary
 /// headers on WS handshakes; we follow the same convention here so both
 /// transports share one server-side codepath.
-pub(crate) async fn connect_with_subprotocol_auth(
+async fn connect_with_subprotocol_auth(
     ws_url: &str,
     protocol: &str,
     token: &str,
     custom_headers: &HeaderMap,
-) -> Result<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    Box<tokio_tungstenite::tungstenite::Error>,
-> {
+) -> Result<RemoteWsSocket, WsConnectError> {
     let request = ws_request_with_subprotocol_auth(ws_url, protocol, token, custom_headers)
-        .map_err(|message| {
-            Box::new(tokio_tungstenite::tungstenite::Error::Io(
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, message),
-            ))
-        })?;
-    let (stream, _resp) = tokio_tungstenite::connect_async(request)
-        .await
-        .map_err(Box::new)?;
+        .map_err(|_| WsConnectError::Retryable("invalid WebSocket request".into()))?;
+    let (stream, _resp) = tokio::time::timeout(
+        WS_CONNECT_TIMEOUT,
+        tokio_tungstenite::connect_async(request),
+    )
+    .await
+    .map_err(|_| WsConnectError::Retryable("WebSocket connect timed out".into()))?
+    .map_err(WsConnectError::from)?;
     Ok(stream)
+}
+
+#[derive(Debug, thiserror::Error)]
+enum WsConnectError {
+    #[error("the remote server refused the token")]
+    Unauthorized,
+    #[error("{0}")]
+    Retryable(String),
+}
+
+impl From<WsError> for WsConnectError {
+    fn from(err: WsError) -> Self {
+        match err {
+            WsError::Http(response) if response.status().as_u16() == 401 => Self::Unauthorized,
+            WsError::Http(response) => {
+                Self::Retryable(format!("remote server answered HTTP {}", response.status()))
+            }
+            WsError::Io(err) => Self::Retryable(format!("WebSocket I/O error ({})", err.kind())),
+            _ => Self::Retryable("WebSocket handshake failed".into()),
+        }
+    }
 }
 
 /// The handshake request `connect_with_subprotocol_auth` sends, for a caller
@@ -2894,7 +3039,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(ws_connect_is_unauthorized(&error));
+        assert!(matches!(error, WsConnectError::Unauthorized));
         server.abort();
     }
 
@@ -3366,6 +3511,555 @@ mod tests {
             "message should mention 'timed out', got: {}",
             err.message
         );
+    }
+
+    #[test]
+    fn http_timeout_overrides_are_clamped_without_raising_short_timeouts() {
+        for (requested, expected) in [
+            (0, 0),
+            (1, 1),
+            (70_000, 70_000),
+            (600_000, 600_000),
+            (600_001, 600_000),
+            (u64::MAX, 600_000),
+        ] {
+            assert_eq!(clamp_http_timeout_ms(requested), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn ready_ack_holds_readiness_and_suppresses_disconnected_or_retired_bindings() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let proxy = RemoteProxyState::new();
+        let connection = remote_workspace_connection_service::create(
+            &db.conn,
+            "A",
+            "http://localhost:3080",
+            "token",
+            &[],
+        )
+        .await
+        .unwrap();
+        let binding = proxy
+            .bindings
+            .bind(&db.conn, connection.id, None)
+            .await
+            .unwrap();
+        let entry = test_entry(HashMap::new());
+        let gate = proxy.bindings.gate(connection.id).await;
+        let _guard = gate.read().await;
+        *entry.ready.write().await = true;
+        let mut acknowledgements = 0;
+        acknowledge_ready_subscriber(&entry, &binding, || {
+            assert!(entry.ready.try_write().is_err());
+            assert!(gate.try_write().is_err());
+            acknowledgements += 1;
+        })
+        .await;
+        assert_eq!(acknowledgements, 1);
+        {
+            // An acknowledgement selected while disconnect owns readiness
+            // must observe false after the disconnect wins that lock.
+            let mut ready = entry.ready.write().await;
+            let acknowledgement = acknowledge_ready_subscriber(&entry, &binding, || {
+                panic!("late ready acknowledgement after disconnect");
+            });
+            tokio::pin!(acknowledgement);
+            assert!(futures_util::poll!(&mut acknowledgement).is_pending());
+            *ready = false;
+            drop(ready);
+            acknowledgement.await;
+        }
+        *entry.ready.write().await = true;
+        entry.shutdown_tx.send_replace(true);
+        acknowledge_ready_subscriber(&entry, &binding, || {
+            panic!("retired task acknowledged ready")
+        })
+        .await;
+        entry.shutdown_tx.send_replace(false);
+        binding.invalidated.cancel();
+        acknowledge_ready_subscriber(&entry, &binding, || {
+            panic!("invalidated binding acknowledged ready")
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn old_task_cleanup_retires_its_arc_without_touching_a_replacement() {
+        let proxy = RemoteProxyState::new();
+        let old = test_entry(HashMap::new());
+        let replacement = test_entry(HashMap::new());
+        *old.ready.write().await = true;
+        *replacement.ready.write().await = true;
+        proxy.tasks.lock().await.insert(7, replacement.clone());
+        remove_ws_task_entry(&proxy, 7, &old).await;
+        assert!(*old.shutdown_tx.borrow());
+        assert!(!*old.ready.read().await);
+        assert!(!*replacement.shutdown_tx.borrow());
+        assert!(*replacement.ready.read().await);
+        assert!(Arc::ptr_eq(
+            proxy.tasks.lock().await.get(&7).unwrap(),
+            &replacement
+        ));
+    }
+
+    struct TestSocketLoop {
+        frames: mpsc::UnboundedReceiver<Value>,
+        task: tokio::task::JoinHandle<()>,
+        shutdown: watch::Sender<bool>,
+        outbound: mpsc::Sender<String>,
+    }
+
+    fn test_ws_target(url: String) -> WsTarget {
+        WsTarget {
+            url,
+            token: "private-token-sentinel".into(),
+            headers: HeaderMap::new(),
+            binding: None,
+        }
+    }
+
+    /// A loop whose connection is never edited: every retry dials `url`.
+    fn start_test_socket_loop(url: String) -> TestSocketLoop {
+        start_test_socket_loop_with(test_ws_target(url), |last| std::future::ready(Some(last)))
+    }
+
+    fn start_test_socket_loop_with<R, RFut>(target: WsTarget, refresh_target: R) -> TestSocketLoop
+    where
+        R: FnMut(WsTarget) -> RFut + Send + 'static,
+        RFut: Future<Output = Option<WsTarget>> + Send,
+    {
+        let (entry, mut outbound_rx) = entry_with_outbound(8);
+        let outbound = entry.outbound_tx.clone();
+        let (shutdown, mut shutdown_rx) = watch::channel(false);
+        let (tx, frames) = mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            run_ws_connection(
+                target,
+                refresh_target,
+                &mut shutdown_rx,
+                &mut outbound_rx,
+                |_, event| {
+                    let frame = match event {
+                        WsEvent::Frame(frame) => frame,
+                        WsEvent::Unauthorized => lifecycle_frame(WS_UNAUTHORIZED_CHANNEL),
+                    };
+                    let _ = tx.send(frame);
+                    std::future::ready(true)
+                },
+            )
+            .await;
+        });
+        TestSocketLoop {
+            frames,
+            task,
+            shutdown,
+            outbound,
+        }
+    }
+
+    async fn next_test_frame(frames: &mut mpsc::UnboundedReceiver<Value>) -> Value {
+        tokio::time::timeout(Duration::from_secs(30), frames.recv())
+            .await
+            .expect("proxy should deliver a frame")
+            .expect("proxy must stay alive")
+    }
+
+    // tungstenite fixes the handshake callback's error type to an HTTP response.
+    #[allow(clippy::result_large_err)]
+    async fn accept_test_socket(
+        stream: tokio::net::TcpStream,
+    ) -> tokio_tungstenite::WebSocketStream<tokio::net::TcpStream> {
+        tokio_tungstenite::accept_hdr_async(stream, |_: &Request, mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+            response.headers_mut().insert("sec-websocket-protocol", HeaderValue::from_static(WS_EVENT_PROTOCOL));
+            Ok(response)
+        }).await.unwrap()
+    }
+
+    async fn read_test_handshake(stream: &mut tokio::net::TcpStream) {
+        use tokio::io::AsyncReadExt;
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).await.unwrap();
+            request.push(byte[0]);
+            assert!(request.len() <= 8192, "test handshake must be bounded");
+        }
+    }
+
+    #[tokio::test]
+    async fn ws_connect_timeout_and_shutdown_bound_an_unanswered_handshake() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (accepted_tx, mut accepted_rx) = mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            let mut held = Vec::new();
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                read_test_handshake(&mut stream).await;
+                held.push(stream);
+                accepted_tx.send(()).unwrap();
+            }
+        });
+        let url = format!("ws://{address}/ws/events");
+        let connect_url = url.clone();
+        let attempt = tokio::spawn(async move {
+            connect_with_subprotocol_auth(
+                &connect_url,
+                WS_EVENT_PROTOCOL,
+                "private-token-sentinel",
+                &HeaderMap::new(),
+            )
+            .await
+        });
+        accepted_rx.recv().await.unwrap();
+        tokio::time::pause();
+        tokio::time::advance(WS_CONNECT_TIMEOUT).await;
+        let error = attempt.await.unwrap().unwrap_err();
+        assert!(matches!(error, WsConnectError::Retryable(_)));
+        assert!(error.to_string().contains("timed out"));
+        tokio::time::resume();
+        let client = start_test_socket_loop(url);
+        accepted_rx.recv().await.unwrap();
+        client.shutdown.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), client.task)
+            .await
+            .unwrap()
+            .unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn ws_loop_recovers_after_more_than_three_transient_failures() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for attempt in 0..5 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                if (1..=3).contains(&attempt) {
+                    read_test_handshake(&mut stream).await;
+                    stream
+                        .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+                        .await
+                        .unwrap();
+                    continue;
+                }
+                let mut socket = accept_test_socket(stream).await;
+                socket
+                    .send(Message::Text(
+                        lifecycle_frame(WS_READY_CHANNEL).to_string().into(),
+                    ))
+                    .await
+                    .unwrap();
+                if attempt == 0 {
+                    socket.close(None).await.unwrap();
+                    continue;
+                }
+                // A renewed attach must reach the recovered socket, then
+                // snapshots and subsequent conversation events flow again.
+                let attach = socket.next().await.unwrap().unwrap();
+                assert!(matches!(attach, Message::Text(text) if text.contains("session-1")));
+                for frame in [
+                    serde_json::json!({"type": "replay", "events": [{"seq": 11}]}),
+                    serde_json::json!({"type": "event", "envelope": {"seq": 12}}),
+                ] {
+                    socket
+                        .send(Message::Text(frame.to_string().into()))
+                        .await
+                        .unwrap();
+                }
+                // Hold the recovered socket until the test shuts down.
+                while socket.next().await.is_some() {}
+            }
+        });
+        let mut client = start_test_socket_loop(format!("ws://{address}/ws/events"));
+        assert_eq!(
+            next_test_frame(&mut client.frames).await["channel"],
+            WS_READY_CHANNEL
+        );
+        let mut disconnects = 0;
+        loop {
+            let frame = next_test_frame(&mut client.frames).await;
+            assert_ne!(frame["channel"], WS_UNAUTHORIZED_CHANNEL);
+            if frame["channel"] == WS_READY_CHANNEL {
+                break;
+            }
+            if frame["channel"] == WS_DISCONNECTED_CHANNEL {
+                disconnects += 1;
+            }
+        }
+        assert!(
+            disconnects >= 4,
+            "the proxy must survive the old three-failure cutoff"
+        );
+        client
+            .outbound
+            .send(r#"{"action":"attach","connection_id":"session-1","since_seq":10}"#.into())
+            .await
+            .unwrap();
+        assert_eq!(next_test_frame(&mut client.frames).await["type"], "replay");
+        assert_eq!(
+            next_test_frame(&mut client.frames).await["envelope"]["seq"],
+            12
+        );
+        client.shutdown.send(true).unwrap();
+        client.task.await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ws_loop_stops_on_401_and_sanitizes_handshake_diagnostics() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_test_handshake(&mut stream).await;
+            stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nX-Echo: private-token-sentinel\r\n\r\n").await.unwrap();
+        });
+        let mut client = start_test_socket_loop(format!("ws://{address}/ws/events"));
+        assert_eq!(
+            next_test_frame(&mut client.frames).await["channel"],
+            WS_UNAUTHORIZED_CHANNEL
+        );
+        client.task.await.unwrap();
+        server.await.unwrap();
+        assert!(client.frames.recv().await.is_none());
+
+        for status in [401, 403, 503] {
+            let response = tokio_tungstenite::tungstenite::http::Response::builder()
+                .status(status)
+                .header("x-echo", "private-token-sentinel")
+                .body(Some(b"private-token-sentinel".to_vec()))
+                .unwrap();
+            let error = WsConnectError::from(WsError::Http(response));
+            assert_eq!(matches!(error, WsConnectError::Unauthorized), status == 401);
+            assert!(!error.to_string().contains("private-token-sentinel"));
+            assert!(!format!("{error:?}").contains("private-token-sentinel"));
+        }
+    }
+
+    #[tokio::test]
+    async fn ws_loop_recovers_a_half_open_socket_and_cancels_backoff_on_shutdown() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = accept_test_socket(stream).await;
+            socket
+                .send(Message::Text(
+                    lifecycle_frame(WS_READY_CHANNEL).to_string().into(),
+                ))
+                .await
+                .unwrap();
+            // Keep TCP open while withholding all WS traffic, including pongs.
+            std::future::pending::<()>().await;
+            drop(socket);
+        });
+        let mut client = start_test_socket_loop(format!("ws://{address}/ws/events"));
+        assert_eq!(
+            next_test_frame(&mut client.frames).await["channel"],
+            WS_READY_CHANNEL
+        );
+        tokio::time::pause();
+        tokio::time::advance(WS_SILENCE_LIMIT).await;
+        assert_eq!(
+            next_test_frame(&mut client.frames).await["channel"],
+            WS_DISCONNECTED_CHANNEL
+        );
+        client.shutdown.send(true).unwrap();
+        client.task.await.unwrap();
+        server.abort();
+    }
+
+    /// The connection is edited to a new address, token and headers while its
+    /// socket is down, then deleted: the retry dials the edited connection,
+    /// and the deletion ends the loop without claiming the token expired.
+    #[tokio::test]
+    async fn ws_loop_retries_follow_the_stored_connection_until_it_is_deleted() {
+        /// Accept one socket and say ready, as a server that refuses with 401
+        /// any dial not carrying `token` and `x-codeg-target: {target}`; refuse
+        /// every later dial; close the socket when told to.
+        // tungstenite fixes the handshake callback's error type to an HTTP response.
+        #[allow(clippy::result_large_err)]
+        async fn serve_once(
+            listener: tokio::net::TcpListener,
+            token: &'static str,
+            target: &'static str,
+            close: tokio::sync::oneshot::Receiver<()>,
+        ) {
+            let (stream, _) = listener.accept().await.unwrap();
+            drop(listener);
+            let offered = format!(
+                "{WS_TOKEN_PROTOCOL_PREFIX}{}",
+                URL_SAFE_NO_PAD.encode(token)
+            );
+            let accepted = tokio_tungstenite::accept_hdr_async(
+                stream,
+                move |request: &Request,
+                      mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    let header = |name: &str| {
+                        request
+                            .headers()
+                            .get(name)
+                            .and_then(|value| value.to_str().ok())
+                            .unwrap_or_default()
+                            .to_owned()
+                    };
+                    if !header("sec-websocket-protocol").contains(&offered)
+                        || header("x-codeg-target") != target
+                    {
+                        return Err(tokio_tungstenite::tungstenite::http::Response::builder()
+                            .status(401)
+                            .body(None)
+                            .unwrap());
+                    }
+                    response.headers_mut().insert(
+                        "sec-websocket-protocol",
+                        HeaderValue::from_static(WS_EVENT_PROTOCOL),
+                    );
+                    Ok(response)
+                },
+            )
+            .await;
+            let Ok(mut socket) = accepted else {
+                return;
+            };
+            socket
+                .send(Message::Text(
+                    lifecycle_frame(WS_READY_CHANNEL).to_string().into(),
+                ))
+                .await
+                .unwrap();
+            let _ = close.await;
+            socket.close(None).await.unwrap();
+        }
+
+        fn stored_target(url: String, token: &str, target: &'static str) -> WsTarget {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-codeg-target", HeaderValue::from_static(target));
+            WsTarget {
+                url,
+                token: token.into(),
+                headers,
+                binding: None,
+            }
+        }
+
+        let old = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let new = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let old_url = format!("ws://{}/ws/events", old.local_addr().unwrap());
+        let new_url = format!("ws://{}/ws/events", new.local_addr().unwrap());
+        let (close_old, close_old_rx) = tokio::sync::oneshot::channel();
+        let (close_new, close_new_rx) = tokio::sync::oneshot::channel();
+        let old_server = tokio::spawn(serve_once(old, "old-token", "old", close_old_rx));
+        let new_server = tokio::spawn(serve_once(new, "new-token", "new", close_new_rx));
+
+        // What the database holds: the loop was spawned on the old connection,
+        // and the user has since pointed it at a new address with a new token
+        // and headers. A retry carrying any old credential gets a 401.
+        let stored = Arc::new(std::sync::Mutex::new(Some(stored_target(
+            new_url,
+            "new-token",
+            "new",
+        ))));
+        let lookup = stored.clone();
+        let mut client =
+            start_test_socket_loop_with(stored_target(old_url, "old-token", "old"), move |_| {
+                std::future::ready(lookup.lock().unwrap().clone())
+            });
+        assert_eq!(
+            next_test_frame(&mut client.frames).await["channel"],
+            WS_READY_CHANNEL
+        );
+        close_old.send(()).unwrap();
+        assert_eq!(
+            next_test_frame(&mut client.frames).await["channel"],
+            WS_DISCONNECTED_CHANNEL
+        );
+        // The old address now refuses, so only the edited one can say ready.
+        assert_eq!(
+            next_test_frame(&mut client.frames).await["channel"],
+            WS_READY_CHANNEL
+        );
+
+        *stored.lock().unwrap() = None;
+        close_new.send(()).unwrap();
+        assert_eq!(
+            next_test_frame(&mut client.frames).await["channel"],
+            WS_DISCONNECTED_CHANNEL
+        );
+        tokio::time::timeout(Duration::from_secs(30), client.task)
+            .await
+            .expect("a deleted connection ends the loop")
+            .unwrap();
+        // Nothing after that disconnect, in particular no `__unauthorized__`.
+        assert!(client.frames.recv().await.is_none());
+        old_server.await.unwrap();
+        new_server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_retry_target_is_the_connection_as_stored_now() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let created = remote_workspace_connection_service::create(
+            &db.conn,
+            "box",
+            "http://old.example:3080",
+            "old-token",
+            &[],
+        )
+        .await
+        .unwrap();
+        let initial = WsTarget::of(&created);
+        assert_eq!(initial.url, "ws://old.example:3080/ws/events");
+
+        remote_workspace_connection_service::update(
+            &db.conn,
+            created.id,
+            "box",
+            "https://new.example",
+            "new-token",
+            &[],
+        )
+        .await
+        .unwrap();
+        let current = stored_ws_target(
+            db.conn.clone(),
+            created.id,
+            initial.clone(),
+            &RemoteBindingState::default(),
+        )
+        .await
+        .expect("a stored connection has a target");
+        assert_eq!(current.url, "wss://new.example/ws/events");
+        assert_eq!(current.token, "new-token");
+
+        // A lookup that fails keeps dialing the last address it found.
+        let closed = crate::db::test_helpers::fresh_in_memory_db().await;
+        closed.conn.close_by_ref().await.unwrap();
+        let kept = stored_ws_target(
+            closed.conn.clone(),
+            created.id,
+            current.clone(),
+            &RemoteBindingState::default(),
+        )
+        .await
+        .expect("a failed lookup keeps the last target");
+        assert_eq!(kept.url, current.url);
+
+        remote_workspace_connection_service::delete(&db.conn, created.id)
+            .await
+            .unwrap();
+        assert!(stored_ws_target(
+            db.conn.clone(),
+            created.id,
+            current,
+            &RemoteBindingState::default()
+        )
+        .await
+        .is_none());
     }
 
     // ─── i18n key wire-format tripwire ─────────────────────────────────

@@ -1,6 +1,10 @@
 "use client"
 
 import { useCommandTerminalLinkStore as legacyCommandTerminalLinks } from "@/stores/command-terminal-link-store"
+import {
+  defaultBackendStoreStorage as legacyStorage,
+  type BackendStoreStorage,
+} from "@/stores/backend-store-storage"
 import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useBackendApi } from "@/contexts/backend-client-context"
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
@@ -16,34 +20,34 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
-
 import type { FolderCommand } from "@/lib/types"
 import { resolveLiveCommandTerminalId } from "@/stores/command-terminal-link-store"
 import { cn } from "@/lib/utils"
 import { CommandManageDialog } from "./command-manage-dialog"
 
-function getSelectedCommandId(folderId: number): number | null {
-  try {
-    const v = localStorage.getItem(`lastCmd:${folderId}`)
-    return v ? Number(v) : null
-  } catch {
-    return null
-  }
+function getSelectedCommandId(
+  storage: BackendStoreStorage,
+  folderId: number
+): number | null {
+  const value = storage.read(`lastCmd:${folderId}`)
+  return value ? Number(value) : null
 }
 
-function setSelectedCommandId(folderId: number, cmdId: number) {
-  try {
-    localStorage.setItem(`lastCmd:${folderId}`, String(cmdId))
-  } catch {
-    /* ignore */
-  }
+function setSelectedCommandId(
+  storage: BackendStoreStorage,
+  folderId: number,
+  cmdId: number
+) {
+  storage.write(`lastCmd:${folderId}`, String(cmdId))
 }
 
 export function CommandDropdown() {
   const backendStores = useBackendStores({
     commandTerminalLinks: legacyCommandTerminalLinks,
+    storage: legacyStorage,
   })
   const useCommandTerminalLinkStore = backendStores.commandTerminalLinks
+  const storage = backendStores.storage
 
   const backendApi = useBackendApi()
 
@@ -101,10 +105,10 @@ export function CommandDropdown() {
   const selectCommand = useCallback(
     (commandId: number) => {
       if (!folderId) return
-      setSelectedCommandId(folderId, commandId)
+      setSelectedCommandId(storage, folderId, commandId)
       setSelectedCommandIdState(commandId)
     },
-    [folderId]
+    [folderId, storage]
   )
 
   useEffect(() => {
@@ -112,8 +116,8 @@ export function CommandDropdown() {
       setSelectedCommandIdState(null)
       return
     }
-    setSelectedCommandIdState(getSelectedCommandId(folderId))
-  }, [folderId])
+    setSelectedCommandIdState(getSelectedCommandId(storage, folderId))
+  }, [folderId, storage])
 
   // Monotonic epoch guarding async command loads: bumped on every folder change
   // (load effect below) and on every refreshCommands call, so a slow response
@@ -184,7 +188,11 @@ export function CommandDropdown() {
         return
 
       selectCommand(cmd.id)
-      const terminalId = await createTerminalWithCommand(cmd.name, cmd.command)
+      const terminalId = await createTerminalWithCommand(
+        cmd.name,
+        cmd.command,
+        cmd.id
+      )
       if (!terminalId) return
 
       setLink(cmd.id, terminalId)
@@ -206,7 +214,9 @@ export function CommandDropdown() {
 
       clearLink(cmd.id)
       try {
-        await backendApi.terminalKill(terminalId)
+        // The tab stays open with what the command printed, so the backend
+        // keeps that output for it — a reload of the tab still shows it.
+        await backendApi.terminalStop(terminalId)
       } catch (err) {
         console.error("Failed to stop command terminal:", err)
       }

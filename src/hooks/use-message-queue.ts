@@ -45,6 +45,8 @@ export interface UseMessageQueueReturn {
   dequeue: () => QueuedMessage | undefined
   remove: (id: string) => void
   reorder: (items: QueuedMessage[]) => void
+  /** Prioritize a still-queued item using its latest draft and mode. */
+  moveToFront: (id: string) => void
   updateItem: (id: string, draft: PromptDraft) => void
   /**
    * The queue length, read SYNCHRONOUSLY from the authoritative ref — it
@@ -162,6 +164,16 @@ export function useMessageQueue(): UseMessageQueueReturn {
     [commit]
   )
 
+  const moveToFront = useCallback(
+    (id: string) => {
+      const current = queueRef.current
+      const index = current.findIndex((item) => item.id === id)
+      if (index <= 0) return
+      commit([current[index], ...current.filter((item) => item.id !== id)])
+    },
+    [commit]
+  )
+
   const getQueueLength = useCallback(() => queueRef.current.length, [])
   const getQueueItems = useCallback(() => queueRef.current, [])
 
@@ -180,6 +192,7 @@ export function useMessageQueue(): UseMessageQueueReturn {
     dequeue,
     remove,
     reorder,
+    moveToFront,
     updateItem,
     getQueueLength,
     getQueueItems,

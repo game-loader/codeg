@@ -1,7 +1,7 @@
 "use client"
 
 import { useBackendPlatform } from "@/contexts/backend-client-context"
-import { useEffect, useState } from "react"
+import { useEffect, useState, type ReactNode } from "react"
 
 import {
   AlertTriangle,
@@ -452,9 +452,12 @@ export function BrowserErrorPage({
 export function BrowserOwnedWindowCard({
   url,
   onShow,
+  children,
 }: {
   url: string
   onShow: () => void
+  /** More about the window, under its address. */
+  children?: ReactNode
 }) {
   const t = useTranslations("Browser.status")
   return (
@@ -463,6 +466,7 @@ export function BrowserOwnedWindowCard({
       <p className="max-w-md break-all text-xs text-muted-foreground/80">
         {url}
       </p>
+      {children}
       <button
         type="button"
         className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs hover:bg-primary/8"

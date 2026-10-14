@@ -2605,7 +2605,11 @@ export function createTabStore(
         if (childSummaryInFlight.has(id)) continue
         childSummaryInFlight.add(id)
         const epoch = seedEpoch
-        void getFolderConversation(id)
+        // Only the SUMMARY is used below, so ask for the smallest window the
+        // backend accepts instead of the legacy full detail. The summary describes
+        // the whole transcript whatever the window, and it is all the tab label
+        // and status read. The backend can widen this to the last user turn.
+        void getFolderConversation(id, { tailTurns: 1 })
           .then((detail) => {
             if (seedEpoch !== epoch) return
             const buffered = childSeedBuffer.get(id)

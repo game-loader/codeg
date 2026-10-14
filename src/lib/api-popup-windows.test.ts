@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import type { RemoteTransportConfig } from "./transport"
+import type { RemoteTransportConfig, Transport } from "./transport"
+import { createBackendPlatform } from "./platform"
 
 /**
  * The web-mode app popup windows (commit / push / settings / import-sessions /
@@ -34,12 +35,14 @@ vi.mock("@/lib/transport", () => ({
 }))
 
 import {
+  createBackendApi,
   openCommitWindow,
   openSettingsWindow,
   uploadAttachment,
   uploadLocalPathToRemote,
   uploadWorkspaceLocalPathsToRemote,
 } from "@/lib/api"
+import { openLocalWorkspace } from "@/lib/remote-workspace"
 
 /** Stand-in for the reserved WindowProxy: only `location.href` and `close`. */
 function fakePopup(initialHref = "about:blank") {
@@ -213,6 +216,21 @@ describe("web-mode app popup windows", () => {
     )
     expect(open).not.toHaveBeenCalled()
   })
+
+  it("opens the local workspace even when the remote desktop is offline", async () => {
+    mocks.isDesktop.mockReturnValue(true)
+    mocks.isRemoteDesktopMode.mockReturnValue(true)
+    mocks.getActiveRemoteConnectionId.mockReturnValue(12)
+    mocks.call.mockImplementation(() => {
+      throw new Error("remote server is offline")
+    })
+    mocks.shellCall.mockResolvedValue(undefined)
+
+    await expect(openLocalWorkspace()).resolves.toBeUndefined()
+
+    expect(mocks.shellCall).toHaveBeenCalledWith("open_local_workspace")
+    expect(mocks.call).not.toHaveBeenCalled()
+  })
 })
 
 describe("compatibility API destination snapshots", () => {
@@ -356,5 +374,82 @@ describe("compatibility API destination snapshots", () => {
     expect(b.onConfigurationChanged).not.toHaveBeenCalled()
     expect(a.onUnauthorized).not.toHaveBeenCalled()
     expect(b.onUnauthorized).not.toHaveBeenCalled()
+  })
+})
+
+describe("upstream resource APIs on fixed backends", () => {
+  it("keeps new resource actions and readiness on A after the ambient connection changes to B", async () => {
+    const target: Transport = {
+      call: vi.fn(async () => undefined as never),
+      subscribe: vi.fn(async () => () => {}),
+      isDesktop: () => true,
+      onReady: vi.fn(() => () => {}),
+    }
+    const binding = {
+      transport: target,
+      remoteConnectionId: 1,
+      baseUrl: "http://a.test",
+      token: "token-a",
+      desktop: true,
+      configRevision: "revision-a",
+    }
+    const apiA = createBackendApi(binding)
+    const platformA = createBackendPlatform(binding)
+    mocks.getActiveRemoteConnectionId.mockReturnValue(2)
+    mocks.remoteConfig = {
+      id: 2,
+      name: "B",
+      baseUrl: "http://b.test",
+      token: "token-b",
+      windowInstanceId: "window-b",
+      configRevision: "revision-b",
+    }
+    mocks.call.mockClear()
+    mocks.shellCall.mockClear()
+
+    await apiA.listConversationTags()
+    await apiA.createConversationTag({ folderId: 1, name: "A", color: "blue" })
+    await apiA.updateConversationTag(1, { name: "Renamed" })
+    await apiA.deleteConversationTag(1)
+    await apiA.reorderConversationTags([1, 2])
+    await apiA.getConversationBranchTag()
+    await apiA.updateConversationBranchTag({ enabled: true, color: "blue" })
+    await apiA.updateConversationTags({ conversationId: 1, add: [2] })
+    await apiA.createDirectory("/repo", "new")
+    await apiA.terminalStop("terminal-a")
+    await apiA.generativeUiSkillInfo()
+    await apiA.generativeUiListAllInstallStatuses()
+    await apiA.generativeUiApplyLinks([])
+    await apiA.generativeUiReadContent()
+    await apiA.describeAgentOptions("opencode", "/repo", { model: "chosen" })
+    const ready = vi.fn()
+    platformA.onTransportReady(ready)
+
+    expect(target.call).toHaveBeenCalledTimes(15)
+    expect(target.call).toHaveBeenCalledWith("update_conversation_tags", {
+      conversationId: 1,
+      add: [2],
+      remove: [],
+    })
+    expect(target.call).toHaveBeenCalledWith("create_directory", {
+      parentPath: "/repo",
+      name: "new",
+    })
+    expect(target.call).toHaveBeenCalledWith("terminal_kill", {
+      terminalId: "terminal-a",
+      keepOutput: true,
+    })
+    expect(target.call).toHaveBeenCalledWith(
+      "acp_describe_agent_options",
+      {
+        agentType: "opencode",
+        workingDir: "/repo",
+        configValues: { model: "chosen" },
+      },
+      { timeoutMs: 70_000 }
+    )
+    expect(target.onReady).toHaveBeenCalledWith(ready)
+    expect(mocks.call).not.toHaveBeenCalled()
+    expect(mocks.shellCall).not.toHaveBeenCalled()
   })
 })

@@ -16,8 +16,6 @@
  *      NOT bleed into the chat context.
  */
 
-import { useAgentDisplay } from "@/hooks/use-agent-display"
-import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Loader2 } from "lucide-react"
@@ -39,8 +37,10 @@ import {
   type SessionConfigOptionInfo,
 } from "@/lib/types"
 import { isCustomAgentType } from "@/lib/custom-agents"
-
+import { useBackendApi } from "@/contexts/backend-client-context"
+import type { BackendApi } from "@/lib/backend/types"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
+import { useAgentDisplay } from "@/hooks/use-agent-display"
 import { useAgentVocabulary } from "@/hooks/use-agent-vocabulary"
 import { toErrorMessage } from "@/lib/app-error"
 
@@ -81,20 +81,49 @@ interface CachedSnapshot {
   ts: number
 }
 const SNAPSHOT_TTL_MS = 30_000
-const snapshotCache = new Map<AgentType, CachedSnapshot>()
+// Keyed by backend client and (agent, model): derived option lists such as
+// opencode's per-model `effort` must use that client's selected model.
+const snapshotCaches = new WeakMap<BackendApi, Map<string, CachedSnapshot>>()
 
-function readCache(agent: AgentType): AgentOptionsSnapshot | null {
-  const entry = snapshotCache.get(agent)
+function snapshotCacheFor(backendApi: BackendApi) {
+  let cache = snapshotCaches.get(backendApi)
+  if (!cache) {
+    cache = new Map()
+    snapshotCaches.set(backendApi, cache)
+  }
+  return cache
+}
+
+function snapshotKey(agent: AgentType, model: string | null): string {
+  return JSON.stringify([agent, model])
+}
+
+function readCache(
+  agent: AgentType,
+  model: string | null,
+  backendApi: BackendApi
+): AgentOptionsSnapshot | null {
+  const snapshotCache = snapshotCacheFor(backendApi)
+  const key = snapshotKey(agent, model)
+  const entry = snapshotCache.get(key)
   if (!entry) return null
   if (Date.now() - entry.ts > SNAPSHOT_TTL_MS) {
-    snapshotCache.delete(agent)
+    snapshotCache.delete(key)
     return null
   }
   return entry.snapshot
 }
 
-function writeCache(agent: AgentType, snapshot: AgentOptionsSnapshot): void {
-  snapshotCache.set(agent, { snapshot, ts: Date.now() })
+function writeCache(
+  agent: AgentType,
+  model: string | null,
+  snapshot: AgentOptionsSnapshot,
+  backendApi: BackendApi
+): void {
+  snapshotCacheFor(backendApi).set(snapshotKey(agent, model), {
+    snapshot,
+    ts: Date.now(),
+  })
 }
 
 export interface DelegationAgentDefaultsPanelProps {
@@ -108,10 +137,8 @@ export function DelegationAgentDefaultsPanel({
   onChange,
   disabled,
 }: DelegationAgentDefaultsPanelProps) {
-  const { getAgentLabel } = useAgentDisplay()
-
   const backendApi = useBackendApi()
-
+  const { getAgentLabel } = useAgentDisplay()
   const t = useTranslations("AcpAgentSettings.multiAgent")
   // Custom ACP agents are delegation targets too (codeg-mcp advertises them
   // in `delegate_to_agent`'s enum), so they get a defaults tab after the
@@ -131,6 +158,7 @@ export function DelegationAgentDefaultsPanel({
   // Localising the agent's own vocabulary has to key on the producer, or a
   // switch would briefly paint one agent's options in another's wording.
   const [loaded, setLoaded] = useState<{
+    backendApi: BackendApi
     agent: AgentType
     snapshot: AgentOptionsSnapshot
   } | null>(null)
@@ -139,25 +167,32 @@ export function DelegationAgentDefaultsPanel({
   const reqIdRef = useRef(0)
 
   const loadSnapshot = useCallback(
-    async (agent: AgentType, force: boolean) => {
+    async (agent: AgentType, model: string | null, force: boolean) => {
+      // Bump FIRST so a cache hit also invalidates a probe still in flight for
+      // the previous (agent, model) — otherwise that probe's late answer would
+      // replace the snapshot just shown for the current one.
+      const reqId = ++reqIdRef.current
       if (!force) {
-        const cached = readCache(agent)
+        const cached = readCache(agent, model, backendApi)
         if (cached) {
-          setLoaded({ agent, snapshot: cached })
+          setLoaded({ backendApi, agent, snapshot: cached })
           setError(null)
           setLoading(false)
           return
         }
       }
-      const reqId = ++reqIdRef.current
       setLoading(true)
       setError(null)
       setLoaded(null)
       try {
-        const fresh = await backendApi.describeAgentOptions(agent)
+        const fresh = await backendApi.describeAgentOptions(
+          agent,
+          null,
+          model ? { model } : null
+        )
         if (reqIdRef.current !== reqId) return
-        writeCache(agent, fresh)
-        setLoaded({ agent, snapshot: fresh })
+        writeCache(agent, model, fresh, backendApi)
+        setLoaded({ backendApi, agent, snapshot: fresh })
       } catch (err: unknown) {
         if (reqIdRef.current !== reqId) return
         setError(toErrorMessage(err))
@@ -168,16 +203,25 @@ export function DelegationAgentDefaultsPanel({
     [backendApi]
   )
 
+  // The model currently selected for this agent (its saved override). The
+  // probe applies it so option lists an agent derives per model — opencode's
+  // `effort` — answer for THAT model instead of the agent's own default.
+  const probeModel = value[selectedAgent]?.config_values?.model ?? null
+
   useEffect(() => {
-    // Debounce so rapid tab clicks (which would each fire a real probe
-    // — even with backend serialization, each one still spawns the CLI)
-    // collapse into a single load. Cancelling on cleanup means the
-    // *last* tab the user lands on wins, not the first.
+    reqIdRef.current += 1
+    // Debounce so rapid tab clicks / model changes (each would fire a real
+    // probe — even with backend serialization, each one still spawns the
+    // CLI) collapse into a single load. Cancelling on cleanup means the
+    // *last* (agent, model) the user lands on wins, not the first.
     const handle = window.setTimeout(() => {
-      void loadSnapshot(selectedAgent, false)
+      void loadSnapshot(selectedAgent, probeModel, false)
     }, TAB_SWITCH_DEBOUNCE_MS)
-    return () => window.clearTimeout(handle)
-  }, [selectedAgent, loadSnapshot])
+    return () => {
+      window.clearTimeout(handle)
+      reqIdRef.current += 1
+    }
+  }, [selectedAgent, probeModel, loadSnapshot])
 
   const updateAgentDefaults = useCallback(
     (agent: AgentType, next: AgentDelegationDefaults | null) => {
@@ -272,7 +316,9 @@ export function DelegationAgentDefaultsPanel({
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => void loadSnapshot(selectedAgent, true)}
+                onClick={() =>
+                  void loadSnapshot(selectedAgent, probeModel, true)
+                }
               >
                 {t("retry")}
               </Button>
@@ -280,7 +326,7 @@ export function DelegationAgentDefaultsPanel({
           </div>
         )}
 
-        {!loading && !error && loaded && (
+        {!loading && !error && loaded?.backendApi === backendApi && (
           <SnapshotEditor
             agentType={loaded.agent}
             snapshot={loaded.snapshot}
