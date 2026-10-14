@@ -20,6 +20,7 @@ export function OwnedSessionCard({
   isCurrent,
   actions,
   depth = 0,
+  showLocation = true,
 }: {
   runtime: BackendRuntime
   session: OwnedProjectSession
@@ -27,6 +28,7 @@ export function OwnedSessionCard({
   isCurrent(session: OwnedProjectSession): boolean
   actions: CatalogRowActions
   depth?: number
+  showLocation?: boolean
 }) {
   const t = useTranslations("MultiHost")
   const [expanded, setExpanded] = useState(false)
@@ -162,17 +164,19 @@ export function OwnedSessionCard({
         expanded={expanded}
         onToggleExpand={toggleExpanded}
       />
-      <p
-        className="flex items-center gap-1 pl-7 text-[0.625rem] text-muted-foreground"
-        title={`${hostName} · ${locationLabel}`}
-      >
-        {conversation.pinned_at && (
-          <Pin className="size-2.5 shrink-0" aria-label={t("pinned")} />
-        )}
-        <span className="truncate">
-          {hostName} · {locationLabel}
-        </span>
-      </p>
+      {showLocation && (
+        <p
+          className="flex items-center gap-1 pl-7 text-[0.625rem] text-muted-foreground"
+          title={`${hostName} · ${locationLabel}`}
+        >
+          {conversation.pinned_at && (
+            <Pin className="size-2.5 shrink-0" aria-label={t("pinned")} />
+          )}
+          <span className="truncate">
+            {hostName} · {locationLabel}
+          </span>
+        </p>
+      )}
       {error && (
         <p role="alert" className="text-xs text-destructive">
           {error}

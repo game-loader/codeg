@@ -402,11 +402,43 @@ it("shows colliding root/worktree IDs directly in one project, opens their fixed
 it("keeps existing folderless chats and focused New Chat/search/navigation reachable", async () => {
   const project = await mount()
   const a = fixtures.runtimes.get("remote:1")!
+  const b = fixtures.runtimes.get("remote:2")!
   const draft = vi.spyOn(a.stores.tabs.getState(), "openNewConversationTab")
   const chatDraft = vi.spyOn(a.stores.tabs.getState(), "openChatModeTab")
   const chats = document.querySelector(
     '[data-history-section="chats"]'
   )! as HTMLElement
+  const groupA = chats.querySelector(
+    '[data-chat-backend-key="remote:1"]'
+  )! as HTMLElement
+  const groupB = chats.querySelector(
+    '[data-chat-backend-key="remote:2"]'
+  )! as HTMLElement
+  const toggleB = within(groupB).getByRole("button", { name: "Machine 2" })
+  expect(
+    within(groupA).getByRole("button", { name: "Machine 1" })
+  ).toHaveAttribute("aria-expanded", "true")
+  expect(within(groupA).getByText("remote:1 chat")).toBeVisible()
+  expect(within(groupB).getByText("remote:2 chat")).toBeVisible()
+  expect(within(chats).queryByText(/^Machine [12] ·/)).toBeNull()
+  fireEvent.click(toggleB)
+  expect(toggleB).toHaveAttribute("aria-expanded", "false")
+  expect(within(groupB).queryByText("remote:2 chat")).toBeNull()
+  expect(within(groupA).getByText("remote:1 chat")).toBeVisible()
+  fireEvent.click(toggleB)
+  fireEvent.click(within(groupB).getByText("remote:2 chat"))
+  expect(b.stores.tabs.getState().tabs[0]).toMatchObject({
+    conversationId: 3,
+    folderId: 3,
+  })
+  expect(a.stores.tabs.getState().tabs).toHaveLength(0)
+  fireEvent.click(toggleB)
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: messages.Folder.sidebar.locateActiveConversation,
+    })
+  )
+  expect(within(groupB).getByText("remote:2 chat")).toBeVisible()
   fireEvent.click(within(chats).getByText("remote:1 chat"))
   expect(a.stores.tabs.getState().tabs[0]).toMatchObject({
     conversationId: 3,

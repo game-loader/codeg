@@ -35,7 +35,10 @@ export interface CatalogRowActions {
   ): void
   onWorktrees(key: BackendKey, folder: FolderDetail, generation: number): void
   onRetry?(key: BackendKey, generation: number): void
-  renderSession?(session: OwnedProjectSession): ReactNode
+  renderSession?(
+    session: OwnedProjectSession,
+    options?: { showLocation?: boolean }
+  ): ReactNode
   onLocationTool?(
     key: BackendKey,
     folder: FolderDetail,

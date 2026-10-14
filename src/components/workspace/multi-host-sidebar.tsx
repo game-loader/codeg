@@ -4,6 +4,7 @@ import { useTranslations } from "next-intl"
 import {
   ChevronDown,
   ChevronRight,
+  Folder,
   Monitor,
   Plus,
   RefreshCw,
@@ -118,6 +119,7 @@ export function MultiHostSidebar({
   const [navItems, setNavItems] = useState<SidebarNavItemVisibility>({})
   const [showRecent, setShowRecent] = useState(true)
   const [collapsedSections, setCollapsedSections] = useState<string[]>([])
+  const [collapsedChatHosts, setCollapsedChatHosts] = useState<string[]>([])
   const [sectionOrder, setSectionOrder] = useState<SidebarSectionOrder>(
     DEFAULT_SECTION_ORDER
   )
@@ -181,10 +183,10 @@ export function MultiHostSidebar({
     ],
     options
   ).slice(0, 10)
-  const renderHistory = (sessions: typeof chats) =>
+  const renderHistory = (sessions: typeof chats, showLocation = true) =>
     sessions.map((session) => (
       <div key={session.key}>
-        {renderSession?.(session) ?? (
+        {renderSession?.(session, { showLocation }) ?? (
           <button
             type="button"
             className="w-full text-left text-xs py-1"
@@ -198,9 +200,11 @@ export function MultiHostSidebar({
             }
           >
             {session.conversation.title || t("untitledSession")}
-            <span className="block text-muted-foreground">
-              {hosts.find((h) => h.key === session.backendKey)?.name}
-            </span>
+            {showLocation && (
+              <span className="block text-muted-foreground">
+                {hosts.find((h) => h.key === session.backendKey)?.name}
+              </span>
+            )}
           </button>
         )}
       </div>
@@ -287,6 +291,7 @@ export function MultiHostSidebar({
             collapsedProjects: [],
           }))
           setCollapsedSections([])
+          setCollapsedChatHosts([])
           requestAnimationFrame(() =>
             document
               .querySelector(
@@ -335,7 +340,49 @@ export function MultiHostSidebar({
             >
               {t("folderlessChats")}
             </button>
-            {!collapsedSections.includes("chats") && renderHistory(chats)}
+            {!collapsedSections.includes("chats") &&
+              hosts.map((host) => {
+                const sessions = chats.filter(
+                  (session) => session.backendKey === host.key
+                )
+                if (sessions.length === 0) return null
+                const groupKey = JSON.stringify([host.key, host.generation])
+                const expanded = !collapsedChatHosts.includes(groupKey)
+                return (
+                  <div
+                    key={groupKey}
+                    data-chat-backend-key={host.key}
+                    data-runtime-generation={host.generation}
+                  >
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-1.5 rounded-md py-1.5 text-left text-sm hover:bg-sidebar-accent"
+                      aria-expanded={expanded}
+                      title={host.name}
+                      onClick={() =>
+                        setCollapsedChatHosts((value) =>
+                          expanded
+                            ? [...value, groupKey]
+                            : value.filter((key) => key !== groupKey)
+                        )
+                      }
+                    >
+                      {expanded ? (
+                        <ChevronDown className="size-3 shrink-0" />
+                      ) : (
+                        <ChevronRight className="size-3 shrink-0" />
+                      )}
+                      <Folder className="size-3.5 shrink-0" />
+                      <span className="truncate">{host.name}</span>
+                    </button>
+                    {expanded && (
+                      <div className="ml-3 border-l pl-2">
+                        {renderHistory(sessions, false)}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
           </section>
         )}
         {showRecent && recent.length > 0 && (

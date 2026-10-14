@@ -46,6 +46,7 @@ import {
 } from "@/lib/backend/window-layout"
 import { BackendRuntimeView } from "./backend-runtime"
 import { MultiHostSidebar, type HostFolderCatalog } from "./multi-host-sidebar"
+import type { CatalogRowActions } from "./project-session-list"
 import { MultiHostTabs, type WindowResourceTab } from "./multi-host-tabs"
 import { HostWorktreeDialog } from "./host-worktree-dialog"
 import { BackendClientProvider } from "@/contexts/backend-client-context"
@@ -880,7 +881,10 @@ function WindowWorkspace({
       activateHost(key)
     }
   }
-  const renderSession = (session: OwnedProjectSession) => {
+  const renderSession: NonNullable<CatalogRowActions["renderSession"]> = (
+    session,
+    options
+  ) => {
     const runtime = registry.get(session.backendKey)
     if (!runtime || runtime.generation !== session.generation) return null
     return (
@@ -896,6 +900,7 @@ function WindowWorkspace({
               runtime={runtime}
               session={session}
               hostName={runtime.client.name}
+              showLocation={options?.showLocation}
               isCurrent={(row) =>
                 resolveCatalogRuntime(
                   registry,
