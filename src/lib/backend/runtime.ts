@@ -20,6 +20,7 @@ import {
   loadMessageInputDraftV2,
 } from "@/lib/message-input-draft"
 import { isBackendKey } from "./window-layout"
+import type { ReactNode } from "react"
 
 export interface RecoveryBuffer {
   kind: "file" | "composer"
@@ -186,6 +187,9 @@ export interface RuntimeView {
   select(ref: WindowResourceRef): void
   close(ref: WindowResourceRef): void
   pin?(ref: WindowResourceRef): void
+  /** UI-only owner callbacks; never persisted with tab metadata. */
+  renderTabMenu?(ref: WindowResourceRef, trigger: ReactNode): ReactNode
+  setTabAddMenuHost?(host: HTMLDivElement | null): void
   paneMaximized?: boolean
   togglePaneMaximized?(): void
   restoreFile(ref: Extract<WindowResourceRef, { kind: "file" }>): Promise<void>
@@ -349,6 +353,9 @@ export class BackendRuntime {
   }
 
   readonly getSnapshot = (): RuntimeView | null => this.view
+
+  readonly isCurrent = (): boolean =>
+    !this.disposed && this.lifetime.isCurrent()
 
   publishView(view: RuntimeView): void {
     if (this.disposed || !this.lifetime.isCurrent()) return

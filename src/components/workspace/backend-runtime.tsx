@@ -6,16 +6,21 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
   type CSSProperties,
   type ReactNode,
 } from "react"
+import { createPortal } from "react-dom"
 import { BackendClientProvider } from "@/contexts/backend-client-context"
 import {
   BackendStoresProvider,
   useBackendStores,
 } from "@/contexts/backend-stores-context"
 import { ScopedRemoteConnectionProvider } from "@/contexts/remote-connection-context"
-import { WorkspaceRuntimeVisibilityProvider } from "@/contexts/workspace-runtime-visibility-context"
+import {
+  WorkspaceRuntimeVisibilityProvider,
+  useWorkspaceRuntimeVisibility,
+} from "@/contexts/workspace-runtime-visibility-context"
 import { OverlayHostHiddenProvider } from "@/components/ui/overlay-host-hidden"
 import {
   useWorkspaceActions,
@@ -36,6 +41,8 @@ import type { WindowResourceRef } from "@/lib/backend/window-layout"
 import type { WindowResourceTab } from "./multi-host-tabs"
 import type { ConversationStatus, DbConversationSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
+import { FileTabAddMenu } from "@/components/files/file-workspace-tab-bar"
+import { RuntimeTabMenu } from "./runtime-tab-menu"
 
 /** A stable host node: focus/split changes update style, never its providers. */
 export function BackendRuntimeView({
@@ -95,6 +102,10 @@ export function BackendRuntimeView({
 
 /** Must be mounted inside WorkspaceLayoutInner's existing provider tree. */
 export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
+  const { focused, visible } = useWorkspaceRuntimeVisibility()
+  const [tabAddMenuHost, setTabAddMenuHost] = useState<HTMLDivElement | null>(
+    null
+  )
   const stores = useBackendStores()
   const conversations = stores.tabs((state) => state.tabs)
   const activeTabId = stores.tabs((state) => state.activeTabId)
@@ -231,6 +242,14 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
     },
     [key, stores]
   )
+  const renderTabMenu = useCallback(
+    (ref: WindowResourceRef, trigger: ReactNode) => (
+      <RuntimeTabMenu runtime={runtime} resource={ref} workspace={workspace}>
+        {trigger}
+      </RuntimeTabMenu>
+    ),
+    [runtime, workspace]
+  )
   const togglePaneMaximized =
     activePane === "files"
       ? workspace.toggleFilesMaximized
@@ -343,6 +362,8 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
       select,
       close,
       pin,
+      renderTabMenu,
+      setTabAddMenuHost,
       paneMaximized,
       togglePaneMaximized: mode === "fusion" ? togglePaneMaximized : undefined,
       restoreFile,
@@ -381,6 +402,7 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
       select,
       close,
       pin,
+      renderTabMenu,
       paneMaximized,
       mode,
       togglePaneMaximized,
@@ -401,5 +423,17 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
     },
     [runtime]
   )
-  return <span ref={recoveryAnchor} hidden aria-hidden />
+  return (
+    <>
+      <span ref={recoveryAnchor} hidden aria-hidden />
+      {focused &&
+        visible &&
+        tabAddMenuHost &&
+        runtime.isCurrent() &&
+        createPortal(
+          <FileTabAddMenu isCurrent={runtime.isCurrent} />,
+          tabAddMenuHost
+        )}
+    </>
+  )
 }

@@ -1069,6 +1069,13 @@ function WindowWorkspace({
         onClose={closeTab}
         onPin={(ref) => registry.get(ref.backendKey)?.getSnapshot()?.pin?.(ref)}
         onNewConversation={focusedView?.newChat}
+        renderTabMenu={(ref, trigger) =>
+          registry
+            .get(ref.backendKey)
+            ?.getSnapshot()
+            ?.renderTabMenu?.(ref, trigger) ?? trigger
+        }
+        onTabAddMenuHost={focusedView?.setTabAddMenuHost}
         paneMaximized={focusedView?.paneMaximized}
         onToggleMaximized={focusedView?.togglePaneMaximized}
       />

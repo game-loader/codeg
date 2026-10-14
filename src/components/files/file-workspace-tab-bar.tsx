@@ -238,7 +238,11 @@ export function FileWorkspaceTabBar() {
  * desktop there is no built-in browser, and a native picker is no use to a
  * window driving a remote backend.
  */
-function FileTabAddMenu() {
+export function FileTabAddMenu({
+  isCurrent,
+}: {
+  isCurrent?: () => boolean
+} = {}) {
   const backendPlatform = useBackendPlatform()
 
   const t = useTranslations("Folder.fileWorkspace")
@@ -255,14 +259,16 @@ function FileTabAddMenu() {
   const canOpenBrowser = capabilities?.available ?? false
 
   const handleOpenFile = useCallback(async () => {
+    if (isCurrent && !isCurrent()) return
     const picked = await backendPlatform
       .openFileDialog({ title: t("openFileTitle") })
       .catch(() => null)
     const path = Array.isArray(picked) ? picked[0] : picked
     // `openFilePreview` reports a failed read on the tab itself, so a
     // rejection here is only ever the dialog being dismissed.
-    if (path) void openFilePreview(normalizeAbsPath(path))
-  }, [openFilePreview, t, backendPlatform])
+    if (path && (!isCurrent || isCurrent()))
+      void openFilePreview(normalizeAbsPath(path))
+  }, [openFilePreview, t, backendPlatform, isCurrent])
 
   // Asked on every open, not held: a server that has stopped must not be
   // offered, and the backend's answer already excludes those. The previous
@@ -274,13 +280,22 @@ function FileTabAddMenu() {
       // The servers this computer's terminals started. A window bound to a
       // remote codeg-server runs its terminals there, so none of these is
       // one of its own — and `localhost` in its list would be ambiguous.
-      if (!open || !canOpenBrowser || backendPlatform.isRemoteDesktopMode())
+      if (
+        !open ||
+        !canOpenBrowser ||
+        backendPlatform.isRemoteDesktopMode() ||
+        (isCurrent && !isCurrent())
+      )
         return
       void browserListServices()
-        .then(setServices)
-        .catch(() => setServices([]))
+        .then((next) => {
+          if (!isCurrent || isCurrent()) setServices(next)
+        })
+        .catch(() => {
+          if (!isCurrent || isCurrent()) setServices([])
+        })
     },
-    [canOpenBrowser, backendPlatform]
+    [canOpenBrowser, backendPlatform, isCurrent]
   )
 
   if (!canOpenFile && !canOpenBrowser) return null
@@ -307,7 +322,7 @@ function FileTabAddMenu() {
         {canOpenBrowser && (
           <DropdownMenuItem
             onSelect={() => {
-              openBrowserTab(BLANK_PAGE_URL)
+              if (!isCurrent || isCurrent()) openBrowserTab(BLANK_PAGE_URL)
             }}
           >
             <Globe />
@@ -328,7 +343,7 @@ function FileTabAddMenu() {
               <DropdownMenuItem
                 key={service.origin}
                 onSelect={() => {
-                  openBrowserTab(service.url)
+                  if (!isCurrent || isCurrent()) openBrowserTab(service.url)
                 }}
               >
                 <ServerCog />
