@@ -271,8 +271,16 @@ function mount() {
     />
   )
 }
+function showMachines() {
+  const toggle = screen.queryByRole("button", {
+    name: "Machines",
+    pressed: false,
+  })
+  if (toggle) fireEvent.click(toggle)
+}
 async function openFiles() {
   await screen.findByTestId("replacement-remote:2")
+  showMachines()
   for (const key of ["remote:1", "remote:2"] as const) {
     fireEvent.click(
       screen.getAllByRole("button", {
@@ -518,6 +526,7 @@ describe("runtime replacement and recovery integration", () => {
     async (saveState) => {
       mount()
       await screen.findByTestId("replacement-remote:1")
+      showMachines()
       fireEvent.click(screen.getAllByRole("button", { name: "Machine A" })[1])
       fireEvent.click(
         screen.getByRole("button", { name: `${saveState} file remote:1` })
@@ -563,6 +572,7 @@ describe("runtime replacement and recovery integration", () => {
   it("preserves live composer text and reference markup when scoped draft writes are unavailable", async () => {
     mount()
     await screen.findByTestId("replacement-remote:1")
+    showMachines()
     fireEvent.click(screen.getAllByRole("button", { name: "Machine A" })[1])
     const html =
       '<p>Unsent text <span data-type="reference" data-path="/old/a.ts">a.ts</span></p>'

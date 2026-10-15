@@ -444,150 +444,151 @@ export function MultiHostSidebar({
             {!collapsedSections.includes("recent") && renderHistory(recent)}
           </section>
         )}
-        {hosts.map((host) => {
-          const candidate = catalogs.get(host.key)
-          const catalog =
-            candidate?.generation === undefined ||
-            candidate.generation === host.generation
-              ? candidate
-              : undefined
-          const folders = catalog?.folders ?? []
-          const roots = folders.filter(
-            (folder) =>
-              folder.kind !== "chat" &&
-              (!folder.parent_id ||
-                !folders.some((parent) => parent.id === folder.parent_id))
-          )
-          const isCollapsed = collapsed.includes(host.key)
-          return (
-            <section
-              key={host.key}
-              style={{
-                order:
-                  preferences.mode === "machines"
-                    ? sectionOrder.indexOf("folders")
-                    : 3,
-              }}
-              className="mb-2"
-              data-backend-key={host.key}
-            >
-              <div
-                className={cn(
-                  "flex items-center rounded-md px-1",
-                  host.key === focusedHost && "bg-sidebar-accent"
-                )}
+        {/* Machine groups belong to the Machines view only; Projects mode
+            already lists every machine's projects in its own section. */}
+        {preferences.mode === "machines" &&
+          hosts.map((host) => {
+            const candidate = catalogs.get(host.key)
+            const catalog =
+              candidate?.generation === undefined ||
+              candidate.generation === host.generation
+                ? candidate
+                : undefined
+            const folders = catalog?.folders ?? []
+            const roots = folders.filter(
+              (folder) =>
+                folder.kind !== "chat" &&
+                (!folder.parent_id ||
+                  !folders.some((parent) => parent.id === folder.parent_id))
+            )
+            const isCollapsed = collapsed.includes(host.key)
+            return (
+              <section
+                key={host.key}
+                style={{
+                  order: sectionOrder.indexOf("folders"),
+                }}
+                className="mb-2"
+                data-backend-key={host.key}
               >
-                <button
-                  type="button"
-                  className="p-1"
-                  aria-expanded={!isCollapsed}
-                  aria-label={host.name}
-                  onClick={() => onToggleHost(host.key)}
-                >
-                  {isCollapsed ? (
-                    <ChevronRight className="size-3.5" />
-                  ) : (
-                    <ChevronDown className="size-3.5" />
+                <div
+                  className={cn(
+                    "flex items-center rounded-md px-1",
+                    host.key === focusedHost && "bg-sidebar-accent"
                   )}
-                </button>
-                <button
-                  type="button"
-                  className="flex min-w-0 flex-1 items-center gap-1.5 py-2 text-left"
-                  onClick={() => onSelectHost(host.key)}
                 >
-                  {host.key === "local" ? (
-                    <Monitor className="size-4 shrink-0" />
-                  ) : (
-                    <Server className="size-4 shrink-0" />
-                  )}
-                  <span className="truncate text-sm font-medium">
-                    {host.name}
-                  </span>
-                </button>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="size-6"
-                  aria-label={t("addRepository")}
-                  onClick={() => onAddRepository(host.key, host.generation)}
-                >
-                  <Plus className="size-3.5" />
-                </Button>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="size-6"
-                  aria-label={t("refresh")}
-                  onClick={() => onRefresh(host.key, host.generation)}
-                >
-                  <RefreshCw
-                    className={cn(
-                      "size-3.5",
-                      (catalog?.loading || catalog?.identityLoading) &&
-                        "animate-spin"
+                  <button
+                    type="button"
+                    className="p-1"
+                    aria-expanded={!isCollapsed}
+                    aria-label={host.name}
+                    onClick={() => onToggleHost(host.key)}
+                  >
+                    {isCollapsed ? (
+                      <ChevronRight className="size-3.5" />
+                    ) : (
+                      <ChevronDown className="size-3.5" />
                     )}
-                  />
-                </Button>
-              </div>
-              <p
-                className={cn(
-                  "mb-1 ml-7 text-xs",
-                  host.status === "unauthorized" || host.status === "offline"
-                    ? "text-destructive"
-                    : "text-muted-foreground"
-                )}
-                title={host.error ?? host.baseUrl ?? undefined}
-              >
-                {t(host.status)}
-              </p>
-              {catalog?.identityUnsupported && (
-                <p className="ml-7 text-xs text-muted-foreground">
-                  {t("identityUpgrade")}
-                </p>
-              )}
-              {catalog?.identityUnavailable && !catalog.identityUnsupported && (
-                <p className="ml-7 text-xs text-muted-foreground">
-                  {t("identityUnavailable")}
-                </p>
-              )}
-              {preferences.mode === "machines" && !isCollapsed && (
-                <div className="ml-3 border-l pl-2">
-                  {catalog?.loading && roots.length === 0 && (
-                    <p className="p-2 text-xs text-muted-foreground">
-                      {t("loading")}
-                    </p>
-                  )}
-                  {!catalog?.loading && roots.length === 0 && (
-                    <p className="p-2 text-xs text-muted-foreground">
-                      {t("empty")}
-                    </p>
-                  )}
-                  {roots.map((folder) => (
-                    <ProjectSetupRows
-                      key={`${host.generation}:${folder.id}:${folder.path}`}
-                      setup={{
-                        backendKey: host.key,
-                        generation: host.generation,
-                        folder,
-                        children: folders.filter(
-                          (child) =>
-                            child.parent_id === folder.id &&
-                            child.kind !== "chat"
-                        ),
-                      }}
-                      hostName={host.name}
-                      options={historyOptions}
-                      conversations={catalog?.conversations}
-                      historyLoading={catalog?.historyLoading}
-                      historyError={catalog?.historyError}
-                      {...actions}
+                  </button>
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-center gap-1.5 py-2 text-left"
+                    onClick={() => onSelectHost(host.key)}
+                  >
+                    {host.key === "local" ? (
+                      <Monitor className="size-4 shrink-0" />
+                    ) : (
+                      <Server className="size-4 shrink-0" />
+                    )}
+                    <span className="truncate text-sm font-medium">
+                      {host.name}
+                    </span>
+                  </button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="size-6"
+                    aria-label={t("addRepository")}
+                    onClick={() => onAddRepository(host.key, host.generation)}
+                  >
+                    <Plus className="size-3.5" />
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="size-6"
+                    aria-label={t("refresh")}
+                    onClick={() => onRefresh(host.key, host.generation)}
+                  >
+                    <RefreshCw
+                      className={cn(
+                        "size-3.5",
+                        (catalog?.loading || catalog?.identityLoading) &&
+                          "animate-spin"
+                      )}
                     />
-                  ))}
+                  </Button>
                 </div>
-              )}
-            </section>
-          )
-        })}
+                <p
+                  className={cn(
+                    "mb-1 ml-7 text-xs",
+                    host.status === "unauthorized" || host.status === "offline"
+                      ? "text-destructive"
+                      : "text-muted-foreground"
+                  )}
+                  title={host.error ?? host.baseUrl ?? undefined}
+                >
+                  {t(host.status)}
+                </p>
+                {catalog?.identityUnsupported && (
+                  <p className="ml-7 text-xs text-muted-foreground">
+                    {t("identityUpgrade")}
+                  </p>
+                )}
+                {catalog?.identityUnavailable &&
+                  !catalog.identityUnsupported && (
+                    <p className="ml-7 text-xs text-muted-foreground">
+                      {t("identityUnavailable")}
+                    </p>
+                  )}
+                {!isCollapsed && (
+                  <div className="ml-3 border-l pl-2">
+                    {catalog?.loading && roots.length === 0 && (
+                      <p className="p-2 text-xs text-muted-foreground">
+                        {t("loading")}
+                      </p>
+                    )}
+                    {!catalog?.loading && roots.length === 0 && (
+                      <p className="p-2 text-xs text-muted-foreground">
+                        {t("empty")}
+                      </p>
+                    )}
+                    {roots.map((folder) => (
+                      <ProjectSetupRows
+                        key={`${host.generation}:${folder.id}:${folder.path}`}
+                        setup={{
+                          backendKey: host.key,
+                          generation: host.generation,
+                          folder,
+                          children: folders.filter(
+                            (child) =>
+                              child.parent_id === folder.id &&
+                              child.kind !== "chat"
+                          ),
+                        }}
+                        hostName={host.name}
+                        options={historyOptions}
+                        conversations={catalog?.conversations}
+                        historyLoading={catalog?.historyLoading}
+                        historyError={catalog?.historyError}
+                        {...actions}
+                      />
+                    ))}
+                  </div>
+                )}
+              </section>
+            )
+          })}
       </div>
     </aside>
   )

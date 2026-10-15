@@ -462,6 +462,9 @@ it("defaults to Projects, keeps headers disclosure-only, restores Machines and s
   fireEvent.click(screen.getByRole("button", { name: "o/r" }))
   expect(onOpenFolder).not.toHaveBeenCalled()
   expect(onWorktrees).not.toHaveBeenCalled()
+  // Machine groups are exclusive to the Machines view.
+  expect(document.querySelector("section[data-backend-key]")).toBeNull()
+  fireEvent.click(screen.getByRole("button", { name: "machines" }))
   expect(
     document.querySelector('section[data-backend-key="remote:1"]')
   ).toHaveTextContent("identityUpgrade")
@@ -470,7 +473,6 @@ it("defaults to Projects, keeps headers disclosure-only, restores Machines and s
   ).not.toHaveTextContent("identityUpgrade")
   fireEvent.click(screen.getAllByRole("button", { name: "addRepository" })[1])
   expect(onAddRepository).toHaveBeenCalledWith("remote:2", 2)
-  fireEvent.click(screen.getByRole("button", { name: "machines" }))
   fireEvent.click(screen.getAllByTitle("/repo")[1])
   expect(onOpenFolder).toHaveBeenCalledWith("remote:2", folder, 2)
   view.unmount()
@@ -484,4 +486,5 @@ it("defaults to Projects, keeps headers disclosure-only, restores Machines and s
     "aria-expanded",
     "false"
   )
+  expect(document.querySelector("section[data-backend-key]")).toBeNull()
 })

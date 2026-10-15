@@ -352,6 +352,14 @@ async function mount() {
   return result
 }
 
+function showMachines() {
+  const toggle = screen.queryByRole("button", {
+    name: "Machines",
+    pressed: false,
+  })
+  if (toggle) fireEvent.click(toggle)
+}
+
 function EmptyConversationPanel({ runtime }: { runtime: BackendRuntime }) {
   useEffect(() => {
     mocks.runtimes.set(runtime.client.key, runtime)
@@ -440,6 +448,7 @@ it.each(["Projects", "Machines"])(
 describe("single-window machine integration", () => {
   it("retains all provider trees through machine selection, both splits and collapse", async () => {
     const result = await mount()
+    showMachines()
     const a = screen.getByTestId("probe-remote:1")
     const b = screen.getByTestId("probe-remote:2")
     fireEvent.click(
@@ -480,6 +489,7 @@ describe("single-window machine integration", () => {
 
   it("routes duplicate-ID sends and approvals independently and keeps B alive after A fails", async () => {
     await mount()
+    showMachines()
     fireEvent.click(
       within(hostNode("remote:1")).getAllByRole("button", {
         name: "Machine A",
@@ -533,6 +543,7 @@ describe("single-window machine integration", () => {
 
   it("selects actual machine tabs, closes files without reopening them and binds the repository picker", async () => {
     await mount()
+    showMachines()
     const tablist = screen.getByRole("tablist")
     fireEvent.click(
       within(tablist).getByRole("tab", { name: "file.ts Machine A" })
@@ -604,6 +615,7 @@ describe("single-window machine integration", () => {
       { ref: selected, title: "file.ts", machineName: "Machine B" },
     ])
     await mount()
+    showMachines()
     expect(screen.getByTestId("probe-remote:1")).toHaveAttribute(
       "data-visible",
       "true"
@@ -635,6 +647,7 @@ describe("single-window machine integration", () => {
 
   it("replaces only a changed generation and clears only the deleted machine's resources", async () => {
     await mount()
+    showMachines()
     const beforeB = screen.getByTestId("probe-remote:2")
     const oldA = mocks.remotes.get(1)!
     mocks.list.mockResolvedValue([
@@ -661,6 +674,7 @@ describe("single-window machine integration", () => {
 
   it("releases all window subscriptions on pagehide without erasing restoration data", async () => {
     await mount()
+    showMachines()
     await waitFor(() => expect(readWindowLayout().files).toHaveLength(3))
     const layout = readWindowLayout()
     const tabs = readWindowTabs()
