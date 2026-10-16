@@ -21,6 +21,7 @@ pub mod opened_tab;
 pub mod prelude;
 pub mod quick_message;
 pub mod remote_workspace_connection;
+pub mod session_selector_state;
 pub mod token_usage_sync;
 pub mod token_usage_turn;
 pub mod work_task;

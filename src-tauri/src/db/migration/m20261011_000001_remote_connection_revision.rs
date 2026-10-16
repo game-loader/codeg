@@ -53,7 +53,11 @@ mod tests {
     #[tokio::test]
     async fn remote_connection_revision_upgrade_preserves_saved_connections() {
         let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
-        let previous = Migrator::migrations().len() as u32 - 1;
+        // Everything before this migration, by name: later migrations append.
+        let previous = Migrator::migrations()
+            .iter()
+            .position(|m| m.name() == "m20261011_000001_remote_connection_revision")
+            .expect("migration registered") as u32;
         Migrator::up(&db, Some(previous)).await.unwrap();
         db.execute_unprepared("INSERT INTO remote_workspace_connection (name, base_url, token, created_at, updated_at) VALUES ('saved', 'http://localhost:9999', 'test-token', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')").await.unwrap();
         Migrator::up(&db, None).await.unwrap();

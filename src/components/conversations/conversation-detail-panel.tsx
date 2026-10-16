@@ -421,18 +421,20 @@ const ConversationTabView = memo(function ConversationTabView({
 
   const [draftAgentType, setDraftAgentType] = useState<AgentType>(agentType)
   const selectedAgent = conversationId != null ? agentType : draftAgentType
-  // Seed from localStorage so the React state reflects the user's saved
-  // mode for this agent immediately on mount. Without this seed, a reuse-
-  // path connect (idle window after a refresh, before the agent is GC'd)
-  // would silently fall back to whatever `current_mode_id` the backend
-  // happens to be on: `handleModeChange` updates only React state and
-  // localStorage, not the agent — the agent gets synced inside
-  // `handleSend` by diffing `modeId` against `modes.current_mode_id`.
-  // A null seed here means that diff is "agent default vs null", which
-  // resolves the displayed mode through `conn.modes.current_mode_id`
-  // and never triggers the catch-up `setMode`.
+  // A new conversation seeds from localStorage so the React state reflects
+  // the user's saved mode for this agent immediately on mount:
+  // `handleModeChange` updates only React state and localStorage, not the
+  // agent — the agent gets synced inside `handleSend` by diffing `modeId`
+  // against `modes.current_mode_id`.
+  //
+  // A persisted conversation seeds null instead, so the displayed mode
+  // resolves through `conn.modes.current_mode_id` and no catch-up `setMode`
+  // fires. The backend resumes a session in its OWN last mode (recorded per
+  // session, ahead of this device's saved default), which may have been
+  // picked on another device; seeding this device's default here would
+  // show it and then silently switch the conversation to it on send.
   const [modeId, setModeId] = useState<string | null>(() =>
-    getSavedModeId(agentType)
+    conversationId != null ? null : getSavedModeId(agentType)
   )
   const [sendSignal, setSendSignal] = useState(0)
   const [agentsLoaded, setAgentsLoaded] = useState(false)

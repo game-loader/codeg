@@ -50,6 +50,7 @@ mod m20260929_000001_canvas_board;
 mod m20260930_000001_agent_setting_drop_adapter_channel;
 mod m20261006_000001_conversation_tag;
 mod m20261011_000001_remote_connection_revision;
+mod m20261015_000001_session_selector_state;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -106,6 +107,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260930_000001_agent_setting_drop_adapter_channel::Migration),
             Box::new(m20261006_000001_conversation_tag::Migration),
             Box::new(m20261011_000001_remote_connection_revision::Migration),
+            Box::new(m20261015_000001_session_selector_state::Migration),
         ]
     }
 }
@@ -122,7 +124,10 @@ mod integration_tests {
         fn migrations() -> Vec<Box<dyn MigrationTrait>> {
             Migrator::migrations()
                 .into_iter()
-                .filter(|migration| migration.name() != "m20261006_000001_conversation_tag")
+                .filter(|migration| {
+                    migration.name() != "m20261006_000001_conversation_tag"
+                        && migration.name() != "m20261015_000001_session_selector_state"
+                })
                 .collect()
         }
     }
@@ -132,7 +137,10 @@ mod integration_tests {
         fn migrations() -> Vec<Box<dyn MigrationTrait>> {
             Migrator::migrations()
                 .into_iter()
-                .filter(|migration| migration.name() != "m20261011_000001_remote_connection_revision")
+                .filter(|migration| {
+                    migration.name() != "m20261011_000001_remote_connection_revision"
+                        && migration.name() != "m20261015_000001_session_selector_state"
+                })
                 .collect()
         }
     }
@@ -142,6 +150,7 @@ mod integration_tests {
         let manager = SchemaManager::new(db);
         assert!(manager.has_table("conversation_tag").await.unwrap());
         assert!(manager.has_table("conversation_tag_link").await.unwrap());
+        assert!(manager.has_table("session_selector_state").await.unwrap());
         assert!(manager
             .has_column("remote_workspace_connection", "config_revision")
             .await

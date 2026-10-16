@@ -278,8 +278,11 @@ export function CanvasConversationSurface({
     )
   }, [contextKey, conversationId, effectiveConversationId, migrateConversation])
 
+  // Only a draft card seeds this device's saved mode; an existing session
+  // shows (and keeps) the mode the backend resumed it in. See the matching
+  // seed in `conversation-detail-panel.tsx`.
   const [modeId, setModeId] = useState<string | null>(() =>
-    getSavedModeId(agentType)
+    conversationId != null ? null : getSavedModeId(agentType)
   )
   const [sendSignal, setSendSignal] = useState(0)
   const creatingRef = useRef(false)
