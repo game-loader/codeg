@@ -207,3 +207,64 @@ describe("block structure around a normalized formula", () => {
     ])
   })
 })
+
+describe("single-dollar math that reads as TeX", () => {
+  const values = (text: string) =>
+    parseMath(normalizeMathDelimiters(text)).map((node) => node.value)
+
+  it("renders the inline formulas of a typical agent explanation", () => {
+    const text =
+      "预测的期望值由 $\\sum_i p_i \\cdot v_i$（各桶概率乘以桶中心值）决定。" +
+      "预先定义好分桶区间 $[v_{\\min}, v_{\\max}]$，网络输出的都只是归一化概率 $p_i$。"
+    expect(values(text)).toEqual([
+      "\\sum_i p_i \\cdot v_i",
+      "[v_{\\min}, v_{\\max}]",
+      "p_i",
+    ])
+    for (const node of parseMath(normalizeMathDelimiters(text))) {
+      expect(node.type).toBe("inlineMath")
+    }
+  })
+
+  it("keeps prose dollars literal", () => {
+    for (const text of [
+      "The Pro plan costs $9.99 but the Team plan costs $19.99 per month.",
+      "Between $5 and $10_000 a year.",
+      "Set $HOME and $PATH before running.",
+      "Use $1 and $2 as positional args.",
+      "Run `echo $HOME_DIR` and `$PATH`, then $x$.",
+      "Spend US$5_000 or $5-$10a.",
+      "Literal \\$x_1$ and $a_b $ stay.",
+      "${VAR} and ${HOME}_x are shell.",
+      "Already $$x_1$$ display.",
+    ]) {
+      const nodes = parseMath(normalizeMathDelimiters(text))
+      expect(nodes.map((node) => node.value)).toEqual(
+        text.includes("$$x_1$$") ? ["x_1"] : []
+      )
+    }
+  })
+
+  it("leaves dollars inside code alone", () => {
+    const text = "```\nprice = $a_1$\n```\nand `$x_i$` inline"
+    expect(normalizeMathDelimiters(text)).toBe(text)
+  })
+
+  it("does not span lines", () => {
+    expect(values("first $a_1\nsecond b_2$")).toEqual([])
+  })
+})
+
+describe("single-dollar math at the start of a block", () => {
+  it("stays inline instead of opening a display fence", () => {
+    for (const text of [
+      "$p_i$ is first",
+      "- $p_i$ in a list",
+      "> $v_{\\max}$ quoted",
+    ]) {
+      const nodes = parseMath(normalizeMathDelimiters(text))
+      expect(nodes).toHaveLength(1)
+      expect(nodes[0]?.type).toBe("inlineMath")
+    }
+  })
+})
