@@ -140,6 +140,11 @@ import {
   type SidebarRow,
 } from "./sidebar-conversation-grouping"
 import { useRemoteWorkspaceConnections } from "@/hooks/use-remote-workspace-connections"
+import { useProjectCatalog } from "@/hooks/use-project-catalog"
+import { useRemoteConnection } from "@/contexts/remote-connection-context"
+import { parseBackendKey } from "@/lib/backend-client"
+import type { BackendKey, ProjectKey } from "@/lib/project-identity"
+import type { CatalogProject } from "@/lib/project-catalog"
 import { useSubsessionSync } from "@/hooks/use-subsession-sync"
 import { SidebarSectionHeader } from "./sidebar-section-header"
 import { SidebarFolderGroupHeader } from "./sidebar-folder-group-header"
@@ -206,6 +211,92 @@ const EMPTY_CHILD_TO_PARENT: ReadonlyMap<number, number> = new Map()
 const EMPTY_CONTAINER_CHILDREN: ReadonlyMap<number, readonly number[]> =
   new Map()
 
+/**
+ * "Also on …" marker for a folder whose project is checked out on other saved
+ * machines. Purely informational — it sits inside the header's toggle button,
+ * so it can't be interactive; the context menu's "Open on machine" acts on it.
+ */
+function OtherMachinesBadge({
+  machines,
+  label,
+}: {
+  machines: readonly BackendKey[]
+  label?: (key: BackendKey) => string
+}) {
+  const t = useTranslations("ProjectCatalog")
+  const names = machines.map((key) => label?.(key) ?? key)
+  const text = t("alsoOn", { machines: names.join(", ") })
+  return (
+    <span
+      title={text}
+      className={cn(
+        "inline-flex min-w-0 shrink items-center gap-[0.1875rem]",
+        "h-[0.9375rem] rounded-[0.3125rem] px-[0.25rem]",
+        "text-[0.625rem] leading-none text-muted-foreground",
+        "bg-sidebar-foreground/6"
+      )}
+    >
+      <MonitorCloud
+        aria-hidden
+        className="h-[0.625rem] w-[0.625rem] shrink-0"
+      />
+      <span aria-hidden className="truncate">
+        {names.length === 1 ? names[0] : `+${names.length}`}
+      </span>
+      <span className="sr-only">{text}</span>
+    </span>
+  )
+}
+
+/**
+ * A project that lives only on other machines. One click opens (or focuses)
+ * that machine's window; with several machines the first one wins and the
+ * rest are listed in the tooltip.
+ */
+function RemoteProjectRowView({
+  project,
+  label,
+  onOpen,
+}: {
+  project: CatalogProject
+  label: (key: BackendKey) => string
+  onOpen: (key: BackendKey) => void
+}) {
+  const t = useTranslations("ProjectCatalog")
+  const names = project.backendKeys.map(label)
+  const target = project.backendKeys[0]
+  return (
+    <div className="h-[2rem]">
+      <button
+        type="button"
+        onClick={() => target && onOpen(target)}
+        title={t("openProjectOn", {
+          project: project.displayName,
+          machines: names.join(", "),
+        })}
+        className={cn(
+          "relative flex h-[1.9375rem] w-full min-w-0 items-center gap-[0.375rem] pr-[0.5rem]",
+          "rounded-full outline-none text-sidebar-foreground/60",
+          "hover:bg-[color-mix(in_oklab,var(--sidebar-accent),var(--sidebar-foreground)_2%)]",
+          "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+        )}
+        style={{ paddingLeft: "calc(var(--conv-rail-axis) - 0.4375rem)" }}
+      >
+        <MonitorCloud
+          aria-hidden
+          className="h-[0.875rem] w-[0.875rem] shrink-0 text-muted-foreground/75"
+        />
+        <span className="min-w-0 flex-shrink truncate text-[0.875rem]">
+          {project.displayName}
+        </span>
+        <span className="min-w-0 shrink-[999] truncate text-[0.6875rem] text-muted-foreground">
+          {names.join(", ")}
+        </span>
+      </button>
+    </div>
+  )
+}
+
 const FolderHeader = memo(function FolderHeader({
   folderId,
   folderName,
@@ -242,7 +333,16 @@ const FolderHeader = memo(function FolderHeader({
   variant = "repo",
   worktreeBranch = null,
   rootBranch = null,
+  otherMachines,
+  machineLabel,
+  onOpenMachine,
 }: {
+  /** Other saved machines this folder's project is also checked out on.
+   *  Undefined (the common case) renders nothing. Must be referentially
+   *  stable to preserve the memo. */
+  otherMachines?: readonly BackendKey[]
+  machineLabel?: (key: BackendKey) => string
+  onOpenMachine?: (key: BackendKey) => void
   folderId: number
   folderName: string
   /** User-set alias, or null. When present the header shows `alias [name]`. */
@@ -348,6 +448,7 @@ const FolderHeader = memo(function FolderHeader({
   // this component's memo and re-render every header on each status event.
   const t = useTranslations("Folder.sidebar")
   const tTags = useTranslations("ConversationTags")
+  const tProjects = useTranslations("ProjectCatalog")
   const ime = useImeGuard()
   // Only flag a stale default once the live list is known; before fresh,
   // `availableAgents` is the localStorage seed and may legitimately omit a
@@ -530,6 +631,12 @@ const FolderHeader = memo(function FolderHeader({
                       </span>
                     </span>
                   )}
+                  {otherMachines && otherMachines.length > 0 && (
+                    <OtherMachinesBadge
+                      machines={otherMachines}
+                      label={machineLabel}
+                    />
+                  )}
                   {/* Disclosure chevron mirrors the section headers: hover-revealed,
                     rotates on expand. The persistent open/closed state still reads
                     from the folder icon on the left, which is why the chevron can
@@ -642,6 +749,27 @@ const FolderHeader = memo(function FolderHeader({
               onOpenCode={() => onOpenInCode(folderId)}
             />
           </ContextMenuSub>
+          {otherMachines && otherMachines.length > 0 && onOpenMachine && (
+            <ContextMenuSub>
+              <ContextMenuSubTrigger>
+                <MonitorCloud className="h-4 w-4" />
+                {tProjects("openOnMachine")}
+              </ContextMenuSubTrigger>
+              <ContextMenuSubContent className="min-w-[12rem]">
+                {otherMachines.map((key) => (
+                  <ContextMenuItem
+                    key={key}
+                    onSelect={() => onOpenMachine(key)}
+                  >
+                    <MonitorCloud className="h-4 w-4" />
+                    <span className="min-w-0 truncate">
+                      {machineLabel?.(key) ?? key}
+                    </span>
+                  </ContextMenuItem>
+                ))}
+              </ContextMenuSubContent>
+            </ContextMenuSub>
+          )}
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={() => onManageConversations(folderId)}>
             <ListChecks className="h-4 w-4" />
@@ -1125,6 +1253,37 @@ export function SidebarConversationList({
     refresh: refreshRemote,
     open: openRemote,
   } = useRemoteWorkspaceConnections()
+  // Project-first sidebar, interim: a local desktop window also shows which
+  // saved machines share each folder's project, and projects that live only
+  // on other machines. Those open in that machine's own window for now.
+  const inRemoteWindow = useRemoteConnection() != null
+  const folderSignature = useMemo(
+    () => folders.map((f) => f.id).join(","),
+    [folders]
+  )
+  const { view: projectView, machineNames } = useProjectCatalog({
+    enabled: !inRemoteWindow,
+    folderSignature,
+  })
+  const elsewhereProjectKeys = useMemo(
+    () => projectView.elsewhereProjects.map((p) => p.key),
+    [projectView]
+  )
+  const elsewhereByKey = useMemo(
+    () => new Map(projectView.elsewhereProjects.map((p) => [p.key, p])),
+    [projectView]
+  )
+  const machineLabel = useCallback(
+    (key: BackendKey) => machineNames.get(key) ?? key,
+    [machineNames]
+  )
+  const openMachine = useCallback(
+    (key: BackendKey) => {
+      const parsed = parseBackendKey(key)
+      if (parsed?.kind === "remote") openRemote(parsed.connectionId)
+    },
+    [openRemote]
+  )
   // Folder whose links are being managed (context menu -> Linked folders).
   const [linksFolder, setLinksFolder] = useState<FolderDetail | null>(null)
   // What is being dragged: a folder or a whole group. `null` = no drag. Widened
@@ -1579,8 +1738,10 @@ export function SidebarConversationList({
         layout,
         groupExpanded: folderGroupExpanded,
         hideEmptyFolders: tagFilterActive,
+        elsewhereProjectKeys,
       }),
     [
+      elsewhereProjectKeys,
       pinned,
       pinnedExpanded,
       reorderableFolderIds,
@@ -2781,6 +2942,15 @@ export function SidebarConversationList({
             ? (branches.get(folderId) ?? folderEntry?.gitBranch ?? null)
             : null
         }
+        // The container's root sub-group repeats its repo; only the real
+        // headers carry the cross-machine marker.
+        otherMachines={
+          isRootGroup
+            ? undefined
+            : projectView.otherMachinesByFolderId.get(folderId)
+        }
+        machineLabel={machineLabel}
+        onOpenMachine={openMachine}
       />
     )
   }
@@ -2935,6 +3105,17 @@ export function SidebarConversationList({
         <div className="px-[0.5rem] py-[0.375rem] text-[0.75rem] text-muted-foreground/70">
           {tagFilterActive ? tTags("filter.noMatches") : t("noChats")}
         </div>
+      )
+    }
+    if (row.kind === "remote-project") {
+      const project = elsewhereByKey.get(row.projectKey as ProjectKey)
+      if (!project) return null
+      return (
+        <RemoteProjectRowView
+          project={project}
+          label={machineLabel}
+          onOpen={openMachine}
+        />
       )
     }
     if (row.kind === "folders-empty") {
@@ -3113,6 +3294,7 @@ export function SidebarConversationList({
     if (row.kind === "empty") return `empty-${row.folderId}`
     if (row.kind === "chats-empty") return "chats-empty"
     if (row.kind === "folders-empty") return "folders-empty"
+    if (row.kind === "remote-project") return `remote-project-${row.projectKey}`
     if (row.kind === "recent-empty") return "recent-empty"
     if (row.kind === "recent-more") return "recent-more"
     const prefix = row.recent ? "recent-" : ""

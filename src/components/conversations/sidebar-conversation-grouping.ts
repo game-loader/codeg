@@ -1047,7 +1047,18 @@ export interface SubsessionLoadingRow {
   recent?: true
 }
 
+/**
+ * A project that lives only on other machines (see `useProjectCatalog`).
+ * Folderless in this window — it owns no conversations here and isn't a
+ * drag target — so the sticky-header machinery skips it like a group header.
+ */
+export interface RemoteProjectRow {
+  kind: "remote-project"
+  projectKey: string
+}
+
 export type SidebarRow =
+  | RemoteProjectRow
   | SectionHeaderRow
   | FolderGroupHeaderRow
   | GroupEmptyRow
@@ -1080,6 +1091,7 @@ const EMPTY_CONVERSATIONS: readonly DbConversationSummary[] = []
 // No group is collapsed by default (absent key = expanded), matching
 // `folderExpanded`. Shared so the group-free path allocates nothing.
 const EMPTY_GROUP_EXPANDED: Record<number, boolean> = {}
+const EMPTY_KEYS: readonly string[] = []
 
 /**
  * Merge a freshly-fetched children snapshot with child summaries already applied
@@ -1285,6 +1297,13 @@ export function buildRows(args: {
    * omitted keeps every folder, as before.
    */
   hideEmptyFolders?: boolean
+  /**
+   * Keys of projects that live only on other machines, in display order.
+   * Each becomes a {@link RemoteProjectRow} after this window's own folders.
+   * Dropped under `hideEmptyFolders`: a tag filter can't see into another
+   * machine's conversations. Optional — omitted emits none.
+   */
+  elsewhereProjectKeys?: readonly string[]
 }): SidebarRow[] {
   const {
     pinned,
@@ -1309,6 +1328,7 @@ export function buildRows(args: {
     layout,
     groupExpanded = EMPTY_GROUP_EXPANDED,
     hideEmptyFolders = false,
+    elsewhereProjectKeys = EMPTY_KEYS,
   } = args
   const rows: SidebarRow[] = []
 
@@ -1456,6 +1476,11 @@ export function buildRows(args: {
         continue
       }
       for (const memberId of members) pushFolderEntry(memberId, 1)
+    }
+    if (!hideEmptyFolders) {
+      for (const projectKey of elsewhereProjectKeys) {
+        rows.push({ kind: "remote-project", projectKey })
+      }
     }
     // Nothing drawn under the header: no folders open at all, or — filtered —
     // none with a match. The renderer words the hint for each.
@@ -1652,7 +1677,13 @@ export function buildOwnerHeaderIndex(rows: readonly SidebarRow[]): Int32Array {
   for (let i = 0; i < rows.length; i++) {
     const kind = rows[i].kind
     if (kind === "folder") current = i
-    else if (kind === "section" || kind === "folder-group") current = -1
+    else if (
+      kind === "section" ||
+      kind === "folder-group" ||
+      kind === "remote-project"
+    ) {
+      current = -1
+    }
     out[i] = current
   }
   return out

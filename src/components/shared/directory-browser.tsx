@@ -49,6 +49,8 @@ import {
   type AppErrorTranslator,
 } from "@/lib/app-error"
 import { parentFsPath } from "@/lib/path-utils"
+import { targetArgs } from "@/lib/call-target"
+import type { CallTarget } from "@/lib/transport"
 import type { DirectoryEntry } from "@/lib/types"
 
 /**
@@ -118,6 +120,13 @@ interface DirectoryBrowserProps {
    * listed and then moves into it, so the host's confirm picks it up.
    */
   allowCreateFolder?: boolean
+  /**
+   * Machine whose filesystem is walked; omitted means the window's own
+   * backend. Fixed for the panel's lifetime: a host that switches machines
+   * remounts the panel (give it a `key`), so no listing, cache entry or
+   * in-flight request from one machine can surface in the other.
+   */
+  target?: CallTarget
 }
 
 /** The inline "New folder" row while it is open. */
@@ -149,6 +158,7 @@ export const DirectoryBrowser = forwardRef<
     pathInputAction,
     heightClassName = "h-[18.75rem]",
     allowCreateFolder = false,
+    target,
   },
   ref
 ) {
@@ -228,7 +238,7 @@ export const DirectoryBrowser = forwardRef<
       setLoading((prev) => new Set(prev).add(path))
       setError(null)
       try {
-        const result = await listDirectoryEntries(path)
+        const result = await listDirectoryEntries(path, ...targetArgs(target))
         // Skip writes if a hide/show happened mid-flight — they belong to a
         // session that no longer exists and would surface stale data.
         if (gen === sessionGen.current) {
@@ -248,7 +258,7 @@ export const DirectoryBrowser = forwardRef<
         }
       }
     },
-    [entries, t]
+    [entries, t, target]
   )
 
   const navigateTo = useCallback(
@@ -301,7 +311,8 @@ export const DirectoryBrowser = forwardRef<
 
     const init = async () => {
       try {
-        const startPath = initialPath || (await getHomeDirectory())
+        const startPath =
+          initialPath || (await getHomeDirectory(...targetArgs(target)))
         // Drop these writes if a hide/show superseded this init, or the user
         // already navigated somewhere else while the start dir was loading.
         if (gen !== sessionGen.current || seq !== navSeq.current) return
@@ -309,7 +320,10 @@ export const DirectoryBrowser = forwardRef<
         onValueChange(startPath)
         setLoading(new Set([startPath]))
 
-        const result = await listDirectoryEntries(startPath)
+        const result = await listDirectoryEntries(
+          startPath,
+          ...targetArgs(target)
+        )
         if (gen !== sessionGen.current || seq !== navSeq.current) return
         setEntries(new Map([[startPath, result]]))
         setLoading(new Set())
@@ -322,6 +336,7 @@ export const DirectoryBrowser = forwardRef<
     init()
     // `onValueChange` is intentionally omitted: it changes identity on every
     // host render and re-running init would restart browsing mid-session.
+    // `target` is fixed per mount (see the prop), so it never re-runs this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, initialPath, t])
 
@@ -380,14 +395,14 @@ export const DirectoryBrowser = forwardRef<
   const handleGoHome = useCallback(async () => {
     const gen = sessionGen.current
     try {
-      const home = await getHomeDirectory()
+      const home = await getHomeDirectory(...targetArgs(target))
       if (gen !== sessionGen.current) return
       navigateTo(home)
     } catch {
       if (gen !== sessionGen.current) return
       setError(t("errorLoadingDir"))
     }
-  }, [navigateTo, t])
+  }, [navigateTo, t, target])
 
   const openNewFolder = useCallback(() => {
     setNewFolder((prev) => prev ?? { name: "", error: null, busy: false })
@@ -404,7 +419,7 @@ export const DirectoryBrowser = forwardRef<
     setNewFolder({ ...newFolder, error: null, busy: true })
     let created: string
     try {
-      created = await createDirectory(parent, name)
+      created = await createDirectory(parent, name, ...targetArgs(target))
     } catch (err) {
       if (gen !== sessionGen.current) return
       const message = toLocalizedErrorMessage(
@@ -424,7 +439,7 @@ export const DirectoryBrowser = forwardRef<
     // even if listing it fails below.
     onValueChange(created)
     await navigateTo(created)
-  }, [newFolder, rootPath, onValueChange, navigateTo, t])
+  }, [newFolder, rootPath, onValueChange, navigateTo, t, target])
 
   // Stable, so the row's Escape listener is not re-registered on every render.
   const closeNewFolder = useCallback(() => setNewFolder(null), [])

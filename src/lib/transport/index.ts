@@ -1,7 +1,12 @@
 import { detectEnvironment } from "./detect"
 import type { RemoteTransportConfig, Transport } from "./types"
 
-export type { RemoteTransportConfig, Transport, UnsubscribeFn } from "./types"
+export type {
+  CallTarget,
+  RemoteTransportConfig,
+  Transport,
+  UnsubscribeFn,
+} from "./types"
 
 let _shellTransport: Transport | null = null
 let _remoteTransport: Transport | null = null

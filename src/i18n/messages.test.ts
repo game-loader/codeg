@@ -55,6 +55,7 @@ describe("i18n locale key parity vs en.json", () => {
             k.startsWith("BarkNotificationSettings.") ||
             k.startsWith("Folder.videoPreview.") ||
             k.startsWith("Machines.ssh.") ||
+            k.startsWith("ProjectCatalog.") ||
             k === "Academic.mcpTools" ||
             k === "Academic.mcpToolsHint" ||
             k === "Folder.chat.messageQueue.toolBoundaryHint" ||

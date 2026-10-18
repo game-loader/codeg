@@ -6,6 +6,7 @@ import {
   isRemoteDesktopMode,
   notifyRemoteDesktopUnauthorized,
 } from "./transport"
+import type { CallTarget } from "./transport"
 import { getCodegToken } from "./transport/web-auth"
 import { notifyWebUnauthorized } from "./transport/web-connection-store"
 import { getCurrentEffectiveAppLocale } from "./i18n"
@@ -2995,13 +2996,21 @@ export async function gitAddFiles(
 
 // Window management commands
 
+// Functions below that take an optional trailing `target` call that machine
+// instead of the window's own backend (see `BackendClient`). Omitted, they
+// behave exactly as before.
+function via(target?: CallTarget): CallTarget {
+  return target ?? getTransport()
+}
+
 // ─── Workspace folder links (multi-folder workspace) ───
 
 /** Links currently registered for `folderId`, with their live on-disk status. */
 export async function listFolderLinks(
-  folderId: number
+  folderId: number,
+  target?: CallTarget
 ): Promise<FolderLinkDetail[]> {
-  return getTransport().call("list_folder_links", { folderId })
+  return via(target).call("list_folder_links", { folderId })
 }
 
 /**
@@ -3011,9 +3020,10 @@ export async function listFolderLinks(
  */
 export async function previewFolderLinks(
   folderId: number,
-  paths: string[]
+  paths: string[],
+  target?: CallTarget
 ): Promise<FolderLinkPlan[]> {
-  return getTransport().call("preview_folder_links", { folderId, paths })
+  return via(target).call("preview_folder_links", { folderId, paths })
 }
 
 /**
@@ -3023,9 +3033,10 @@ export async function previewFolderLinks(
 export async function createFolderLinks(
   folderId: number,
   items: FolderLinkRequestItem[],
-  gitExclude = true
+  gitExclude = true,
+  target?: CallTarget
 ): Promise<FolderLinkDetail[]> {
-  return getTransport().call("create_folder_links", {
+  return via(target).call("create_folder_links", {
     folderId,
     items,
     gitExclude,
@@ -3035,16 +3046,18 @@ export async function createFolderLinks(
 /** Rename a link (moves the symlink; the target is untouched). */
 export async function renameFolderLink(
   linkId: number,
-  newName: string
+  newName: string,
+  target?: CallTarget
 ): Promise<FolderLinkDetail> {
-  return getTransport().call("rename_folder_link", { linkId, newName })
+  return via(target).call("rename_folder_link", { linkId, newName })
 }
 
 /** Recreate the symlink for a link whose on-disk entry went missing. */
 export async function repairFolderLink(
-  linkId: number
+  linkId: number,
+  target?: CallTarget
 ): Promise<FolderLinkDetail> {
-  return getTransport().call("repair_folder_link", { linkId })
+  return via(target).call("repair_folder_link", { linkId })
 }
 
 /**
@@ -3053,9 +3066,10 @@ export async function repairFolderLink(
  */
 export async function removeFolderLink(
   linkId: number,
-  deleteLink = true
+  deleteLink = true,
+  target?: CallTarget
 ): Promise<void> {
-  return getTransport().call("remove_folder_link", { linkId, deleteLink })
+  return via(target).call("remove_folder_link", { linkId, deleteLink })
 }
 
 // ─── Conversation canvas ───
@@ -3260,8 +3274,11 @@ export async function canvasDeleteNodes(
   return getTransport().call("canvas_delete_nodes", { nodeIds })
 }
 
-export async function openFolder(path: string): Promise<FolderDetail> {
-  return getTransport().call("open_folder", { path })
+export async function openFolder(
+  path: string,
+  target?: CallTarget
+): Promise<FolderDetail> {
+  return via(target).call("open_folder", { path })
 }
 
 /** Open a file or directory in Visual Studio Code on the workspace host. */
@@ -4051,14 +4068,15 @@ export async function workTaskTemplateDelete(id: number): Promise<void> {
 
 // Directory browser (for web/server mode)
 
-export async function getHomeDirectory(): Promise<string> {
-  return getTransport().call("get_home_directory")
+export async function getHomeDirectory(target?: CallTarget): Promise<string> {
+  return via(target).call("get_home_directory")
 }
 
 export async function listDirectoryEntries(
-  path: string
+  path: string,
+  target?: CallTarget
 ): Promise<DirectoryEntry[]> {
-  return getTransport().call("list_directory_entries", { path })
+  return via(target).call("list_directory_entries", { path })
 }
 
 /**
@@ -4068,9 +4086,10 @@ export async function listDirectoryEntries(
  */
 export async function createDirectory(
   parentPath: string,
-  name: string
+  name: string,
+  target?: CallTarget
 ): Promise<string> {
-  return getTransport().call("create_directory", { parentPath, name })
+  return via(target).call("create_directory", { parentPath, name })
 }
 
 export async function listDirectoryWithFiles(
