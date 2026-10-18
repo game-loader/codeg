@@ -80,9 +80,15 @@ export function ComposerImageThumbnails({
           </button>
           {attachment.uploading ? (
             // Web/remote upload still in flight — sends are gated on this
-            // settling (see the host's send handler).
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-background/50">
+            // settling (see the host's send handler). The percentage rides
+            // along whenever the transport reports bytes.
+            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-0.5 bg-background/60">
               <Loader2 className="h-4 w-4 animate-spin text-foreground/80" />
+              {typeof attachment.uploadProgress === "number" ? (
+                <span className="text-[9px] font-medium tabular-nums text-foreground/80">
+                  {Math.min(99, Math.floor(attachment.uploadProgress * 100))}%
+                </span>
+              ) : null}
             </div>
           ) : null}
           <button

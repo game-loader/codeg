@@ -69,14 +69,20 @@ import {
   buildClipboardResourceUri,
   buildDataUri,
   DRAG_DROP_IMAGE_MAX_BYTES,
+  dragCarriesFiles,
+  dragMayCarryFiles,
   editorHasFileReference,
   fileNameFromPath,
+  filePathsFromDataTransfer,
   getFilePath,
-  hasDragFiles,
   isTextLikeFile,
   mimeTypeFromPath,
   pointWithinElement,
 } from "@/components/chat/composer/attachment-files"
+import {
+  isSoleVisibleComposer,
+  registerComposerDropTarget,
+} from "@/components/chat/composer/composer-drop-targets"
 
 /**
  * The composer's attachment engine, shared by the conversation composer and the
@@ -117,6 +123,17 @@ export interface ComposerAttachmentsOptions {
   logLabel?: LogLabel
 }
 
+/** One file upload that hasn't settled yet, rendered as a progress chip. */
+export interface PendingUpload {
+  id: string
+  name: string
+  /** Raw byte size, or 0 when the caller only knows a path. */
+  size: number
+  loaded: number
+  /** Total bytes, or `null` while the transport hasn't reported one. */
+  total: number | null
+}
+
 export interface ComposerAttachments {
   attachments: InputAttachment[]
   /** Escape hatch for hosts that restore a whole attachment set at once (the
@@ -126,6 +143,12 @@ export interface ComposerAttachments {
   /** True while a web/remote image upload is still in flight — sends must wait,
    *  the block would otherwise carry neither bytes nor a uri to hydrate from. */
   hasUploadingImage: boolean
+  /** Files still uploading to the server (web / remote desktop). Non-empty
+   *  means their `file://` badges do not exist yet, so a send would silently
+   *  leave them out. Local desktop attaches paths synchronously and never
+   *  contributes here. */
+  pendingUploads: PendingUpload[]
+  hasPendingFileUploads: boolean
   /** An OS/browser drag is hovering the composer. */
   isDragActive: boolean
   /** Local desktop: OS paths are readable by the agent, so the native picker is
@@ -243,10 +266,57 @@ export function useComposerAttachments({
     pageHandoffNameRef.current = pageHandoffName
   }, [pageHandoffName])
 
+  // Native drag events reach every listener in the window, so the composer has
+  // to be findable by the fallback that routes a drag when its point can't be
+  // mapped (`isSoleVisibleComposer`). Effects run after the DOM exists, so the
+  // host ref is set by now.
+  useEffect(() => {
+    const host = containerRef?.current
+    if (!host) return
+    return registerComposerDropTarget(host)
+  }, [containerRef])
+
   const setDragActiveIfChanged = useCallback((next: boolean) => {
     if (dragActiveRef.current === next) return
     dragActiveRef.current = next
     setIsDragActive(next)
+  }, [])
+
+  // In-flight file uploads. Unlike images, a file has no placeholder in the
+  // composer until the server answers with the uploaded path, so these chips
+  // are the only sign that a dropped / picked file is on its way. One entry per
+  // file, registered up front (queued files included, so a big drop shows every
+  // file immediately) and removed as each upload settles, success or failure.
+  const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([])
+  const beginUpload = useCallback((name: string, size: number) => {
+    const id = `upload:${randomUUID()}`
+    setPendingUploads((prev) => [
+      ...prev,
+      { id, name, size, loaded: 0, total: size > 0 ? size : null },
+    ])
+    // Redraw only when the integer percentage moves: a 200 MB upload reports
+    // hundreds of chunks, and re-rendering the composer on each one would cost
+    // far more than the smoother bar is worth.
+    let lastPercent = -1
+    return {
+      id,
+      onProgress: (loaded: number, total: number) => {
+        const percent =
+          total > 0 ? Math.min(100, Math.floor((loaded / total) * 100)) : -1
+        if (percent !== -1 && percent === lastPercent) return
+        lastPercent = percent
+        setPendingUploads((prev) =>
+          prev.map((upload) =>
+            upload.id === id
+              ? { ...upload, loaded, total: total > 0 ? total : upload.total }
+              : upload
+          )
+        )
+      },
+      done: () => {
+        setPendingUploads((prev) => prev.filter((upload) => upload.id !== id))
+      },
+    }
   }, [])
 
   // Insert one inline file reference badge per item, matching `@`-file mentions.
@@ -416,6 +486,9 @@ export function useComposerAttachments({
       const uploaded: string[] = []
       const failed: Array<{ name: string; reason: unknown }> = []
       const quotaRejected: string[] = []
+      // One progress chip per accepted file, created before the workers start
+      // so files still waiting for a slot are visible too.
+      const trackers = accepted.map((file) => beginUpload(file.name, file.size))
       const CONCURRENCY = 3
       let cursor = 0
       const workers = Array.from(
@@ -424,8 +497,12 @@ export function useComposerAttachments({
           while (cursor < accepted.length) {
             const idx = cursor++
             const file = accepted[idx]
+            const tracker = trackers[idx]
             try {
-              const r = await uploadAttachment(file, attachmentTabId ?? null)
+              const r = await uploadAttachment(file, attachmentTabId ?? null, {
+                id: tracker.id,
+                onProgress: tracker.onProgress,
+              })
               uploaded.push(r.path)
             } catch (error) {
               if (isEmptyAttachmentError(error)) {
@@ -453,6 +530,8 @@ export function useComposerAttachments({
                 continue
               }
               failed.push({ name: file.name, reason: error })
+            } finally {
+              tracker.done()
             }
           }
         }
@@ -483,7 +562,7 @@ export function useComposerAttachments({
         appendResourceAttachments(uploaded)
       }
     },
-    [appendResourceAttachments, attachmentTabId, logLabel, tAttach]
+    [appendResourceAttachments, attachmentTabId, beginUpload, logLabel, tAttach]
   )
 
   const appendEmbeddedResources = useCallback(
@@ -687,8 +766,28 @@ export function useComposerAttachments({
           while (cursor < parsed.length) {
             const idx = cursor++
             const { attachment, file } = parsed[idx]
+            // One thumbnail redraw per integer percent (see `beginUpload`).
+            let lastPercent = -1
             try {
-              const r = await uploadAttachment(file, attachmentTabId ?? null)
+              const r = await uploadAttachment(file, attachmentTabId ?? null, {
+                id: attachment.id,
+                onProgress: (loaded, total) => {
+                  if (total <= 0) return
+                  const percent = Math.min(
+                    99,
+                    Math.floor((loaded / total) * 100)
+                  )
+                  if (percent === lastPercent) return
+                  lastPercent = percent
+                  setAttachments((prev) =>
+                    prev.map((a) =>
+                      a.id === attachment.id
+                        ? { ...a, uploadProgress: loaded / total }
+                        : a
+                    )
+                  )
+                },
+              })
               const uri = buildFileUri(r.path)
               setAttachments((prev) =>
                 prev.map((a) =>
@@ -840,6 +939,12 @@ export function useComposerAttachments({
 
       const CONCURRENCY = 3
       let cursor = 0
+      // Path-only uploads don't know their byte size until the backend starts
+      // streaming; the tracker starts indeterminate and the first progress
+      // event supplies the total.
+      const trackers = normalized.map((path) =>
+        beginUpload(path.split(/[/\\]/).pop() || path, 0)
+      )
       const workers = Array.from(
         { length: Math.min(CONCURRENCY, normalized.length) },
         async () => {
@@ -847,10 +952,12 @@ export function useComposerAttachments({
             const idx = cursor++
             const path = normalized[idx]
             const name = path.split(/[/\\]/).pop() || path
+            const tracker = trackers[idx]
             try {
               const r = await uploadLocalPathToRemote(
                 path,
-                attachmentTabId ?? null
+                attachmentTabId ?? null,
+                { id: tracker.id, onProgress: tracker.onProgress }
               )
               // A dropped image keeps its image-ness: attach it as a
               // thumbnail whose uri is the uploaded server-side file, so the
@@ -910,6 +1017,8 @@ export function useComposerAttachments({
               } else {
                 failed.push({ name, reason: error })
               }
+            } finally {
+              tracker.done()
             }
           }
         }
@@ -953,6 +1062,7 @@ export function useComposerAttachments({
     [
       appendResourceAttachments,
       attachmentTabId,
+      beginUpload,
       canAttachImages,
       logLabel,
       tAttach,
@@ -1042,34 +1152,92 @@ export function useComposerAttachments({
     [appendResourceAttachments, editorRef]
   )
 
+  // Attach everything a DOM drop carries. A WebKit-handled drop (every browser
+  // drop, and a macOS native drag that reaches the page instead of Tauri's
+  // native handler) exposes `File` objects with no path; recover real paths
+  // from the drag's URI list where the local disk is what the agent reads, and
+  // fall back to the File bytes for anything without one. Files whose basename
+  // matches a recovered path are not attached twice.
+  const attachDroppedData = useCallback(
+    async (dataTransfer: DataTransfer | null) => {
+      if (!dataTransfer) return
+      const files = Array.from(dataTransfer.files ?? [])
+      const paths = desktopMode ? filePathsFromDataTransfer(dataTransfer) : []
+      const unmatchedFiles = [...files]
+      const matchedPaths: string[] = []
+      for (const path of paths) {
+        const name = fileNameFromPath(path)
+        const index = unmatchedFiles.findIndex((file) => file.name === name)
+        if (index >= 0) unmatchedFiles.splice(index, 1)
+        matchedPaths.push(path)
+      }
+      if (matchedPaths.length > 0) {
+        if (getActiveRemoteConnectionId() !== null) {
+          await uploadPathsToRemote(matchedPaths)
+        } else {
+          await appendPathsFromDrop(matchedPaths)
+        }
+      }
+      if (unmatchedFiles.length > 0) {
+        await appendFilesFromInput(unmatchedFiles)
+      }
+    },
+    [
+      appendFilesFromInput,
+      appendPathsFromDrop,
+      desktopMode,
+      uploadPathsToRemote,
+    ]
+  )
+
   // Routed from RichComposer's `onDropFiles` (ProseMirror's `handleDrop`).
   // Consumes a file-tree drag so PM does not insert the drag's `text/plain`
   // absolute-path fallback as literal text, and stops propagation so the
-  // container's own drop handler doesn't double-insert. Returns false for every
-  // other drop (OS files, editor text moves) so existing behavior is untouched.
+  // container's own drop handler doesn't double-insert. An OS file drop is
+  // consumed for the same reason: WebKit hands the editor the drag's
+  // `text/plain` (the file name), and PM would otherwise paste that as prose
+  // instead of letting the drop become an attachment. Returns false for every
+  // other drop (editor text moves) so existing behavior is untouched.
   const handleEditorDrop = useCallback(
     (event: DragEvent): boolean => {
-      if (disabled) return false
-      if (!hasFileTreeDragType(event.dataTransfer)) return false
-      const payload = readFileTreeDragPayload(event.dataTransfer)
-      if (!payload) return false
+      if (hasFileTreeDragType(event.dataTransfer)) {
+        if (disabled) return false
+        const payload = readFileTreeDragPayload(event.dataTransfer)
+        if (!payload) return false
+        event.preventDefault()
+        event.stopPropagation()
+        // `stopPropagation` keeps the container's `onDrop` from double-inserting,
+        // but that handler is also what clears the drag overlay — and a completed
+        // drop doesn't reliably emit `dragleave`. Clear it here so the overlay
+        // can't get stuck covering the composer.
+        setDragActiveIfChanged(false)
+        insertTreeDropAtPoint(payload.absPath, event.clientX, event.clientY)
+        return true
+      }
+      if (!dragCarriesFiles(event.dataTransfer)) return false
       event.preventDefault()
       event.stopPropagation()
-      // `stopPropagation` keeps the container's `onDrop` from double-inserting,
-      // but that handler is also what clears the drag overlay — and a completed
-      // drop doesn't reliably emit `dragleave`. Clear it here so the overlay
-      // can't get stuck covering the composer.
+      lastDomDropAtRef.current = Date.now()
       setDragActiveIfChanged(false)
-      insertTreeDropAtPoint(payload.absPath, event.clientX, event.clientY)
+      if (disabled) return true
+      void attachDroppedData(event.dataTransfer).catch((error) => {
+        console.error(`[${logLabel}] drop files failed:`, error)
+      })
       return true
     },
-    [disabled, insertTreeDropAtPoint, setDragActiveIfChanged]
+    [
+      attachDroppedData,
+      disabled,
+      insertTreeDropAtPoint,
+      logLabel,
+      setDragActiveIfChanged,
+    ]
   )
 
   const handleContainerDragOver = useCallback(
     (event: ReactDragEvent<HTMLElement>) => {
       const isTreeDrag = hasFileTreeDragType(event.dataTransfer)
-      if (!hasDragFiles(event.dataTransfer) && !isTreeDrag) return
+      if (!dragMayCarryFiles(event.dataTransfer) && !isTreeDrag) return
       event.preventDefault()
       if (!disabled) {
         // A file-tree entry is copied in as a reference, not moved.
@@ -1100,7 +1268,7 @@ export function useComposerAttachments({
       const treePayload = hasFileTreeDragType(event.dataTransfer)
         ? readFileTreeDragPayload(event.dataTransfer)
         : null
-      if (!hasDragFiles(event.dataTransfer) && !treePayload) return
+      if (!dragCarriesFiles(event.dataTransfer) && !treePayload) return
       event.preventDefault()
       lastDomDropAtRef.current = Date.now()
       setDragActiveIfChanged(false)
@@ -1112,15 +1280,12 @@ export function useComposerAttachments({
         insertTreeDropAtPoint(treePayload.absPath, event.clientX, event.clientY)
         return
       }
-      const files = Array.from(event.dataTransfer.files ?? [])
-      if (files.length > 0) {
-        void appendFilesFromInput(files).catch((error) => {
-          console.error(`[${logLabel}] drop files failed:`, error)
-        })
-      }
+      void attachDroppedData(event.dataTransfer).catch((error) => {
+        console.error(`[${logLabel}] drop files failed:`, error)
+      })
     },
     [
-      appendFilesFromInput,
+      attachDroppedData,
       disabled,
       insertTreeDropAtPoint,
       logLabel,
@@ -1130,7 +1295,9 @@ export function useComposerAttachments({
 
   // OS-level drag-drop. Tauri delivers these as window events (not DOM events on
   // the element), so every mounted composer hears every drop — `pointWithinElement`
-  // is what decides whose it was.
+  // is what decides whose it was. When the reported point can't be mapped (or is
+  // missing), the window's sole visible composer owns the drag: there is nothing
+  // to disambiguate, and routing it beats showing no affordance at all.
   useEffect(() => {
     if (!containerRef) return
     let cancelled = false
@@ -1161,11 +1328,26 @@ export function useComposerAttachments({
         setDragActiveIfChanged(false)
         return
       }
-      const inside = pointWithinElement(payload.position, host)
+      const position = payload.position
+      const hasPoint =
+        Number.isFinite(position?.x) && Number.isFinite(position?.y)
+      const inside =
+        !hasPoint ||
+        pointWithinElement(position, host) ||
+        isSoleVisibleComposer(host)
       if (payload.type === "drop") {
         setDragActiveIfChanged(false)
         if (Date.now() - lastDomDropAtRef.current < 250) return
         if (!inside || disabledRef.current) return
+        if (payload.paths.length === 0) {
+          // The OS drag reached us without a single path — the webview's
+          // native handler could not read the drag source's pasteboard. Say so
+          // instead of ignoring the gesture silently.
+          console.warn(
+            `[${logLabel}] native drop carried no file paths; the drag source did not expose them`
+          )
+          return
+        }
         if (getActiveRemoteConnectionId() !== null) {
           // Remote workspace: local OS paths are unreachable from the
           // remote agent, so stream the bytes through the upload proxy and
@@ -1382,6 +1564,7 @@ export function useComposerAttachments({
     () => attachments.some((a) => a.type === "image" && a.uploading),
     [attachments]
   )
+  const hasPendingFileUploads = pendingUploads.length > 0
 
   // `attachments` holds only images — files live inline as editor badges. The
   // wire encoding is capability-driven (native `image` block vs embedded
@@ -1401,6 +1584,8 @@ export function useComposerAttachments({
     setAttachments,
     imageAttachments,
     hasUploadingImage,
+    pendingUploads,
+    hasPendingFileUploads,
     isDragActive,
     showNativePaperclip,
     canAttachImages,

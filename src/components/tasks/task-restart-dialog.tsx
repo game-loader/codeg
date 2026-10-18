@@ -100,7 +100,7 @@ export function TaskRestartDialog({
     const blocks = composerRef.current?.getAttachmentBlocks() ?? []
     // An unsettled upload has no server-side uri yet, so the block would reach
     // the agent empty. The box keeps its content — this is "wait a moment".
-    if (composerRef.current?.hasUploadingImage()) {
+    if (composerRef.current?.hasPendingUploads()) {
       toast.error(tChat("attachUploadInProgress"))
       return
     }

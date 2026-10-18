@@ -85,7 +85,7 @@ vi.mock("./task-message-composer", () => ({
       ref.current = {
         getText: () => editorText,
         getAttachmentBlocks: () => editorBlocks,
-        hasUploadingImage: () => uploading,
+        hasPendingUploads: () => uploading,
         hasAttachments: () => editorBlocks.length > 0,
       } as TaskMessageComposerHandle
       return () => {

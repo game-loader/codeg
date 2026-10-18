@@ -139,7 +139,14 @@ it("uploads native desktop drops and exposes only the remote original path", asy
       })
     })
     await waitFor(() => expect(result.current.imageAttachments).toHaveLength(1))
-    expect(uploadLocalPathToRemote).toHaveBeenCalledWith(localPath, "session")
+    expect(uploadLocalPathToRemote).toHaveBeenCalledWith(
+      localPath,
+      "session",
+      expect.objectContaining({
+        id: expect.any(String),
+        onProgress: expect.any(Function),
+      })
+    )
     expect(readLocalFileBase64).toHaveBeenCalledWith(
       localPath,
       expect.any(Number)
@@ -198,7 +205,14 @@ describe.each(["web", "remote desktop"])("%s image attachments", (mode) => {
       await result.current.appendFilesFromInput([accepted, rejected])
     })
     expect(uploadAttachment).toHaveBeenCalledTimes(1)
-    expect(uploadAttachment).toHaveBeenCalledWith(accepted, "session")
+    expect(uploadAttachment).toHaveBeenCalledWith(
+      accepted,
+      "session",
+      expect.objectContaining({
+        id: expect.any(String),
+        onProgress: expect.any(Function),
+      })
+    )
     expect(toast.error).toHaveBeenCalledWith("attachUploadTooLarge:200")
   })
 
@@ -233,7 +247,14 @@ describe.each(["web", "remote desktop"])("%s image attachments", (mode) => {
       expect(result.current.hasUploadingImage).toBe(false)
     })
     for (const file of files) {
-      expect(uploadAttachment).toHaveBeenCalledWith(file, "session")
+      expect(uploadAttachment).toHaveBeenCalledWith(
+        file,
+        "session",
+        expect.objectContaining({
+          id: expect.any(String),
+          onProgress: expect.any(Function),
+        })
+      )
     }
     const draft = result.current.imagePromptBlocks()
     await acpPrompt("connection", draft)
@@ -364,5 +385,294 @@ describe.each(["web", "remote desktop"])("%s image attachments", (mode) => {
         })
       )
     }
+  })
+})
+
+/** Plain-object stand-in for the drag data WebKit hands a drop target. */
+function dragData(init: {
+  types?: string[]
+  files?: File[]
+  data?: Record<string, string>
+}): DataTransfer {
+  return {
+    types: init.types ?? [],
+    files: init.files ?? [],
+    items: [],
+    getData: (type: string) => init.data?.[type] ?? "",
+  } as unknown as DataTransfer
+}
+
+function dropEvent(dataTransfer: DataTransfer, position = { x: 0, y: 0 }) {
+  return {
+    dataTransfer,
+    preventDefault: vi.fn(),
+    stopPropagation: vi.fn(),
+    clientX: position.x,
+    clientY: position.y,
+  } as unknown as DragEvent
+}
+
+describe("composer drop affordance", () => {
+  afterEach(() => {
+    cleanup()
+    nativeEvents.clear()
+    vi.restoreAllMocks()
+  })
+
+  it("shows the hint for a typeless WebKit hover", () => {
+    runtime.desktop = true
+    runtime.remoteId = null
+    const { result } = renderHook(() =>
+      useComposerAttachments({
+        editorRef: { current: null },
+        promptCapabilities: { image: true, embedded_context: true },
+        attachmentTabId: "session",
+      })
+    )
+    act(() => {
+      result.current.containerDragProps.onDragOver({
+        dataTransfer: dragData({ types: [] }),
+        preventDefault: vi.fn(),
+      } as unknown as ReactDragEvent<HTMLElement>)
+    })
+    expect(result.current.isDragActive).toBe(true)
+  })
+
+  it("routes a native drop to the only visible composer even off-target", async () => {
+    runtime.desktop = true
+    runtime.remoteId = 42
+    const localPath = "C:/Pictures/product.png"
+    vi.mocked(uploadLocalPathToRemote).mockResolvedValue({
+      path: "/srv/codeg/uploads/session/product.png",
+      name: "product.png",
+      size: 3,
+      mimeType: "image/png",
+    })
+    vi.mocked(readLocalFileBase64).mockResolvedValue("QUJD")
+    const host = document.createElement("div")
+    document.body.appendChild(host)
+    vi.spyOn(host, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      right: 100,
+      bottom: 100,
+      width: 100,
+      height: 100,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    })
+    vi.spyOn(document, "elementFromPoint").mockReturnValue(host)
+    try {
+      const { result } = renderHook(() =>
+        useComposerAttachments({
+          editorRef: { current: null },
+          containerRef: { current: host },
+          promptCapabilities: { image: true, embedded_context: true },
+          attachmentTabId: "session",
+        })
+      )
+      await waitFor(() =>
+        expect(nativeEvents.has("tauri://drag-drop")).toBe(true)
+      )
+      // The reported point is nowhere near the composer. With a single visible
+      // composer there is nothing to disambiguate, so the drop still lands.
+      act(() => {
+        nativeEvents.get("tauri://drag-drop")!({
+          payload: { paths: [localPath], position: { x: 900, y: 900 } },
+        })
+      })
+      await waitFor(() =>
+        expect(result.current.imageAttachments).toHaveLength(1)
+      )
+      expect(uploadLocalPathToRemote).toHaveBeenCalledWith(
+        localPath,
+        "session",
+        expect.objectContaining({
+          id: expect.any(String),
+          onProgress: expect.any(Function),
+        })
+      )
+    } finally {
+      host.remove()
+    }
+  })
+
+  it("consumes an editor-level file drop and attaches its uri-list path", async () => {
+    runtime.desktop = true
+    runtime.remoteId = 42
+    const localPath = "/Users/me/photo.png"
+    vi.mocked(uploadLocalPathToRemote).mockResolvedValue({
+      path: "/srv/codeg/uploads/session/photo.png",
+      name: "photo.png",
+      size: 3,
+      mimeType: "image/png",
+    })
+    vi.mocked(readLocalFileBase64).mockResolvedValue("QUJD")
+    const { result } = renderHook(() =>
+      useComposerAttachments({
+        editorRef: { current: null },
+        promptCapabilities: { image: true, embedded_context: true },
+        attachmentTabId: "session",
+      })
+    )
+    const event = dropEvent(
+      dragData({
+        types: ["Files", "text/uri-list"],
+        files: [new File(["x"], "photo.png", { type: "image/png" })],
+        data: { "text/uri-list": `file://${localPath}` },
+      })
+    )
+    let consumed = false
+    act(() => {
+      consumed = result.current.handleEditorDrop(event)
+    })
+    expect(consumed).toBe(true)
+    expect(event.preventDefault).toHaveBeenCalled()
+    await waitFor(() => expect(result.current.imageAttachments).toHaveLength(1))
+    expect(uploadLocalPathToRemote).toHaveBeenCalledWith(
+      localPath,
+      "session",
+      expect.objectContaining({
+        id: expect.any(String),
+        onProgress: expect.any(Function),
+      })
+    )
+  })
+})
+
+describe("attachment upload progress", () => {
+  afterEach(() => {
+    cleanup()
+    nativeEvents.clear()
+    vi.restoreAllMocks()
+  })
+
+  function hook() {
+    return renderHook(() =>
+      useComposerAttachments({
+        editorRef: { current: null },
+        promptCapabilities: { image: true, embedded_context: true },
+        attachmentTabId: "session",
+      })
+    )
+  }
+
+  it("shows a chip per file upload and clears it when the upload lands", async () => {
+    runtime.desktop = false
+    runtime.remoteId = null
+    let report!: (loaded: number, total: number) => void
+    let finish!: (value: {
+      path: string
+      name: string
+      size: number
+      mimeType: string | null
+    }) => void
+    vi.mocked(uploadAttachment).mockImplementationOnce(
+      (_file, _sid, progress) => {
+        report = (loaded, total) => progress?.onProgress?.(loaded, total)
+        return new Promise((resolve) => {
+          finish = resolve
+        })
+      }
+    )
+
+    const { result } = hook()
+    const file = new File(["data"], "report.pdf", { type: "application/pdf" })
+    let pending!: Promise<void>
+    act(() => {
+      pending = result.current.appendFilesFromInput([file])
+    })
+
+    await waitFor(() => expect(result.current.pendingUploads).toHaveLength(1))
+    expect(result.current.pendingUploads[0]).toMatchObject({
+      name: "report.pdf",
+      loaded: 0,
+      total: file.size,
+    })
+    expect(result.current.hasPendingFileUploads).toBe(true)
+
+    act(() => report(2, file.size))
+    await waitFor(() => expect(result.current.pendingUploads[0].loaded).toBe(2))
+
+    await act(async () => {
+      finish({
+        path: "/srv/uploads/report.pdf",
+        name: "report.pdf",
+        size: file.size,
+        mimeType: "application/pdf",
+      })
+      await pending
+    })
+    await waitFor(() => expect(result.current.pendingUploads).toHaveLength(0))
+    expect(result.current.hasPendingFileUploads).toBe(false)
+  })
+
+  it("clears the chip when the upload fails", async () => {
+    runtime.desktop = false
+    runtime.remoteId = null
+    let fail!: (reason: unknown) => void
+    vi.mocked(uploadAttachment).mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          fail = reject
+        })
+    )
+
+    const { result } = hook()
+    const file = new File(["data"], "x.bin", { type: "" })
+    let pending!: Promise<void>
+    act(() => {
+      pending = result.current.appendFilesFromInput([file])
+    })
+    await waitFor(() => expect(result.current.pendingUploads).toHaveLength(1))
+    await act(async () => {
+      fail(new Error("boom"))
+      await pending
+    })
+    await waitFor(() => expect(result.current.pendingUploads).toHaveLength(0))
+    expect(toast.error).toHaveBeenCalledWith("attachUploadFailed")
+  })
+
+  it("reports byte progress on an uploading image thumbnail", async () => {
+    runtime.desktop = false
+    runtime.remoteId = null
+    let report!: (loaded: number, total: number) => void
+    let finish!: (value: {
+      path: string
+      name: string
+      size: number
+      mimeType: string | null
+    }) => void
+    vi.mocked(uploadAttachment).mockImplementationOnce(
+      (_file, _sid, progress) => {
+        report = (loaded, total) => progress?.onProgress?.(loaded, total)
+        return new Promise((resolve) => {
+          finish = resolve
+        })
+      }
+    )
+
+    const { result } = hook()
+    act(() => {
+      void result.current.appendFilesFromInput([imageFile()])
+    })
+    await waitFor(() => expect(result.current.imageAttachments).toHaveLength(1))
+    act(() => report(25, 100))
+    await waitFor(() =>
+      expect(result.current.imageAttachments[0].uploadProgress).toBe(0.25)
+    )
+    await act(async () => {
+      finish({
+        path: "/srv/uploads/photo.png",
+        name: "photo.png",
+        size: 100,
+        mimeType: "image/png",
+      })
+    })
+    await waitFor(() => expect(result.current.hasUploadingImage).toBe(false))
+    // The file-upload chip list stays empty: images render in the thumbnail
+    // strip instead of getting a second progress chip.
+    expect(result.current.pendingUploads).toHaveLength(0)
   })
 })

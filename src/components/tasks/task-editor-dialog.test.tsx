@@ -73,7 +73,7 @@ vi.mock("./task-message-composer", async () => {
           getText: () => text,
           getPromptBlocks: () => [{ type: "text", text }],
           hasAttachments: () => false,
-          hasUploadingImage: () => false,
+          hasPendingUploads: () => false,
           focus: () => {},
         }),
         [text]

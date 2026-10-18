@@ -313,7 +313,7 @@ function TaskEditorBody({
     if (folderId == null) return setError(t("errorFolder"))
     // An unsettled upload has no server-side uri yet, so the stored block would
     // carry nothing for the launch to hydrate from.
-    if (composerRef.current?.hasUploadingImage()) {
+    if (composerRef.current?.hasPendingUploads()) {
       return setError(tChat("attachUploadInProgress"))
     }
 
@@ -366,7 +366,7 @@ function TaskEditorBody({
     // Same gate as the save: an unsettled upload has no server-side uri, so the
     // template would be stored with an image that resolves to nothing (or, in
     // web mode, with raw base64 the strip could not remove).
-    if (composerRef.current?.hasUploadingImage()) {
+    if (composerRef.current?.hasPendingUploads()) {
       return setError(tChat("attachUploadInProgress"))
     }
     setTemplateBusy(true)

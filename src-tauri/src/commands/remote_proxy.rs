@@ -445,6 +445,23 @@ pub async fn remote_http_call(
 
 // ─── Multipart upload proxy ───────────────────────────────────────────
 
+/// Progress channel for chat-attachment uploads to a remote workspace.
+///
+/// Emitted from the reqwest body stream (one event per chunk) and keyed by the
+/// client-generated `upload_id`, so the composer's parallel upload pool can map
+/// each event back to the file chip it belongs to. Workspace file transfers
+/// have their own `workspace://transfer-progress` channel: they are tied to a
+/// transfer id and move whole directory trees.
+pub const ATTACHMENT_UPLOAD_PROGRESS_EVENT: &str = "attachment://upload-progress";
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentUploadProgress {
+    pub upload_id: String,
+    pub loaded: u64,
+    pub total: u64,
+}
+
 /// Client-side safety ceiling for `read_local_file_for_upload`.
 ///
 /// The remote server's effective limit is configured independently through
@@ -504,6 +521,43 @@ fn sanitize_upload_file_name(raw: &str) -> String {
     } else {
         limited
     }
+}
+
+/// Stream an in-memory attachment body into reqwest while reporting how many
+/// bytes have been handed to the HTTP client.
+///
+/// The bytes are already here (the webview sent them as base64), so this only
+/// measures the network leg — the part of the transfer the user actually waits
+/// on. Chunks are large enough that a fast link doesn't flood the event channel
+/// with thousands of redraws; the frontend treats the last `loaded == total`
+/// event as "sent, waiting for the server's reply".
+fn attachment_upload_stream(
+    app: AppHandle,
+    upload_id: String,
+    bytes: Bytes,
+    total: u64,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static {
+    const CHUNK: usize = 256 * 1024;
+    futures_util::stream::unfold((bytes, 0usize, 0u64), move |(bytes, offset, loaded)| {
+        let app = app.clone();
+        let upload_id = upload_id.clone();
+        async move {
+            if offset >= bytes.len() {
+                return None;
+            }
+            let end = (offset + CHUNK).min(bytes.len());
+            let loaded = loaded.saturating_add((end - offset) as u64);
+            let _ = app.emit(
+                ATTACHMENT_UPLOAD_PROGRESS_EVENT,
+                AttachmentUploadProgress {
+                    upload_id,
+                    loaded,
+                    total,
+                },
+            );
+            Some((Ok(bytes.slice(offset..end)), (bytes, end, loaded)))
+        }
+    })
 }
 
 /// Stream a local file into a base64-wrapped JSON envelope ready to be
@@ -587,9 +641,11 @@ pub async fn read_local_file_for_upload(
 /// `i18n_key` for the user toast), else wraps in `NetworkError`.
 #[tauri::command]
 pub async fn remote_upload_attachment(
+    app: AppHandle,
     db: State<'_, AppDatabase>,
     proxy: State<'_, Arc<RemoteProxyState>>,
     connection_id: i32,
+    upload_id: Option<String>,
     file_name: String,
     mime_type: Option<String>,
     session_id: Option<String>,
@@ -661,12 +717,33 @@ pub async fn remote_upload_attachment(
     // regardless of upstream — and the extra cost is a single pass over
     // ≤255 chars, which is negligible compared to the upload itself.
     let safe_name = sanitize_upload_file_name(&file_name);
-    let part = reqwest::multipart::Part::bytes(bytes)
-        .file_name(safe_name)
-        .mime_str(&mime)
-        .map_err(|e| {
-            AppCommandError::io_error("Invalid MIME type for upload").with_detail(e.to_string())
-        })?;
+    // Report transfer progress only when the caller asked for it. The bytes are
+    // already in memory, so the stream just cuts them into chunks and counts
+    // them as reqwest pulls them — the same shape the workspace uploader uses
+    // (`file_upload_stream`), minus the disk read.
+    let progress_id = upload_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    let part = match progress_id {
+        Some(upload_id) => {
+            let total = bytes.len() as u64;
+            let body = reqwest::Body::wrap_stream(attachment_upload_stream(
+                app.clone(),
+                upload_id,
+                Bytes::from(bytes),
+                total,
+            ));
+            reqwest::multipart::Part::stream_with_length(body, total)
+        }
+        None => reqwest::multipart::Part::bytes(bytes),
+    }
+    .file_name(safe_name)
+    .mime_str(&mime)
+    .map_err(|e| {
+        AppCommandError::io_error("Invalid MIME type for upload").with_detail(e.to_string())
+    })?;
     let mut form = reqwest::multipart::Form::new().part("file", part);
     if let Some(sid) = session_id {
         if !sid.is_empty() {

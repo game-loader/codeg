@@ -157,6 +157,7 @@ import { useReferenceSearch } from "@/components/chat/composer/use-reference-sea
 import { useComposerMentionLabels } from "@/components/chat/composer/use-composer-mention-labels"
 import { ComposerAddMenu } from "@/components/chat/composer/composer-add-menu"
 import { ComposerImageThumbnails } from "@/components/chat/composer/composer-image-thumbnails"
+import { ComposerUploadProgress } from "@/components/chat/composer/composer-upload-progress"
 import { useComposerAttachments } from "@/components/chat/composer/use-composer-attachments"
 import { useComposerShortcuts } from "@/components/chat/composer/use-composer-shortcuts"
 
@@ -499,6 +500,7 @@ export function MessageInput({
     attachments,
     embeddedPayloadsRef,
     clearAttachments,
+    hasPendingFileUploads,
     hasUploadingImage,
     hydrateFromBlocks,
     imagePromptBlocks,
@@ -1633,10 +1635,13 @@ export function MessageInput({
     if (disabled && !isPrompting && !isEditingQueueItem) return
     // An image whose web/remote upload hasn't settled has no server-side uri
     // yet — the transport would strip its base64 and the backend would have
-    // nothing to hydrate. Block ALL three branches below (send / enqueue /
-    // queue-edit save; a queued block is sent verbatim later) until uploads
-    // finish. The draft stays intact, so this is a "wait a moment", not a loss.
-    if (hasUploadingImage) {
+    // nothing to hydrate. Files are worse: their `file://` badge is only
+    // inserted once the upload answers with the server path, so sending now
+    // would silently leave them out of the prompt. Block ALL three branches
+    // below (send / enqueue / queue-edit save; a queued block is sent verbatim
+    // later) until uploads finish. The draft stays intact, so this is a "wait a
+    // moment", not a loss.
+    if (hasUploadingImage || hasPendingFileUploads) {
       toast.error(tAttach("attachUploadInProgress"))
       return
     }
@@ -1664,6 +1669,7 @@ export function MessageInput({
     resetComposer()
   }, [
     disabled,
+    hasPendingFileUploads,
     hasUploadingImage,
     tAttach,
     buildDraft,
@@ -1852,6 +1858,7 @@ export function MessageInput({
   const chromeFocus = useComposerChromeFocus(editorRef)
 
   const hasImageAttachments = imageAttachments.length > 0
+  const hasUploadChips = attach.pendingUploads.length > 0
   const showDragActive = attach.isDragActive && !disabled
 
   // The box's floor and the editable area's are two halves of one number — see
@@ -2311,13 +2318,18 @@ export function MessageInput({
               )}
             >
               <ConversationContextBar
-                hasExtraContent={hasImageAttachments}
-                scrollEndTrigger={attachments.length}
+                hasExtraContent={hasImageAttachments || hasUploadChips}
+                scrollEndTrigger={
+                  attachments.length + attach.pendingUploads.length
+                }
                 extraContent={
-                  <ComposerImageThumbnails
-                    attachments={imageAttachments}
-                    onRemove={attach.removeAttachment}
-                  />
+                  <>
+                    <ComposerImageThumbnails
+                      attachments={imageAttachments}
+                      onRemove={attach.removeAttachment}
+                    />
+                    <ComposerUploadProgress uploads={attach.pendingUploads} />
+                  </>
                 }
               />
               <RichComposer

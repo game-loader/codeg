@@ -615,7 +615,7 @@ export function TaskDetailSheet({
       if (!canSubmitFollowUp(intent, feedback, blocks.length > 0)) return
       // An unsettled upload has no server-side uri yet, so its block would
       // reach the agent empty. The draft stays intact — this is "wait a moment".
-      if (composerRef.current?.hasUploadingImage()) {
+      if (composerRef.current?.hasPendingUploads()) {
         toast.error(tChat("attachUploadInProgress"))
         return
       }
@@ -648,7 +648,7 @@ export function TaskDetailSheet({
     // re-rendered with `busy` set. The backend's CAS rejects the loser, but the
     // user would see an error toast for a keypress they are entitled to repeat.
     if (submittingRef.current) return
-    if (composerRef.current?.hasUploadingImage()) {
+    if (composerRef.current?.hasPendingUploads()) {
       toast.error(tChat("attachUploadInProgress"))
       return
     }

@@ -54,32 +54,104 @@ export function mimeTypeFromPath(path: string): string | null {
   return MIME_BY_EXT[ext] ?? null
 }
 
-export function hasDragFiles(dataTransfer: DataTransfer | null): boolean {
-  if (!dataTransfer?.types) return false
-  return Array.from(dataTransfer.types).includes("Files")
+/**
+ * Whether a drag is carrying files, judged from anything a target can read.
+ *
+ * `dataTransfer.types` is the only reliable target-side signal (Safari fills
+ * `items` only on drop), but "Files" is not the only way a source spells it:
+ * WebKit publishes `text/uri-list` for Finder drags, and `files` itself is
+ * populated by the time `drop` runs. Accept all of them so a WebKit-handled
+ * drop is not mistaken for a text drag.
+ */
+export function dragCarriesFiles(dataTransfer: DataTransfer | null): boolean {
+  if (!dataTransfer) return false
+  if ((dataTransfer.files?.length ?? 0) > 0) return true
+  const types = Array.from(dataTransfer.types ?? []).map((type) =>
+    type.toLowerCase()
+  )
+  if (types.includes("files")) return true
+  const items = dataTransfer.items ? Array.from(dataTransfer.items) : []
+  if (items.some((item) => item.kind === "file")) return true
+  // Link and rich-text drags carry a uri list too (that is how a dragged <a>
+  // or a selected image is pasted), but they also publish markup. Only a drag
+  // without html is taken as file URLs.
+  if (types.includes("text/html")) return false
+  return types.includes("text/uri-list") || types.includes("public.file-url")
 }
 
 /**
- * Whether an OS drag position (Tauri reports window coordinates, sometimes in
- * physical pixels) lands on `element` **and** `element` is what the user would
- * actually hit there.
+ * Whether a hovered drag *may* carry files, for the drop affordance only.
  *
- * Two guards, both needed because a Tauri drag-drop event is delivered to every
- * listener in the window:
- *
- * - Hidden/detached hosts are rejected outright. Inactive conversation tabs stay
- *   mounted at `absolute inset-0` with `visibility: hidden`, so their bounding
- *   rect overlaps the active tab's — without this, one OS drop would fan out
- *   across every open conversation.
- * - The topmost element at the point must be inside the host. A composer sitting
- *   behind a modal (the to-do task editor dialog, the detail drawer) still has
- *   its full rect at the same coordinates; `elementFromPoint` is what tells the
- *   two apart, so the drop lands only in the composer the user can see.
+ * Strictly broader than {@link dragCarriesFiles}: a drag whose pasteboard
+ * exposes no type at all is treated as a candidate. WebKit can enter protected
+ * mode for an external drag and report an empty `types` list while hovering
+ * (the data becomes readable on drop), and with no other signal the composer
+ * would show no "drop files" hint at all. Internal drags always publish a type
+ * (our tree payload or `text/plain`), so they are unaffected.
  */
-export function pointWithinElement(
-  position: { x: number; y: number },
-  element: HTMLElement
-): boolean {
+export function dragMayCarryFiles(dataTransfer: DataTransfer | null): boolean {
+  if (!dataTransfer) return false
+  if (dragCarriesFiles(dataTransfer)) return true
+  return Array.from(dataTransfer.types ?? []).length === 0
+}
+
+/**
+ * Local file paths a DOM drop carries, recovered from the drag's URI list.
+ *
+ * A Tauri-native drop hands us OS paths directly; a WebKit-handled drop only
+ * exposes `File` objects, which have no path. macOS drag sources also put the
+ * file URL on the pasteboard (`text/uri-list`, mirrored in `text/plain`), the
+ * one way back to a path the agent can read — so a drop that lands here can
+ * still attach a `file://` reference instead of inline bytes.
+ */
+export function filePathsFromDataTransfer(
+  dataTransfer: DataTransfer | null
+): string[] {
+  if (!dataTransfer) return []
+  const paths: string[] = []
+  for (const type of ["text/uri-list", "text/plain"]) {
+    let raw = ""
+    try {
+      raw = dataTransfer.getData(type)
+    } catch {
+      // Protected mode / unsupported type: nothing to read.
+      continue
+    }
+    for (const line of raw.split(/\r?\n/)) {
+      const uri = line.trim()
+      if (!uri || uri.startsWith("#")) continue
+      const path = pathFromFileUri(uri)
+      if (path && !paths.includes(path)) paths.push(path)
+    }
+  }
+  return paths
+}
+
+function pathFromFileUri(uri: string): string | null {
+  if (!/^file:\/\//i.test(uri)) return null
+  try {
+    const url = new URL(uri)
+    let path = decodeURIComponent(url.pathname)
+    // file:///C:/Users/… → C:/Users/… (Windows drive letters)
+    if (/^\/[a-zA-Z]:/.test(path)) path = path.slice(1)
+    // file://server/share/… → //server/share/…
+    if (url.host) path = `//${url.host}${path}`
+    return path || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Whether `element` is on screen and can receive a drop right now.
+ *
+ * Inactive conversation tabs stay mounted at `absolute inset-0` with
+ * `visibility: hidden`, so their bounding rect overlaps the active tab's — a
+ * drag must not fan out across every open conversation. A composer behind a
+ * modal is excluded too: Radix's scroll lock turns `pointer-events` off on the
+ * page beneath the dialog.
+ */
+export function elementAcceptsDrop(element: HTMLElement): boolean {
   const doc = element.ownerDocument
   const style = doc?.defaultView?.getComputedStyle(element)
   if (style) {
@@ -92,7 +164,30 @@ export function pointWithinElement(
     }
   }
   const rect = element.getBoundingClientRect()
-  if (rect.width === 0 || rect.height === 0) return false
+  return rect.width > 0 && rect.height > 0
+}
+
+/**
+ * Whether an OS drag position (Tauri reports window coordinates, sometimes in
+ * physical pixels) lands on `element` **and** `element` is what the user would
+ * actually hit there.
+ *
+ * Two guards, both needed because a Tauri drag-drop event is delivered to every
+ * listener in the window:
+ *
+ * - Hidden/detached hosts are rejected outright (see {@link elementAcceptsDrop}).
+ * - The topmost element at the point must be inside the host. A composer sitting
+ *   behind a modal (the to-do task editor dialog, the detail drawer) still has
+ *   its full rect at the same coordinates; `elementFromPoint` is what tells the
+ *   two apart, so the drop lands only in the composer the user can see.
+ */
+export function pointWithinElement(
+  position: { x: number; y: number },
+  element: HTMLElement
+): boolean {
+  if (!elementAcceptsDrop(element)) return false
+  const doc = element.ownerDocument
+  const rect = element.getBoundingClientRect()
   const dpr = window.devicePixelRatio || 1
   const candidates = [
     { x: position.x, y: position.y },

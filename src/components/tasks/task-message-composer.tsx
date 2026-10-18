@@ -17,6 +17,7 @@ import {
 import { useAgentOptions } from "@/components/automations/use-agent-options"
 import { ComposerAddMenu } from "@/components/chat/composer/composer-add-menu"
 import { ComposerImageThumbnails } from "@/components/chat/composer/composer-image-thumbnails"
+import { ComposerUploadProgress } from "@/components/chat/composer/composer-upload-progress"
 import { restampSkillPrefixes } from "@/components/chat/composer/composer-commands"
 import { useComposerChromeFocus } from "@/components/chat/composer/use-composer-chrome-focus"
 import {
@@ -67,8 +68,9 @@ export interface TaskMessageComposerHandle {
   /** Just the out-of-band parts (images, path-less pasted bytes) — for the
    *  surfaces whose text rides its own string field. */
   getAttachmentBlocks: () => PromptInputBlock[]
-  /** Whether an image upload is still in flight (a send must wait). */
-  hasUploadingImage: () => boolean
+  /** Whether an attachment upload (image or file) is still in flight — the
+   *  server-side path it produces does not exist yet, so a send must wait. */
+  hasPendingUploads: () => boolean
   /** Whether anything is attached at all — an image-only note is still a note. */
   hasAttachments: () => boolean
   clear: () => void
@@ -289,7 +291,8 @@ export function TaskMessageComposer({
         ]
       },
       getAttachmentBlocks,
-      hasUploadingImage: () => attach.hasUploadingImage,
+      hasPendingUploads: () =>
+        attach.hasUploadingImage || attach.hasPendingFileUploads,
       hasAttachments: () =>
         attach.attachments.length > 0 || embeddedBlocks().length > 0,
       clear: () => {
@@ -312,12 +315,14 @@ export function TaskMessageComposer({
       className="codeg-composer-chrome relative rounded-xl border border-input bg-background transition-colors focus-within:border-ring focus-within:ring-[3px] focus-within:ring-inset focus-within:ring-ring/50"
     >
       <ComposerInvocationsPopup inv={invocations} />
-      {attach.imageAttachments.length > 0 ? (
+      {attach.imageAttachments.length > 0 ||
+      attach.pendingUploads.length > 0 ? (
         <div className="flex gap-2 overflow-x-auto px-2 pt-2">
           <ComposerImageThumbnails
             attachments={attach.imageAttachments}
             onRemove={attach.removeAttachment}
           />
+          <ComposerUploadProgress uploads={attach.pendingUploads} />
         </div>
       ) : null}
       {/* Not keyed by the placeholder: RichComposer repaints a changed hint in

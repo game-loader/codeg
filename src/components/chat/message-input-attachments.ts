@@ -45,6 +45,9 @@ export interface ImageInputAttachment {
    *  flight (`uri` not yet assigned). Sends are blocked while any image is
    *  uploading; never serialized into prompt blocks. */
   uploading?: boolean
+  /** Transient: 0..1 byte progress of that same upload, when the transport
+   *  reports it. `undefined` means "not reported yet" (indeterminate). */
+  uploadProgress?: number
 }
 
 export type InputAttachment = ResourceInputAttachment | ImageInputAttachment

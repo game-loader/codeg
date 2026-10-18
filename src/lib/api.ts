@@ -4166,17 +4166,74 @@ export function isEmptyAttachmentError(err: unknown): boolean {
   )
 }
 
+/** Byte-level progress for one chat-attachment upload. */
+export interface AttachmentUploadProgress {
+  uploadId: string
+  loaded: number
+  total: number
+}
+
+/**
+ * Progress handle passed down to an attachment upload.
+ *
+ * The web transport reports through `onProgress` straight from XHR; the
+ * desktop proxy emits `attachment://upload-progress` events keyed by `id`
+ * (see `remote_upload_attachment`), so the composer can render a percentage
+ * for either transport. `id` is optional — callers that only need the
+ * spinner can omit it.
+ */
+export interface AttachmentUploadReporter {
+  id?: string
+  onProgress?: (loaded: number, total: number) => void
+}
+
+/** Subscribe to remote-desktop attachment upload progress (desktop only). */
+export async function listenAttachmentUploadProgress(
+  handler: (progress: AttachmentUploadProgress) => void
+): Promise<() => void> {
+  if (!isDesktop()) return () => {}
+  const { listen } = await import("@tauri-apps/api/event")
+  return listen<AttachmentUploadProgress>(
+    "attachment://upload-progress",
+    (event) => handler(event.payload)
+  )
+}
+
+/**
+ * Watch the desktop proxy's progress channel for exactly this upload.
+ *
+ * Returns a no-op unsubscribe for the web transport (XHR reports inline) and
+ * for uploads that carry no id. Failures to subscribe are swallowed: progress
+ * is a nicety, and losing it must never fail the upload itself.
+ */
+async function watchAttachmentUpload(
+  reporter: AttachmentUploadReporter | null | undefined
+): Promise<() => void> {
+  const id = reporter?.id
+  const onProgress = reporter?.onProgress
+  if (!id || !onProgress || !isDesktop()) return () => {}
+  try {
+    return await listenAttachmentUploadProgress((progress) => {
+      if (progress.uploadId === id) onProgress(progress.loaded, progress.total)
+    })
+  } catch {
+    return () => {}
+  }
+}
+
 // Upload a single attachment to the server.
 //
 // Web mode: streams the file via multipart/form-data to the same origin the
-// page was served from. Desktop + remote workspace: routes through the Rust
+// page was served from, using XHR so the composer gets byte-level progress.
+// Desktop + remote workspace: routes through the Rust
 // `remote_upload_attachment` command, because the webview's `fetch` can't
 // hit a plain `http://` remote (mixed-content rules block secure-context
 // requests). Returns the server-side absolute path so the caller can attach
 // it as a `file://` ResourceLink — identical shape on both transports.
 export async function uploadAttachment(
   file: File,
-  sessionId?: string | null
+  sessionId?: string | null,
+  progress?: AttachmentUploadReporter
 ): Promise<UploadAttachmentResult> {
   if (file.size === 0) {
     // Skip empty files at the entry — both the web and remote-desktop
@@ -4193,40 +4250,66 @@ export async function uploadAttachment(
     // a `RemoteDesktopTransport` is configured — we deliberately want the
     // local IPC here, not the proxy, because `remote_upload_attachment`
     // lives on this desktop binary.
-    return getShellTransport().call<UploadAttachmentResult>(
-      "remote_upload_attachment",
-      {
-        connectionId: remoteId,
-        fileName: file.name,
-        mimeType: file.type || null,
-        sessionId: sessionId ?? null,
-        dataBase64: arrayBufferToBase64(buf),
+    const stop = await watchAttachmentUpload(progress)
+    try {
+      return await getShellTransport().call<UploadAttachmentResult>(
+        "remote_upload_attachment",
+        {
+          connectionId: remoteId,
+          uploadId: progress?.id ?? null,
+          fileName: file.name,
+          mimeType: file.type || null,
+          sessionId: sessionId ?? null,
+          dataBase64: arrayBufferToBase64(buf),
+        }
+      )
+    } finally {
+      stop()
+    }
+  }
+
+  return new Promise<UploadAttachmentResult>((resolve, reject) => {
+    const token = getCodegToken()
+    const xhr = new XMLHttpRequest()
+    xhr.open("POST", `${window.location.origin}/api/upload_attachment`)
+    xhr.setRequestHeader("Authorization", `Bearer ${token}`)
+
+    if (progress?.onProgress) {
+      const onProgress = progress.onProgress
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress(event.loaded, event.total)
       }
-    )
-  }
+    }
 
-  const token = getCodegToken()
-  const form = new FormData()
-  form.append("file", file, file.name)
-  if (sessionId) form.append("session_id", sessionId)
+    xhr.onload = () => {
+      if (xhr.status === 401) {
+        notifyWebUnauthorized()
+        reject(new Error("Unauthorized"))
+        return
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        let err: unknown
+        try {
+          err = JSON.parse(xhr.responseText) as unknown
+        } catch {
+          err = { code: "network_error", message: `HTTP ${xhr.status}` }
+        }
+        reject(err)
+        return
+      }
+      try {
+        resolve(JSON.parse(xhr.responseText) as UploadAttachmentResult)
+      } catch (e) {
+        reject(e instanceof Error ? e : new Error(String(e)))
+      }
+    }
+    xhr.onerror = () => reject(new Error("Network error during upload"))
 
-  const res = await fetch(`${window.location.origin}/api/upload_attachment`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: form,
+    const form = new FormData()
+    form.append("file", file, file.name)
+    if (sessionId) form.append("session_id", sessionId)
+    xhr.send(form)
   })
-  if (res.status === 401) {
-    notifyWebUnauthorized()
-    throw new Error("Unauthorized")
-  }
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({
-      code: "network_error",
-      message: `HTTP ${res.status}`,
-    }))
-    throw err
-  }
-  return res.json()
 }
 
 // Upload a file picked from the desktop machine's filesystem to the remote
@@ -4237,7 +4320,8 @@ export async function uploadAttachment(
 // continue to use `appendResourceAttachments` with the local path directly.
 export async function uploadLocalPathToRemote(
   path: string,
-  sessionId?: string | null
+  sessionId?: string | null,
+  progress?: AttachmentUploadReporter
 ): Promise<UploadAttachmentResult> {
   const remoteId = getActiveRemoteConnectionId()
   if (remoteId === null) {
@@ -4258,13 +4342,22 @@ export async function uploadLocalPathToRemote(
     // floor here rather than send a zero-byte multipart upstream.
     throw new EmptyAttachmentError(file.fileName)
   }
-  return shell.call<UploadAttachmentResult>("remote_upload_attachment", {
-    connectionId: remoteId,
-    fileName: file.fileName,
-    mimeType: file.mimeType,
-    sessionId: sessionId ?? null,
-    dataBase64: file.dataBase64,
-  })
+  const stop = await watchAttachmentUpload(progress)
+  try {
+    return await shell.call<UploadAttachmentResult>(
+      "remote_upload_attachment",
+      {
+        connectionId: remoteId,
+        uploadId: progress?.id ?? null,
+        fileName: file.fileName,
+        mimeType: file.mimeType,
+        sessionId: sessionId ?? null,
+        dataBase64: file.dataBase64,
+      }
+    )
+  } finally {
+    stop()
+  }
 }
 
 // ─── Workspace file upload / download ───
