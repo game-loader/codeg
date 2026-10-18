@@ -89,6 +89,8 @@ export interface MultiHostSidebarProps extends CatalogRowActions {
   onToggleHost(key: BackendKey): void
   onSelectHost(key: BackendKey): void
   onAddRepository(key: BackendKey, generation: number): void
+  /** Adds a project without a machine row to start from; the dialog picks one. */
+  onAddProject?(): void
   onRefresh(key: BackendKey, generation: number): void
   onManageConnections(): void
   renderNavigation?(items: SidebarNavItemVisibility): ReactNode
@@ -104,6 +106,7 @@ export function MultiHostSidebar({
   onSelectHost,
   onOpenFolder,
   onAddRepository,
+  onAddProject,
   onWorktrees,
   onNewSession,
   onOpenConversation,
@@ -245,15 +248,29 @@ export function MultiHostSidebar({
             </Button>
           ))}
         </div>
-        <Button
-          size="icon"
-          variant="ghost"
-          className="size-7"
-          aria-label={t("manageConnections")}
-          onClick={onManageConnections}
-        >
-          <Settings2 className="size-4" />
-        </Button>
+        <div className="flex items-center">
+          {onAddProject && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className="size-7"
+              aria-label={t("addProject")}
+              title={t("addProject")}
+              onClick={onAddProject}
+            >
+              <Plus className="size-4" />
+            </Button>
+          )}
+          <Button
+            size="icon"
+            variant="ghost"
+            className="size-7"
+            aria-label={t("manageConnections")}
+            onClick={onManageConnections}
+          >
+            <Settings2 className="size-4" />
+          </Button>
+        </div>
       </div>
       {renderNavigation?.(navItems)}
       <UnifiedHistoryControls

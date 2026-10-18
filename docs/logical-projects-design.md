@@ -95,7 +95,7 @@ Load identities after the existing opened-folder catalog is available, including
 
 Project projection is a pure function of host descriptors, visible folder catalogs and accepted identity entries. It never drops setups on identity collision, never uses a numeric folder ID across hosts, and only attaches worktree children from the owning host/setup.
 
-The proposed default navigation is **Projects**, with a visible **Projects / Machines** toggle retaining the current machine-first catalog. Machine connection status and add/refresh/manage controls remain reachable in both modes. Every execution-location choice displays machine name and path; worktree management keeps that captured binding. Persist only view preference and collapse state, not raw remotes or credentials. Existing window layout selections and resource references are unchanged.
+The proposed default navigation is **Projects**, with a visible **Projects / Machines** toggle retaining the current machine-first catalog. Machine connection status and add/refresh/manage controls remain reachable in both modes. Projects mode has no machine row, so the header's Add project opens the folder dialog with a Machine choice, defaulting to the focused machine when connected, otherwise this machine; changing it remounts the dialog under that machine's client, and it is locked while a pick or open is in flight. Every execution-location choice displays machine name and path; worktree management keeps that captured binding. Persist only view preference and collapse state, not raw remotes or credentials. Existing window layout selections and resource references are unchanged.
 
 ## Native iOS projection and view
 

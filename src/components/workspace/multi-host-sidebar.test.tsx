@@ -488,3 +488,22 @@ it("defaults to Projects, keeps headers disclosure-only, restores Machines and s
   )
   expect(document.querySelector("section[data-backend-key]")).toBeNull()
 })
+
+it("adds a project from the header in both views, without a machine row to start from", () => {
+  const onAddProject = vi.fn()
+  const props = {
+    ...tagProps(new Map()),
+    onAddProject,
+  }
+  const view = render(<MultiHostSidebar {...props} />)
+  fireEvent.click(screen.getByRole("button", { name: "addProject" }))
+  expect(onAddProject).toHaveBeenCalledOnce()
+  fireEvent.click(screen.getByRole("button", { name: "machines" }))
+  fireEvent.click(screen.getByRole("button", { name: "addProject" }))
+  expect(onAddProject).toHaveBeenCalledTimes(2)
+  // The per-machine entry keeps its own fixed destination.
+  expect(props.onAddRepository).not.toHaveBeenCalled()
+  view.unmount()
+  render(<MultiHostSidebar {...tagProps(new Map())} />)
+  expect(screen.queryByRole("button", { name: "addProject" })).toBeNull()
+})

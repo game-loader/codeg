@@ -7297,6 +7297,8 @@
     "vertical": "上下分屏",
     "chooseSecond": "选择另一台机器",
     "showMachines": "显示侧边栏",
-    "hideMachines": "隐藏侧边栏"
+    "hideMachines": "隐藏侧边栏",
+    "addProject": "添加项目",
+    "projectMachine": "机器"
   }
 }

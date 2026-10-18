@@ -49,6 +49,7 @@ import { MultiHostSidebar, type HostFolderCatalog } from "./multi-host-sidebar"
 import type { CatalogRowActions } from "./project-session-list"
 import { MultiHostTabs, type WindowResourceTab } from "./multi-host-tabs"
 import { HostWorktreeDialog } from "./host-worktree-dialog"
+import { ProjectMachinePicker } from "./project-machine-picker"
 import { BackendClientProvider } from "@/contexts/backend-client-context"
 import { BackendStoresProvider } from "@/contexts/backend-stores-context"
 import { ScopedRemoteConnectionProvider } from "@/contexts/remote-connection-context"
@@ -937,6 +938,15 @@ function WindowWorkspace({
       </BackendClientProvider>
     )
   }
+  // Default to the focused machine when it is usable, otherwise this machine.
+  // The dialog can still move the new project elsewhere before it opens.
+  const addProject = () => {
+    const runtime =
+      registry.descriptor(focused)?.status === "connected"
+        ? registry.get(focused)
+        : registry.get("local")
+    if (runtime) setRepositoryTarget(runtime)
+  }
   const refreshHost = (key: BackendKey, generation: number) => {
     const runtime = resolveCatalogRuntime(registry, key, generation)
     if (runtime) {
@@ -1177,6 +1187,7 @@ function WindowWorkspace({
               const runtime = resolveCatalogRuntime(registry, key, generation)
               if (runtime) setRepositoryTarget(runtime)
             }}
+            onAddProject={addProject}
             onWorktrees={(key, folder, generation) => {
               const runtime = resolveCatalogRuntime(
                 registry,
@@ -1288,7 +1299,12 @@ function WindowWorkspace({
       />
       {repositoryTarget &&
         registry.get(repositoryTarget.client.key) === repositoryTarget && (
-          <BackendClientProvider client={repositoryTarget.client}>
+          // Switching machines remounts the dialog, so no path, folder or
+          // in-flight open from one machine reaches another's client.
+          <BackendClientProvider
+            key={`${repositoryTarget.client.key}:${repositoryTarget.generation}`}
+            client={repositoryTarget.client}
+          >
             <BackendStoresProvider stores={repositoryTarget.stores}>
               <ScopedRemoteConnectionProvider
                 connection={repositoryTarget.client.remoteConnection}
@@ -1305,6 +1321,21 @@ function WindowWorkspace({
                       repositoryTarget.generation
                     )
                   }}
+                  renderMachinePicker={
+                    hosts.length > 1
+                      ? ({ disabled }) => (
+                          <ProjectMachinePicker
+                            hosts={hosts}
+                            value={repositoryTarget.client.key}
+                            disabled={disabled}
+                            onChange={(key) => {
+                              const runtime = registry.get(key)
+                              if (runtime) setRepositoryTarget(runtime)
+                            }}
+                          />
+                        )
+                      : undefined
+                  }
                 />
               </ScopedRemoteConnectionProvider>
             </BackendStoresProvider>

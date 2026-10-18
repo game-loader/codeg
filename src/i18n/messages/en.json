@@ -7297,6 +7297,8 @@
     "vertical": "Top and bottom",
     "chooseSecond": "Choose another machine",
     "showMachines": "Show sidebar",
-    "hideMachines": "Hide sidebar"
+    "hideMachines": "Hide sidebar",
+    "addProject": "Add project",
+    "projectMachine": "Machine"
   }
 }

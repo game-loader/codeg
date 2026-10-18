@@ -6,7 +6,14 @@ import {
   useBackendApi,
   useBackendPlatform,
 } from "@/contexts/backend-client-context"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
 import { useTranslations } from "next-intl"
 import {
   AlertTriangle,
@@ -82,6 +89,12 @@ interface WorkspaceFolderDialogProps {
   folder?: FolderDetail | null
   /** Called once the workspace folder has been opened (creation flow only). */
   onFolderOpened?: (folder: FolderDetail) => void
+  /**
+   * Creation flow only: lets the host offer another machine before a root is
+   * chosen. Changing it must remount the dialog under that machine's client,
+   * so `disabled` is set while a pick or open on the current one is in flight.
+   */
+  renderMachinePicker?: (options: { disabled: boolean }) => ReactNode
 }
 
 /**
@@ -98,6 +111,7 @@ export function WorkspaceFolderDialog({
   onOpenChange,
   folder,
   onFolderOpened,
+  renderMachinePicker,
 }: WorkspaceFolderDialogProps) {
   const backendStores = useBackendStores({ workspace: legacyWorkspace })
   const useAppWorkspaceStore = backendStores.workspace
@@ -429,6 +443,11 @@ export function WorkspaceFolderDialog({
 
         {view === "pick-root" ? (
           <>
+            {!manageMode
+              ? renderMachinePicker?.({
+                  disabled: openingRoot || browserBusy,
+                })
+              : null}
             <DirectoryBrowser
               ref={rootBrowserRef}
               active={open && view === "pick-root"}

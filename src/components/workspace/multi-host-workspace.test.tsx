@@ -1,5 +1,5 @@
 import userEvent from "@testing-library/user-event"
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, type ReactNode } from "react"
 import {
   act,
   fireEvent,
@@ -85,7 +85,16 @@ vi.mock("@/components/layout/remote-workspace-manage-dialog", () => ({
   RemoteWorkspaceManageDialog: () => null,
 }))
 vi.mock("@/components/layout/workspace-folder-dialog", () => ({
-  WorkspaceFolderDialog: () => <FolderPicker />,
+  WorkspaceFolderDialog: ({
+    renderMachinePicker,
+  }: {
+    renderMachinePicker?: (options: { disabled: boolean }) => ReactNode
+  }) => (
+    <>
+      {renderMachinePicker?.({ disabled: false })}
+      <FolderPicker />
+    </>
+  ),
 }))
 vi.mock("./host-worktree-dialog", () => ({
   HostWorktreeDialog: (props: unknown) => {
@@ -591,6 +600,74 @@ describe("single-window machine integration", () => {
       expect.anything(),
       undefined
     )
+  })
+
+  it("adds a project on the focused machine and lets the dialog move it to another one", async () => {
+    await mount()
+    fireEvent.click(screen.getByRole("button", { name: "Add project" }))
+    const machine = screen.getByRole("combobox", { name: "Machine" })
+    expect(machine).toHaveValue("local")
+    fireEvent.change(machine, { target: { value: "remote:2" } })
+    expect(screen.getByRole("combobox", { name: "Machine" })).toHaveValue(
+      "remote:2"
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Pick on remote:2" }))
+    await waitFor(() =>
+      expect(mocks.remotes.get(2)?.call).toHaveBeenCalledWith(
+        "open_folder",
+        { path: "/remote/new-repo" },
+        undefined
+      )
+    )
+    expect(mocks.remotes.get(1)?.call).not.toHaveBeenCalledWith(
+      "open_folder",
+      expect.anything(),
+      undefined
+    )
+    expect(mocks.shell.call).not.toHaveBeenCalledWith(
+      "open_folder",
+      expect.anything()
+    )
+  })
+
+  it("defaults a new project to the focused remote only while it is usable", async () => {
+    await mount()
+    showMachines()
+    fireEvent.click(
+      within(hostNode("remote:1")).getAllByRole("button", {
+        name: "Machine A",
+      })[1]
+    )
+    // Focused but never answered yet: still connecting, so this machine.
+    expect(hostNode("remote:1")).toHaveTextContent("Connecting")
+    fireEvent.click(screen.getByRole("button", { name: "Add project" }))
+    expect(screen.getByRole("combobox", { name: "Machine" })).toHaveValue(
+      "local"
+    )
+    // A machine is usable once it has answered a request.
+    fireEvent.click(screen.getByRole("button", { name: "Send remote:1" }))
+    await waitFor(() =>
+      expect(hostNode("remote:1")).toHaveTextContent("Connected")
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Add project" }))
+    expect(screen.getByRole("combobox", { name: "Machine" })).toHaveValue(
+      "remote:1"
+    )
+    expect(
+      screen.getByRole("button", { name: "Pick on remote:1" })
+    ).toBeInTheDocument()
+
+    act(() => {
+      mocks.remotes.get(1)!.config.onUnauthorized?.()
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Add project" }))
+    const machine = screen.getByRole("combobox", { name: "Machine" })
+    expect(machine).toHaveValue("local")
+    expect(
+      within(machine).getByRole("option", {
+        name: "Machine A · Authentication required",
+      })
+    ).toBeInTheDocument()
   })
 
   it("restores machine positions, selection and cross-machine tab order", async () => {
