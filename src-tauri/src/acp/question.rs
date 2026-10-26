@@ -683,10 +683,11 @@ pub fn pi_select_option_id(outcome: &QuestionOutcome, ask: &PiSelectAsk) -> Opti
 /// companion tool, in whatever spelling the host composed it
 /// (`mcp__codeg-mcp__ask_user_question` from claude-agent-acp,
 /// `codeg-mcp/ask_user_question`, `codeg-mcp: ask_user_question`, …). Separators
-/// are folded and case is ignored, so only the two identifying words matter.
+/// are folded and case is ignored ([`crate::acp::delegation::is_codeg_mcp_tool`]).
 ///
-/// BOTH halves have to be present — the server name codeg itself injects
-/// (`codeg-mcp`, see `acp::connection::inject_codeg_mcp`) AND the tool name.
+/// BOTH halves have to be present, and nothing else — the server name codeg
+/// itself injects (`codeg-mcp`, see `acp::connection::inject_codeg_mcp`) AND the
+/// tool name: a server named `other-codeg-mcp` is not codeg's.
 /// The frontend can afford a bare `*ask_user_question` suffix rule because a
 /// wrong match there only picks a nicer card; this one unlocks an AUTO-APPROVAL
 /// of a blocked `session/request_permission`, and a third-party MCP server's
@@ -697,11 +698,7 @@ pub fn pi_select_option_id(outcome: &QuestionOutcome, ask: &PiSelectAsk) -> Opti
 /// block until the user answers it. The consent IS the next dialog, so gating it
 /// behind a generic "run this tool?" card asks the user to approve being asked.
 pub fn is_codeg_ask_tool_name(name: &str) -> bool {
-    let normalized = name
-        .trim()
-        .to_ascii_lowercase()
-        .replace(['-', ' ', '.', '/', ':'], "_");
-    normalized.ends_with("ask_user_question") && normalized.contains("codeg_mcp")
+    crate::acp::delegation::is_codeg_mcp_tool(name, "ask_user_question")
 }
 
 /// Serialize a resolved [`QuestionOutcome`] into grok's `AskUserQuestionExtResponse`
@@ -976,19 +973,20 @@ pub enum CodexUserInputShape {
 /// The identity has to come from the connection, not from the payload. `_meta`
 /// is an OPEN namespace: the ACP spec tells implementations to make no
 /// assumptions about keys they do not own, and this parser is shared — codeg
-/// advertises `elicitation.form` to DeepSeek as well as Codex, and EITHER
-/// adapter also forwards arbitrary MCP-server forms through it. Deciding "this
-/// is codex" from `_meta.codex.*` in the request would let a third party, by
-/// coincidence or on purpose, switch on codex's orientation flip, its companion
-/// skip and its synthetic-option filter for a form codex never sent — which can
-/// hide a legitimate field or change how an answer is encoded.
+/// advertises `elicitation.form` to DeepSeek and Qoder as well as Codex, and
+/// codex-acp and deepseek-acp also forward arbitrary MCP-server forms through
+/// it. Deciding "this is codex" from `_meta.codex.*` in the request would let a
+/// third party, by coincidence or on purpose, switch on codex's orientation
+/// flip, its companion skip and its synthetic-option filter for a form codex
+/// never sent — which can hide a legitimate field or change how an answer is
+/// encoded.
 ///
 /// So `Other` is absolute: no codex fixup runs for it, whatever `_meta` claims.
 /// Only inside `Codex` does the payload get a say, and then only about WHICH
 /// generation sent it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ElicitationPeer {
-    /// Anything that is not codex-acp (DeepSeek today; any future
+    /// Anything that is not codex-acp (DeepSeek and Qoder today; any future
     /// `elicitation.form` speaker). The form is parsed generically.
     Other,
     /// codex-acp, carrying the `request_user_input` shape its RUNNING version
@@ -1300,7 +1298,8 @@ pub fn classify_elicitation(
     }
     // Carry the elicitation's tool_call_id so the connection handler can key the
     // synthesized in-stream result card to it — codex delivers `request_user_input`
-    // ONLY as this elicitation, never as a stream tool_call.
+    // ONLY as this elicitation, never as a stream tool_call. (Qoder streams its
+    // ask as a tool_call of its own, so the handler synthesizes no card there.)
     questions.tool_call_id = tool_call_id;
     Ok(ElicitationPlan::Questions(questions))
 }
@@ -1408,8 +1407,8 @@ fn parse_form_questions(
     // `title`/`description` carries the question (see [`codex_form_shape`]).
     let codex_shape = codex_form_shape(raw, peer);
     // The 1.12.0-only fixups below apply to exactly one generation of exactly
-    // one adapter; everything else — DeepSeek, generic MCP servers — shares this
-    // parser and must come through untouched.
+    // one adapter; everything else — DeepSeek, Qoder, generic MCP servers —
+    // shares this parser and must come through untouched.
     let is_codex_112_form = codex_shape == Some(CodexUserInputShape::QuestionInTitle);
     // `_meta.codex` is only codex's to interpret. On any other peer the same
     // keys are an unrelated extension that must not silently eat a field.
@@ -1879,6 +1878,63 @@ mod tests {
             q.tool_call_id.as_deref(),
             Some("item-1"),
             "carries the elicitation toolCallId for the synthesized card"
+        );
+    }
+
+    /// qodercli 1.1.67's native `AskUserQuestion` form, verbatim off the wire
+    /// (raw ACP probe, 2026-10-10): the question prose — with qoder's own
+    /// option explanations appended — is in `description`, the short header in
+    /// `title`, choices are `oneOf` const/title pairs, and the scope is
+    /// flattened top-level (`sessionId` + `toolCallId`). The crate's flatten
+    /// lands that in `ElicitationSessionScope`, so the toolCallId is read like
+    /// any form's: it names the `Ask user` `tool_call` qoder streams just
+    /// before the elicitation, which is why the handler synthesizes no card
+    /// for qoder (see `handle_elicitation_request`).
+    #[test]
+    fn classify_elicitation_reads_qoder_ask_user_question_form() {
+        let raw = serde_json::json!({
+            "mode": "form",
+            "sessionId": "8c706dde-7ac9-4ac9-824d-29ec8179d734",
+            "toolCallId": "call_d341dc678fad4b7a8ea5f42e",
+            "message": "Answer Questions",
+            "requestedSchema": {
+                "type": "object",
+                "title": "Answer Questions",
+                "properties": {
+                    "q0": {
+                        "type": "string",
+                        "title": "选择",
+                        "description": "选 A 还是 B？\nA: 选择 A 选项。\nB: 选择 B 选项。",
+                        "oneOf": [
+                            {"const": "A", "title": "A"},
+                            {"const": "B", "title": "B"}
+                        ]
+                    }
+                },
+                "required": ["q0"]
+            },
+            "_meta": {"qoder": {"toolName": "AskUserQuestion"}}
+        });
+        let q = expect_questions(classify_elicitation(&raw, ElicitationPeer::Other).unwrap());
+        assert_eq!(q.specs.len(), 1);
+        assert_eq!(q.specs[0].id, "q0", "property key becomes the spec id");
+        assert_eq!(
+            q.specs[0].question,
+            "选 A 还是 B？\nA: 选择 A 选项。\nB: 选择 B 选项。"
+        );
+        assert_eq!(q.specs[0].header, "选择");
+        assert!(!q.specs[0].multi_select);
+        let labels: Vec<_> = q.specs[0]
+            .options
+            .iter()
+            .map(|o| o.label.as_str())
+            .collect();
+        assert_eq!(labels, ["A", "B"]);
+        assert_eq!(q.fields[0].kind, ElicitationFieldKind::Text);
+        assert_eq!(
+            q.tool_call_id.as_deref(),
+            Some("call_d341dc678fad4b7a8ea5f42e"),
+            "the flattened scope's toolCallId is read"
         );
     }
 
@@ -3370,6 +3426,11 @@ mod tests {
             // Right server, right words, wrong tool — the match is anchored at
             // the END so a longer name cannot borrow it.
             "mcp__codeg-mcp__ask_user_question_twice",
+            // …and at the start: a server whose name only ends in codeg-mcp
+            // is another one, and so is a server `codeg` whose tool is
+            // `mcp_ask_user_question`.
+            "mcp__other-codeg-mcp__ask_user_question",
+            "mcp__codeg__mcp_ask_user_question",
             "",
         ] {
             assert!(

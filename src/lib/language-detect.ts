@@ -188,11 +188,6 @@ export function isImageFile(path: string): boolean {
   return IMAGE_EXTENSIONS.has(ext)
 }
 
-/** PDFs are read as bytes and always use the built-in document preview. */
-export function isPdfFile(path: string | null | undefined): boolean {
-  return !!path && /\.pdf$/i.test(path)
-}
-
 /** Route video containers to the native player; codec support is determined
  * by the browser/OS and reported by the player if decoding fails. */
 export function isVideoFile(path: string | null | undefined): boolean {
@@ -221,6 +216,18 @@ export function isHtmlPreviewable(path: string | null | undefined): boolean {
   if (dot === -1) return false
   const ext = basename.slice(dot + 1)
   return ext === "html" || ext === "htm"
+}
+
+// PDF documents, rendered in the in-app PDF.js viewer. Binary like images:
+// they load as a base64 `data:` URL and carry no etag, so callers branch on
+// this before any etag-based disk reconciliation. Preview-only — there is no
+// text editor view.
+export function isPdfFile(path: string | null | undefined): boolean {
+  if (!path) return false
+  const basename = path.toLowerCase().split(/[\\/]/).pop() ?? ""
+  const dot = basename.lastIndexOf(".")
+  if (dot === -1) return false
+  return basename.slice(dot + 1) === "pdf"
 }
 
 // Office documents (.docx/.xlsx/.pptx) we can render in the in-app preview via

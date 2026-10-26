@@ -83,6 +83,7 @@ impl Driver {
         let connection_id = state.read().await.connection_id.clone();
         let working_dir = Some(root.to_string_lossy().to_string());
         let session_id = sid.map(str::to_owned);
+        let claude_projects_dir = root.join("claude-projects");
         let driver_state = Arc::clone(&state);
         std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
@@ -94,6 +95,7 @@ impl Driver {
                     working_dir,
                     session_id,
                     cmd_rx,
+                    tokio_util::sync::CancellationToken::new(),
                     EventEmitter::Noop,
                     driver_state,
                     BTreeMap::new(),
@@ -103,6 +105,7 @@ impl Driver {
                     None,
                     FsAccessPolicy::unrestricted(),
                     HostToolsPolicy::Agent,
+                    claude_projects_dir,
                     Arc::new(StderrTail::new()),
                 ));
                 let _ = done_tx.send(result);
@@ -149,6 +152,7 @@ impl Driver {
                     text: "hello".into(),
                 }],
                 user_message: None,
+                internal_suffix: Vec::new(),
             })
             .await
             .unwrap();
@@ -193,6 +197,7 @@ async fn codex_forks_reap_old_writers_restore_selectors_and_keep_both_histories_
     fork.commands
         .send(ConnectionCommand::SetMode {
             mode_id: "chosen-mode".into(),
+            reply: None,
         })
         .await
         .unwrap();
@@ -204,6 +209,7 @@ async fn codex_forks_reap_old_writers_restore_selectors_and_keep_both_histories_
         .send(ConnectionCommand::SetConfigOption {
             config_id: "model".into(),
             value_id: "chosen-model".into(),
+            reply: None,
         })
         .await
         .unwrap();

@@ -1,5 +1,6 @@
 pub mod agent_setting;
 pub mod app_metadata;
+pub mod assistant;
 pub mod automation;
 pub mod automation_run;
 pub mod canvas_board;
@@ -23,6 +24,7 @@ pub mod quick_message;
 pub mod remote_workspace_connection;
 pub mod token_usage_sync;
 pub mod token_usage_turn;
+pub mod tool_approval;
 pub mod work_task;
 pub mod work_task_event;
 pub mod work_task_settings;

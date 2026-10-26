@@ -3,14 +3,13 @@ FROM node:24-alpine AS frontend
 RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY scripts/copy-pdf-assets.mjs ./scripts/copy-pdf-assets.mjs
 RUN pnpm install --frozen-lockfile
 COPY src/ ./src/
 COPY public/ ./public/
 COPY next.config.ts tsconfig.json postcss.config.mjs components.json ./
 RUN pnpm build
 
-# Stage 2: Build Rust server, MCP companion and computer-use helper
+# Stage 2: Build Rust server, MCP companion, computer-use helper and CLI
 FROM rust:slim-bookworm AS backend
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /app/src-tauri
@@ -20,7 +19,8 @@ COPY src-tauri/ ./
 # `locate_codeg_mcp_binary()` finds it via the exe-sibling lookup.
 RUN cargo build --release --bin codeg-server --no-default-features --features server-bin \
  && cargo build --release --bin codeg-mcp --no-default-features --features mcp-bin \
- && cargo build --release --bin codeg-computer-helper --no-default-features --features computer-helper
+ && cargo build --release --bin codeg-computer-helper --no-default-features --features computer-helper \
+ && cargo build --release --bin codeg-cli --no-default-features --features cli-bin
 
 # Stage 3: Runtime
 FROM node:24-bookworm-slim
@@ -45,6 +45,9 @@ RUN apt-get update && apt-get install -y \
 COPY --from=backend /app/src-tauri/target/release/codeg-server /usr/local/bin/codeg-server
 COPY --from=backend /app/src-tauri/target/release/codeg-mcp /usr/local/bin/codeg-mcp
 COPY --from=backend /app/src-tauri/target/release/codeg-computer-helper /usr/local/bin/codeg-computer-helper
+# codeg-cli: `docker exec <container> codeg-cli run …` finds this server through
+# its discovery file under CODEG_DATA_DIR (/data/cli).
+COPY --from=backend /app/src-tauri/target/release/codeg-cli /usr/local/bin/codeg-cli
 COPY --from=frontend /app/out /app/web
 
 ENV CODEG_STATIC_DIR=/app/web

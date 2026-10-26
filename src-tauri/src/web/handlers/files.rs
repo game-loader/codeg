@@ -284,6 +284,11 @@ fn parse_upload_max_bytes(raw: Option<&str>) -> Result<u64, String> {
 }
 
 /// Effective per-file upload limit for the current server process.
+///
+/// The upstream fixed `UPLOAD_MAX_BYTES` constant is deliberately replaced by
+/// this reader so deployments can raise the cap (`CODEG_UPLOAD_MAX_BYTES=200M`)
+/// without a rebuild; the streaming handler and the route's body limit both
+/// consult it.
 pub fn upload_max_bytes() -> u64 {
     parse_upload_max_bytes(std::env::var(UPLOAD_MAX_BYTES_ENV).ok().as_deref())
         .unwrap_or(DEFAULT_UPLOAD_MAX_BYTES)

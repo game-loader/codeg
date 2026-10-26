@@ -60,7 +60,6 @@ import {
   type ImageDiffSides,
   type ImageDiffSource,
 } from "@/lib/image-diff"
-import { PDF_PREVIEW_MAX_BYTES } from "@/lib/pdf-preview"
 import { toErrorMessage } from "@/lib/app-error"
 import {
   HIDDEN_TAB_CONTENT_BUDGET_CHARS,
@@ -213,7 +212,7 @@ export type FileWorkspaceTab = FileLikeWorkspaceTab | BrowserWorkspaceTab
 // links, search) subscribe to WorkspaceActionsContext, whose value is
 // stable for the provider's lifetime; layout chrome subscribes to
 // WorkspaceViewContext, which only changes on mode/pane/maximize flips.
-interface WorkspaceActionsValue {
+export interface WorkspaceActionsValue {
   setActivePane: (pane: WorkspacePane) => void
   activateConversationPane: () => void
   activateFilePane: () => void
@@ -505,6 +504,38 @@ const IMAGE_MIME: Record<string, string> = {
   webp: "image/webp",
   bmp: "image/bmp",
   ico: "image/x-icon",
+}
+
+// Byte ceiling for reading a PDF. Documents (scans especially) routinely run
+// past the 20 MB that `read_file_base64` defaults to, a default sized for
+// images, so a PDF asks for the backend's own ceiling instead (it clamps).
+const PDF_READ_MAX_BYTES = 100_000_000
+
+type BinaryPreviewKind = "image" | "pdf"
+
+/**
+ * Images and PDFs: the files a tab holds as a base64 `data:` URL rather than
+ * as text. The kind doubles as the tab's synthetic `language`, which is what
+ * every renderer branches on. Null for every other file.
+ */
+function binaryPreviewKind(absPath: string): BinaryPreviewKind | null {
+  if (isImageFile(absPath)) return "image"
+  if (isPdfFile(absPath)) return "pdf"
+  return null
+}
+
+async function readBinaryPreview(
+  absPath: string,
+  kind: BinaryPreviewKind
+): Promise<string> {
+  if (kind === "pdf") {
+    const b64 = await readFileBase64(absPath, PDF_READ_MAX_BYTES)
+    return `data:application/pdf;base64,${b64}`
+  }
+  const ext = absPath.split(".").pop()?.toLowerCase() ?? ""
+  const mime = IMAGE_MIME[ext] ?? "image/png"
+  const b64 = await readFileBase64(absPath)
+  return `data:${mime};base64,${b64}`
 }
 
 function loadingTab(
@@ -1549,8 +1580,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       if (existing.isDirty) return
       if (inFlightLoadsRef.current.has(tabId)) return
 
-      const image = isImageFile(absPath)
-      const pdf = isPdfFile(absPath)
+      const binary = binaryPreviewKind(absPath)
 
       markTabRefreshing(tabId)
       const gen = beginFetchGeneration(tabId)
@@ -1576,15 +1606,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           )
           return
         }
-        if (image || pdf) {
-          const ext = absPath.split(".").pop()?.toLowerCase() ?? ""
-          const mime = pdf
-            ? "application/pdf"
-            : (IMAGE_MIME[ext] ?? "image/png")
-          const b64 = await withTimeout(
-            pdf
-              ? readFileBase64(absPath, PDF_PREVIEW_MAX_BYTES)
-              : readFileBase64(absPath),
+        if (binary) {
+          const dataUrl = await withTimeout(
+            readBinaryPreview(absPath, binary),
             15_000,
             t("previewRequestTimedOut")
           )
@@ -1594,7 +1618,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
               tab.id === tabId
                 ? {
                     ...tab,
-                    content: `data:${mime};base64,${b64}`,
+                    content: dataUrl,
                     readonly: true,
                     loading: false,
                     saveState: "idle",
@@ -1879,10 +1903,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           }
         }
         const tabId = buildFileTabId({ kind: "file", path: absPath })
-        const image = isImageFile(absPath)
-        const pdf = isPdfFile(absPath)
+        const binary = binaryPreviewKind(absPath)
         const video = isVideoFile(absPath)
-        const office = !image && isOfficePreviewable(absPath)
+        const office = !binary && !video && isOfficePreviewable(absPath)
         const seed = loadingTab(
           tabId,
           null,
@@ -1890,15 +1913,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           fileName(absPath),
           absPath,
           absPath,
-          image
-            ? "image"
-            : pdf
-              ? "pdf"
-              : video
-                ? "video"
-                : office
-                  ? "office"
-                  : languageFromPath(absPath)
+          binary ??
+            (video ? "video" : office ? "office" : languageFromPath(absPath))
         )
 
         const decision = decideLoad(
@@ -1934,15 +1950,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
             return
           }
 
-          if (image || pdf) {
-            const ext = absPath.split(".").pop()?.toLowerCase() ?? ""
-            const mime = pdf
-              ? "application/pdf"
-              : (IMAGE_MIME[ext] ?? "image/png")
-            const b64 = await withTimeout(
-              pdf
-                ? readFileBase64(absPath, PDF_PREVIEW_MAX_BYTES)
-                : readFileBase64(absPath),
+          // Images and PDFs are bytes, not text: they land on the tab as a
+          // `data:` URL for their renderer, with no etag and no git base.
+          if (binary) {
+            const dataUrl = await withTimeout(
+              readBinaryPreview(absPath, binary),
               15_000,
               t("previewRequestTimedOut")
             )
@@ -1952,7 +1964,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
                 tab.id === tabId
                   ? {
                       ...tab,
-                      content: `data:${mime};base64,${b64}`,
+                      content: dataUrl,
                       readonly: true,
                       loading: false,
                       saveState: "idle",
@@ -3425,6 +3437,24 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           </WorkspaceFileTabsContext.Provider>
         </WorkspaceExternalConflictContext.Provider>
       </WorkspaceViewContext.Provider>
+    </WorkspaceActionsContext.Provider>
+  )
+}
+
+/**
+ * Fixed actions in place of `WorkspaceProvider` — for surfaces that render chat
+ * cards outside a workspace (the activity gallery page, component tests).
+ */
+export function StaticWorkspaceActionsProvider({
+  value,
+  children,
+}: {
+  value: WorkspaceActionsValue
+  children: ReactNode
+}) {
+  return (
+    <WorkspaceActionsContext.Provider value={value}>
+      {children}
     </WorkspaceActionsContext.Provider>
   )
 }

@@ -232,19 +232,14 @@ describe("FileViewerDrawer", () => {
     )
   })
 
-  it("renders PDFs with the built-in preview even when the preview toggle is off", async () => {
-    state.fileTabs = [
-      tab({ language: "pdf", content: "data:application/pdf;base64,JVBERi0=" }),
-    ]
-    await open({ path: ABS_PATH, line: null })
-    expect(screen.getByTestId("pdf")).toBeInTheDocument()
-    expect(screen.queryByTestId("source")).not.toBeInTheDocument()
-  })
-
-  it("routes image and office tabs to their own renderers", async () => {
+  it("routes image, PDF and office tabs to their own renderers", async () => {
     state.fileTabs = [tab({ language: "image" })]
     await open({ path: ABS_PATH, line: null })
     expect(screen.getByTestId("image")).toBeInTheDocument()
+
+    state.fileTabs = [tab({ language: "pdf" })]
+    await open({ path: ABS_PATH, line: null })
+    expect(screen.getByTestId("pdf")).toBeInTheDocument()
 
     state.fileTabs = [tab({ language: "office" })]
     await open({ path: ABS_PATH, line: null })

@@ -1,4 +1,4 @@
-/** The fifteen agents codeg ships hand-written support for. */
+/** The nineteen agents codeg ships hand-written support for. */
 export type BuiltinAgentType =
   | "claude_code"
   | "codex"
@@ -15,6 +15,10 @@ export type BuiltinAgentType =
   | "deepseek"
   | "qoder"
   | "antigravity"
+  | "kiro"
+  | "zcode"
+  | "trae"
+  | "command_code"
 
 /**
  * Which agent backs a conversation.
@@ -131,6 +135,21 @@ export interface AgentExecutionStats {
   lines_removed?: number | null
   other_tool_count?: number | null
   tool_calls?: AgentToolCall[]
+  /** The child's thinking/text/tool activity in arrival order, from the same
+   *  transcript pass that produced `tool_calls` (Rust mirror:
+   *  `AgentExecutionStats.timeline`; a `tool_call` entry's `childIndex`
+   *  anchors into `tool_calls` at the same ordinal). Lets the settled card
+   *  replay the child's mixed timeline when the live transcript is gone. */
+  timeline?: AgentTranscriptEntry[]
+  /** What the child's task file filed as its outcome (Qoder): for a
+   *  `status: "completed"` run, its final report, recovered after the parent
+   *  turn died before the async result was delivered (the card's tool_result
+   *  is then an error); other statuses file an error message or a
+   *  placeholder. Rendered ONLY on an errored card whose `status` is
+   *  `completed` — a normally completed async child delivered its result via
+   *  the notification turn, so this field stays invisible there (display
+   *  policy lives in the card, parsers attach it blindly). */
+  recovered_result?: string
   /** The child's own session id, when the sub-agent ran as a standalone session
    *  on disk instead of as chunks folded into the parent (Grok: every
    *  `spawn_subagent` child). Drives the Agent card's "open the sub-agent's
@@ -140,15 +159,27 @@ export interface AgentExecutionStats {
 }
 
 /**
- * One entry of a live subagent transcript (LIVE-only — never persisted, never
- * emitted by the Rust parsers). Entries arrive pre-merged: the reducer/backend
- * split blocks only at kind/attribution boundaries, so consecutive same-kind
- * chunks of one subagent are a single growing entry.
+ * One entry of a subagent transcript. Two data sources share this shape: the
+ * LIVE channel (a running capsule's stream; entries arrive pre-merged — the
+ * reducer/backend split blocks only at kind/attribution boundaries, so
+ * consecutive same-kind chunks of one subagent are a single growing entry)
+ * and history (`AgentExecutionStats.timeline`, parsed from the child's own
+ * JSONL by the Rust parsers — one entry per thinking/text/tool block, in
+ * arrival order).
  */
-export interface AgentTranscriptEntry {
-  type: "text" | "thinking"
-  text: string
-}
+export type AgentTranscriptEntry =
+  | { type: "text" | "thinking"; text: string }
+  | {
+      /**
+       * A marker into the mixed timeline: the child's OWN tool call, keeping
+       * its chronological position among the prose around it. `childIndex` is
+       * the call's ordinal among this parent's children — `agent_stats.
+       * tool_calls` carries no ids, and both lists are appended in the same
+       * arrival pass, so the ordinal is exact.
+       */
+      type: "tool_call"
+      childIndex: number
+    }
 
 /**
  * Image payload shared across `ContentBlock::Image` /
@@ -233,13 +264,21 @@ export type ContentBlock =
        */
       images?: ImageData[] | null
       /**
-       * Frontend-only, LIVE-stream data (same doctrine as the `plan` block:
-       * never persisted, never emitted by the Rust JSONL parsers). The
-       * in-flight transcript of a Claude native subagent — text/thinking
-       * chunks attributed to this Agent tool call via
+       * The exit code of a command call's process, when the transcript keeps
+       * it as a field (pi, Cursor, Antigravity). Mirror of Rust
+       * `ContentBlock::ToolResult.exit_code`; absent means unknown, and the
+       * code is read from the output text instead.
+       */
+      exit_code?: number | null
+      /**
+       * LIVE-stream data: the in-flight transcript of a native subagent —
+       * a marker per child tool call, plus (Claude Code only) the text/
+       * thinking chunks attributed to this Agent tool call via
        * `_meta.claudeCode.parentToolUseId` (claude-agent-acp ≥0.63) —
-       * rendered inside the live Agent capsule. Detached at settle:
-       * history shows the parsed `agent_stats` shape only.
+       * rendered inside the live Agent capsule. Still attached at settle so
+       * the finished card keeps the interleaved order it showed live; once
+       * history reloads from disk, the parsed `agent_stats.timeline` takes
+       * over as the card's timeline source.
        */
       agent_transcript?: AgentTranscriptEntry[] | null
     }
@@ -568,6 +607,15 @@ export interface DbConversationSummary {
    *  worktree path it originally ran in. Drives the "source worktree removed"
    *  badge. */
   origin_cwd?: string | null
+  /** The assistant a delegation child ran as, and its name when the
+   *  delegation started (off the child row's snapshot). Absent on every other
+   *  row. Prefer the assistant store's current name when it knows the id. */
+  assistant_id?: number
+  assistant_name?: string
+  /** Where the conversation was started from, when not the window: `"cli"`
+   *  for a `codeg-cli` run. Absent on every other row; another value (from a
+   *  newer build) is shown as nothing. */
+  source?: string | null
   /**
    * Ids of the {@link ConversationTagDetail tags} on this conversation,
    * ascending. Absent when it has none (the backend omits an empty list). May
@@ -965,6 +1013,13 @@ export interface DbConversationDetail {
   /** Assistant turns in `full[0..turns_offset)` (baseline globalization). */
   assistant_turns_before_offset?: number | null
   /**
+   * User turns in `full[0..turns_offset)`: the messages above the loaded
+   * window, which the message navigator counts without loading them. Absent
+   * from servers that predate the navigator outline
+   * (`getFolderConversationOutline`), so it doubles as that capability flag.
+   */
+  user_turns_before_offset?: number | null
+  /**
    * Structural fingerprint of `full[0..turns_offset)` as a fixed-width 16-hex
    * string (a raw u64 JSON number would be rounded past 2^53-1). Compared on
    * window refreshes to detect prefix rewrites (compaction), and used as the
@@ -987,12 +1042,29 @@ export interface ConversationTurnsPage {
   turns_offset: number
   turns_total: number
   assistant_turns_before_offset: number
+  /** User turns in `full[0..turns_offset)`; absent from older servers. */
+  user_turns_before_offset?: number | null
   /** H(0..turns_offset) — adopted as the window fingerprint after a prepend. */
   prefix_hash: string
   /** H(0..min(beforeIndex, total)) — must equal the client's current window
    *  fingerprint for the page to legally join the loaded window. */
   prefix_hash_before_index: string
   uncovered_prefix_max_ts?: string | null
+}
+
+/**
+ * The message navigator's outline of the history above the loaded window:
+ * `full[0..min(beforeIndex, total))`, one entry per turn (`turns[i]` is
+ * global turn `i`), each cut down by the backend to what
+ * `extractSessionFilesGrouped` reads — so it indexes exactly like the full
+ * turns would. Ids, roles and timestamps are kept, so any prefix of it can be
+ * fingerprinted and checked against the window before it is used.
+ */
+export interface ConversationOutline {
+  turns: MessageTurn[]
+  turns_total: number
+  /** H(0..turns.length). */
+  prefix_hash: string
 }
 
 export type ConversationStatus =
@@ -1047,6 +1119,10 @@ export const AGENT_DISPLAY_ORDER: BuiltinAgentType[] = [
   "deepseek",
   "qoder",
   "antigravity",
+  "kiro",
+  "zcode",
+  "trae",
+  "command_code",
 ]
 
 const AGENT_DISPLAY_ORDER_INDEX = new Map<AgentType, number>(
@@ -1081,6 +1157,10 @@ export const ALL_AGENT_TYPES: BuiltinAgentType[] = [
   "deepseek",
   "qoder",
   "antigravity",
+  "kiro",
+  "zcode",
+  "trae",
+  "command_code",
 ]
 
 export const MODEL_PROVIDER_AGENT_TYPES: BuiltinAgentType[] = [
@@ -1392,6 +1472,10 @@ export const AGENT_LABELS: Record<BuiltinAgentType, string> = {
   deepseek: "DeepSeek Harness",
   qoder: "Qoder",
   antigravity: "Google Antigravity",
+  kiro: "Kiro CLI",
+  zcode: "ZCode",
+  trae: "TRAE CLI",
+  command_code: "Command Code",
 }
 
 export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
@@ -1410,6 +1494,10 @@ export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
   deepseek: "bg-[#4D6BFE]",
   qoder: "bg-[#6C4CF1]",
   antigravity: "bg-[#1A73E8]",
+  kiro: "bg-[#9046FF]",
+  zcode: "bg-[#111827]",
+  trae: "bg-[#32F08C]",
+  command_code: "bg-black",
 }
 
 // ACP connection status (matches Rust ConnectionStatus)
@@ -1467,6 +1555,55 @@ export interface PermissionOptionInfo {
    * agents that send no option metadata.
    */
   meta?: Record<string, unknown> | null
+}
+
+/** Command-line access on this runtime (Rust `cli_run::CliAccessStatus`). */
+export interface CliAccessStatus {
+  enabled: boolean
+  /** Listening, with the endpoint file published. */
+  running: boolean
+  /** The endpoint file this runtime publishes, whether or not it exists. */
+  endpointFile: string
+  /** Why access is on but not running. */
+  error?: string | null
+}
+
+/** Rust `CommandToolStatus`: the desktop app's `codeg-cli` on the user's
+ *  PATH (Settings → "Install command-line tool"). */
+export interface CliToolStatus {
+  /** `link`, `path`, `package` (on PATH already), or `none`. */
+  method: "link" | "path" | "package" | "none"
+  /** `codeg-cli`, or `codeg-cli-dev` for a development build. */
+  command: string
+  installed: boolean
+  location?: string
+  /** Another `codeg-cli` in the way, left as it is. */
+  conflict?: string
+  note?: string
+}
+
+// Who answered a permission request (Rust `PermissionAnswerOrigin`).
+export type PermissionAnswerOrigin =
+  | { kind: "user" }
+  | { kind: "chat_channel" }
+  | { kind: "cli_policy"; run_id: string }
+
+/**
+ * One answered permission request, as a record about its tool call (Rust
+ * `ToolApprovalInfo`): live on the `tool_approval` event and the snapshot's
+ * `tool_approvals`, and kept by the backend for reopened conversations.
+ */
+export interface ToolApprovalInfo {
+  tool_call_id: string
+  /** The chosen option's ACP kind (`allow_once`, `allow_always`,
+   *  `reject_once`, `reject_always`), verbatim. */
+  option_kind: string
+  /** The chosen option's label in the agent's own words. */
+  option_name: string
+  /** `PermissionAnswerOrigin.kind` of whoever answered. */
+  origin: string
+  /** ISO timestamp. */
+  decided_at: string
 }
 
 // --- ask_user_question (mirror of Rust `crate::acp::question`) ---
@@ -1599,12 +1736,124 @@ export interface AgentOptionsSnapshot {
    *  with no live session (the to-do task boxes) encode an attached image the
    *  way this agent takes it. Null when the agent advertised none. */
   prompt_capabilities?: PromptCapabilitiesInfo | null
+  /** The options the probe was asked to set but did not end up holding —
+   *  `model` here means the snapshot describes the agent's OTHER model, not
+   *  the one asked for (the applied options' `current_value` is rewritten to
+   *  the agent's own pick, so nothing else tells). Always sent by current
+   *  backends; absent only from one that predates it. */
+  unapplied_config_ids?: string[]
 }
 
 export interface AgentDelegationDefaults {
   mode_id?: string | null
   config_values: Record<string, string>
 }
+
+// ─── Assistants ────────────────────────────────────────────────────────────
+// Mirrors src-tauri/src/models/assistant.rs (snake_case wire form). An
+// assistant is a delegation preset the composer can @-mention: an identity, an
+// agent with EVERY option it advertises picked explicitly, and standing
+// instructions handed to the delegated child.
+
+/** Palette keys an avatar colour is picked from (not colours: the UI maps each
+ *  to its own light/dark treatment). Same list as the backend validates. */
+export const ASSISTANT_AVATAR_COLORS = [
+  "slate",
+  "red",
+  "orange",
+  "amber",
+  "green",
+  "teal",
+  "sky",
+  "blue",
+  "violet",
+  "pink",
+] as const
+export type AssistantAvatarColor = (typeof ASSISTANT_AVATAR_COLORS)[number]
+
+export type AssistantAvatar =
+  | { kind: "monogram"; color: AssistantAvatarColor }
+  | { kind: "emoji"; emoji: string; color: AssistantAvatarColor }
+  /** A cropped, downscaled `data:image/(png|jpeg|webp);base64,…` URL. */
+  | { kind: "image"; data_url: string }
+
+export type AssistantOptionKind = "select" | "boolean"
+
+/** One option of a saved selection, with the names the editor showed. */
+export interface AssistantOptionLabel {
+  id: string
+  kind: AssistantOptionKind
+  name: string
+  /** The picked value's display name. A boolean's is drawn from its value. */
+  value_label: string
+}
+
+/** The option list a selection was saved against. The settings list reads its
+ *  names without probing; the backend checks the selection is complete
+ *  against it. */
+export interface AssistantLabelSnapshot {
+  agent: string
+  mode: string | null
+  options: AssistantOptionLabel[]
+}
+
+/** The agent, its complete selection and the option list — always submitted
+ *  together. */
+export interface AssistantAgentConfig {
+  agent_type: AgentType
+  agent_options: AgentDelegationDefaults
+  label_snapshot: AssistantLabelSnapshot
+}
+
+export interface AssistantInfo {
+  id: number
+  uid: string
+  name: string
+  description: string
+  avatar: AssistantAvatar
+  agent_type: AgentType
+  /** May arrive without `config_values` when empty (serde skips it). */
+  agent_options: AgentDelegationDefaults
+  label_snapshot: AssistantLabelSnapshot
+  instructions: string
+  enabled: boolean
+  sort_order: number
+  /** Bumped by every write; a client keeps the higher one of two copies. */
+  revision: number
+  created_at: string
+  updated_at: string
+  /** Set on a soft-deleted assistant. Tombstones are kept so history can
+   *  still draw it. */
+  deleted_at: string | null
+}
+
+export interface AssistantDraft {
+  name: string
+  description: string
+  avatar: AssistantAvatar
+  agent_config: AssistantAgentConfig
+  instructions: string
+  enabled: boolean
+}
+
+/** An edit: only the fields present change. */
+export interface AssistantPatch {
+  name?: string
+  description?: string
+  avatar?: AssistantAvatar
+  agent_config?: AssistantAgentConfig
+  instructions?: string
+  enabled?: boolean
+}
+
+/** Payload for `assistant://changed` — always whole rows. Mirrors the Rust
+ *  `AssistantChange` (serde `tag = "kind"`). `resync`: re-read the list. */
+export type AssistantChange =
+  | { kind: "upsert"; assistant: AssistantInfo }
+  | { kind: "reordered"; assistants: AssistantInfo[] }
+  | { kind: "resync" }
+
+export const ASSISTANT_CHANGED_EVENT = "assistant://changed"
 
 // ─── Automations ───────────────────────────────────────────────────────────
 // Mirrors src-tauri/src/models/automation.rs. Wire form is snake_case (serde
@@ -1788,6 +2037,12 @@ export interface WorkTask {
   /** Planned start of a to-do task (ISO); null = no plan. Consumed the moment
    *  the task is claimed, by the scheduler or by hand. */
   scheduled_at: string | null
+  /** The user put this reviewed / failed task aside to handle later (ISO
+   *  instant; "以后处理"): the board files it under Done and the attention badge
+   *  stops counting it, while it stays as resumable as it was. Cleared by every
+   *  way out of review / failed — a follow-up, retry, merge, completion or
+   *  cancel. Absent/null = not put aside (read it through `isDeferred`). */
+  deferred_at?: string | null
   /** Forge provenance ('forge_issue' | 'forge_pr'); absent = not forge-sourced. */
   source_kind?: string | null
   /** Canonical source key ({provider}:{host}:{owner_repo}:{kind}:{number}). */
@@ -1828,6 +2083,9 @@ export interface ForgeSourceMeta {
   head_repo?: string | null
   /** URL of the PR created by the delivery acceptance path (P1). */
   result_pr?: string | null
+  /** PR head the task's last push-back went onto (where the PR ended below
+   *  the task's own work); absent until a push-back. */
+  pushed_onto?: string | null
   /** The trigger dialog's write-back answer, frozen at trigger time. Absent on
    *  rows minted before the choice lived here — those stay silent. */
   writeback?: boolean | null
@@ -2126,6 +2384,12 @@ export interface ForgeRemote {
   server_host: string
   owner_repo: string
   remote_url: string
+  /** The instance's web root — scheme, host, port and mount path — as the
+   *  account the backend reads this host with spells it (`https://{host}`
+   *  when there is none). What an SSH remote's repository link is built on.
+   *  Absent from a server that predates the field — a remote codeg-server can
+   *  be older than the app connected to it. */
+  web_origin?: string
   /** Which forge this host is — decided by the backend from the configured
    *  accounts and the hostname, never chosen here. */
   provider: ForgeProviderId
@@ -2142,6 +2406,9 @@ export interface ForgeTaskLink {
   source_key: string
   task_id: number
   status: WorkTaskStatus
+  /** The task was put aside to handle later (see `WorkTask.deferred_at`) —
+   *  the chip names that instead of its review / failure. Absent = false. */
+  deferred?: boolean
   verdict: string | null
   updated_at: string
 }
@@ -2212,6 +2479,100 @@ export interface ForgePanelSettings {
   /** Standing instructions appended after a scenario's built-in wording,
    *  keyed by scenario id plus the reserved `all` (every scenario). */
   scenario_prompts: Record<string, string>
+  /** Auto-processing for this scope. Always sent by the backend; optional here
+   *  because a blob from a build that predates it has none, which reads as
+   *  auto-processing off. */
+  auto?: ForgeAutoSettings
+}
+
+/** Auto-processing of one scope — mirrors `forge::settings::ForgeAutoSettings`.
+ *
+ *  Matching OPEN items become tasks, each at most once, picked up by a
+ *  schedule, a webhook, or both. Rule patterns are case-insensitive and `*`
+ *  matches any run of characters (`area/*`, `*[bot]`); exclusions always win
+ *  over inclusions. */
+export interface ForgeAutoSettings {
+  /** Scan the repository on a timer. */
+  schedule: boolean
+  /** Minutes between scheduled scans (1–1440; clamped server-side). */
+  interval_minutes: number
+  /** Scan as soon as the forge delivers a webhook for the repository. */
+  webhook: boolean
+  /** What the forge signs deliveries with. Generated on save when the webhook
+   *  is on and none is set; kept when it is switched off. */
+  webhook_secret: string | null
+  issues: boolean
+  pull_requests: boolean
+  /** Scenario an automatic issue task runs; null = the kind's default. */
+  issue_scenario: string | null
+  pr_scenario: string | null
+  include_labels: string[]
+  exclude_labels: string[]
+  include_authors: string[]
+  exclude_authors: string[]
+  skip_drafts: boolean
+  /** Queue the task as soon as it exists (subject to the folder's concurrency
+   *  limit) instead of leaving it in To-do. */
+  auto_start: boolean
+  /** Comment the outcome back on the item when the task finishes. */
+  writeback: boolean
+  /** Also pick up items already open, untouched, before switch-on. */
+  include_existing: boolean
+  /** When auto-processing was switched on (ISO). SERVER-STAMPED — a value
+   *  sent from here is ignored. */
+  enabled_at: string | null
+}
+
+/** What set an auto-processing scan off. */
+export type ForgeAutoTrigger = "schedule" | "webhook" | "manual"
+
+/** Why a listed item was passed over — the first rule that ruled it out. */
+export type ForgeAutoSkip =
+  | "kind"
+  | "not_open"
+  | "draft"
+  | "excluded_label"
+  | "excluded_author"
+  | "missing_label"
+  | "author_not_included"
+
+/** One scan's report — mirrors `forge::auto::ScanReport`. */
+export interface ForgeAutoScanReport {
+  trigger: ForgeAutoTrigger
+  started_at: string
+  finished_at: string
+  /** Why the scan stopped before it could look at anything. */
+  error: string | null
+  /** The window's start; null = every open item. */
+  since: string | null
+  examined: number
+  matched: number
+  already_handled: number
+  created: {
+    number: number
+    is_pr: boolean
+    title: string
+    task_id: number
+    started: boolean
+    start_error: string | null
+  }[]
+  failed: { number: number; is_pr: boolean; error: string }[]
+  skipped: Partial<Record<ForgeAutoSkip, number>>
+  /** The listing hit its page bound; the next scan re-reads the same window. */
+  truncated: boolean
+}
+
+/** Where auto-processing stands for one folder — mirrors
+ *  `forge::auto::ForgeAutoStatus`. In-memory on the backend: a restart starts
+ *  the record afresh. */
+export interface ForgeAutoStatus {
+  /** False in a codeg that does not run auto-processing (another process
+   *  holds the task engine for this data directory). */
+  available: boolean
+  scanning: boolean
+  last_scan: ForgeAutoScanReport | null
+  next_scan_at: string | null
+  last_delivery_at: string | null
 }
 
 /** Every scope of the panel's preferences — mirrors
@@ -2508,6 +2869,17 @@ export interface AvailableCommandInfo {
   input_hint?: string | null
 }
 
+/**
+ * Claude Code's Remote Control for a session that has it on (mirror of Rust
+ * `RemoteControlInfo`): the session can be continued from claude.ai/code or the
+ * Claude app on a phone for as long as the agent CLI runs.
+ */
+export interface RemoteControlInfo {
+  /** The remote session's claude.ai/code URL; `null` when Claude Code turned
+   *  Remote Control on without returning one. */
+  session_url: string | null
+}
+
 export interface SessionUsageUpdateInfo {
   used: number
   size: number
@@ -2542,6 +2914,11 @@ export interface ToolCallImageWire {
  * notification names its `Bash` call too, whose card has no marker to flip (the
  * store leaves it alone); absent when the notification names no call (an MCP
  * call moved to the background).
+ *
+ * `interim` (absent unless true) marks a notification whose note says the
+ * sub-agent will notify again: it stopped while background work of its own
+ * still runs, or it is being resumed. Its result may be interim, it is not the
+ * task's end, and it raises no "finished" notification.
  */
 export interface BackgroundSettledInfo {
   task_id: string
@@ -2549,6 +2926,7 @@ export interface BackgroundSettledInfo {
   summary?: string | null
   tool_use_id?: string | null
   result?: string | null
+  interim?: boolean
 }
 
 export type AcpEvent =
@@ -2614,6 +2992,18 @@ export type AcpEvent =
   | {
       type: "permission_resolved"
       request_id: string
+      /** The option that took effect; absent when the request was withdrawn or drained. */
+      option_id?: string
+      /** Who gave the answer that took effect; absent exactly when `option_id` is. */
+      origin?: PermissionAnswerOrigin
+    }
+  | {
+      /**
+       * What an answer decided about the card's tool call. Follows the
+       * `permission_resolved` that retired the card, only for answers.
+       */
+      type: "tool_approval"
+      approval: ToolApprovalInfo
     }
   | {
       /**
@@ -2808,8 +3198,9 @@ export type AcpEvent =
        * The first three mean the session is gone. `"session_busy"` does not —
        * another live holder has it open (another Codex client — the app, the
        * CLI or an IDE extension — or, for about a minute after a fork, the
-       * forking session, until codex unloads the parent it closed), and it
-       * clears when that one lets go.
+       * forking session, until codex unloads the parent it closed; for Kimi
+       * Code, another Kimi process on the same home until it has been idle
+       * for 3 s), and it clears when that one lets go.
        */
       code: string
     }
@@ -2821,6 +3212,27 @@ export type AcpEvent =
       type: "usage_update"
       used: number
       size: number
+    }
+  /**
+   * The prompt the agent predicts the user will send next (claude-agent-acp
+   * 0.92.0's `_meta.promptSuggestions`), offered as gray text in the empty
+   * composer; Tab fills it in. `null` withdraws the one held. Current state,
+   * like `usage_update`: the snapshot carries the last one, and a new prompt
+   * clears it.
+   */
+  | {
+      type: "prompt_suggestion"
+      text: string | null
+    }
+  /**
+   * Claude Code's Remote Control turned on (an object) or off (`null`), read
+   * from claude-agent-acp 0.93.0's reply to a `/remote-control` prompt.
+   * Current state, like `prompt_suggestion`: the snapshot carries it while it
+   * is on.
+   */
+  | {
+      type: "remote_control"
+      remote_control: RemoteControlInfo | null
     }
   /**
    * Out-of-turn activity surfaced from the agent's own session transcript by
@@ -2844,7 +3256,7 @@ export type AcpEvent =
    * A `delegate_to_agent` MCP tool call from the parent agent has spawned a
    * child sub-session and the child's prompt is in flight. Emitted as soon as
    * the broker registers the pending call. Frontend uses this to build the
-   * parent ↔ child mapping for inline ToolCallBlock rendering.
+   * parent ↔ child mapping the delegation row reads.
    */
   | {
       type: "delegation_started"
@@ -2859,11 +3271,15 @@ export type AcpEvent =
       task_preview?: string | null
       /** Broker-minted task id (the `task_id=` embedded in the running ack). */
       task_id?: string | null
+      /** The assistant the child runs as (`agent_type` is then its agent).
+       *  Absent for a plain agent delegation. */
+      assistant_id?: number | null
+      assistant_name?: string | null
     }
   /**
    * The child sub-session has finished (or errored / timed out / been
    * canceled). The MCP tool_result has been delivered to the parent agent;
-   * frontend updates the ToolCallBlock badge from "running" to ok/err.
+   * frontend settles the delegation row from "running" to ok/err.
    */
   | {
       type: "delegation_completed"
@@ -2876,6 +3292,9 @@ export type AcpEvent =
        *  snapshot replay) can bind the correct agent instead of a default. */
       agent_type: AgentType
       result: DelegationResultSummary
+      /** Mirrors `delegation_started`'s assistant identity. */
+      assistant_id?: number | null
+      assistant_name?: string | null
     }
   /**
    * The user's submitted prompt, broadcast on the connection stream so OTHER
@@ -3092,6 +3511,9 @@ export interface ActiveDelegationState {
    *  hosts whose tool call `raw_input` never carries the arguments). */
   task_preview?: string | null
   task_id?: string | null
+  /** The assistant the child runs as, mirrored for the same reason. */
+  assistant_id?: number | null
+  assistant_name?: string | null
 }
 
 /** Lifecycle of a live-feedback note (mirror of Rust `FeedbackStatus`). */
@@ -3348,6 +3770,12 @@ export interface LiveSessionSnapshot {
   config_options: SessionConfigOptionInfo[] | null
   prompt_capabilities: PromptCapabilitiesInfo | null
   usage: SessionUsageUpdateInfo | null
+  /** The follow-up prompt the agent last predicted (see the
+   *  `prompt_suggestion` event). Absent when there is none. */
+  prompt_suggestion?: string | null
+  /** Claude Code's Remote Control while it is on (see the `remote_control`
+   *  event). Absent when it is off. */
+  remote_control?: RemoteControlInfo | null
   fork_supported: boolean
   available_commands: AvailableCommandInfo[]
   selectors_ready: boolean
@@ -3362,6 +3790,9 @@ export interface LiveSessionSnapshot {
    *  watermarks included, so an attaching client seeds the same monotonic
    *  merge the live path applies. Absent while empty (the common case). */
   session_failures?: SessionFailureRecord[]
+  /** The connection's recent approval records, oldest first, one per tool
+   *  call. Absent while empty (the common case). */
+  tool_approvals?: ToolApprovalInfo[]
   /** AIR async tasks, merged. Terminal rows included: they carry the ids the
    *  subsequent live deltas revise, so a client seeded without them would
    *  re-create a settled task as a running one on its next correction. Absent
@@ -3427,6 +3858,15 @@ export interface AcpAgentInfo {
    * most-reported confusion.
    */
   is_acp_adapter: boolean
+  /**
+   * The vendor's install page for an agent codeg launches but never installs
+   * (`distribution_type === "system"`, e.g. Kiro CLI). Absent for every agent
+   * codeg installs itself.
+   */
+  install_url?: string | null
+  /** Whether that install can be upgraded from Settings through the vendor's
+   * own updater (`acpUpdateSystemAgent`). */
+  supports_self_update?: boolean
   /**
    * For custom agents, where the definition came from ("registry" | "manual");
    * null for built-ins. A manual definition's registry_version is user-typed,
@@ -3573,6 +4013,11 @@ export interface GrokSettings {
   custom_api_backend: string | null
   /** [model.<id>].context_window — context size in tokens. */
   custom_context_window: number | null
+  /** [model.<id>].reasoning_efforts — the levels the custom model declares,
+   * each the lowercased `value` Grok sends to the provider, in file order.
+   * Empty when absent: Grok then only has its own model catalog's levels for
+   * this id (never the custom base_url's model list). */
+  custom_reasoning_efforts: string[]
   /** [session].auto_compact_threshold_percent — 0–100 (Grok default 85). */
   auto_compact_threshold_percent: number | null
 }
@@ -3590,6 +4035,11 @@ export interface GrokStructuredConfig {
   customApiKey: string | null
   customApiBackend: string | null
   customContextWindow: number | null
+  /** The custom model's reasoning_efforts levels. Unlike the fields above,
+   * null leaves the key as it is (the panel sends levels only once its chips
+   * moved, so a list typed into the raw editor survives); an empty list
+   * removes it. */
+  customReasoningEfforts: string[] | null
   autoCompactThresholdPercent: number | null
 }
 
@@ -4135,6 +4585,10 @@ export type McpAppType =
   | "deepseek"
   | "qoder"
   | "antigravity"
+  | "kiro"
+  | "zcode"
+  | "trae"
+  | "command_code"
   | "pi"
 
 export interface LocalMcpServer {
@@ -4232,6 +4686,10 @@ export interface FolderCommand {
   name: string
   command: string
   sort_order: number
+  /** Run by the desktop app on its own machine, detached, instead of in a
+   *  terminal on the folder's host. Absent from older servers' rows (then
+   *  treated as `false`). */
+  run_local?: boolean
   created_at: string
   updated_at: string
 }
@@ -4368,6 +4826,27 @@ export interface GitConflictFileVersions {
 
 export interface GitCommitResult {
   committed_files: number
+}
+
+/** How the commit message generator runs (`commit_message` on the backend).
+ *  With no agent it follows the active session, then the folder's default. */
+/** How commit messages are written: globally, or for one project folder,
+ *  whose own settings replace the global ones whole. */
+export interface CommitMessageSettings {
+  /** The agent that writes them with every option it offers picked — an
+   *  assistant's kind of selection. `null` follows the active session. */
+  agent: AssistantAgentConfig | null
+  /** Standing instructions, e.g. "write in Chinese". */
+  instructions: string
+  /** Commit as soon as the message is written. */
+  auto_commit: boolean
+}
+
+export interface GeneratedCommitMessage {
+  message: string
+  agent_type: AgentType
+  /** The settings the run used want the message committed right away. */
+  auto_commit: boolean
 }
 
 export interface GitRemote {
@@ -4660,8 +5139,9 @@ export interface AdapterInfo {
   native_cmd: string
   /** Display name for the vendor CLI, e.g. "Codex CLI". */
   native_label: string
-  /** Where the user's own vendor CLI was found. codeg never launches it. */
+  /** Where the vendor CLI was found; required runtimes use this installation. */
   native_path: string | null
+  native_required?: boolean
   /** Config dir both read, so installing the adapter needs no second login. */
   shared_config_dir: string
   docs_url: string
@@ -4740,6 +5220,8 @@ export interface OpenCodeCatalogModel {
   context: number | null
   cost_in: number | null
   cost_out: number | null
+  cost_cache_read: number | null
+  cost_cache_write: number | null
 }
 
 /**

@@ -7,7 +7,11 @@ import {
   notifyRemoteDesktopUnauthorized,
 } from "./transport"
 import type { CallTarget } from "./transport"
-import { getCodegToken } from "./transport/web-auth"
+import {
+  codegAuthHeaders,
+  getCodegToken,
+  unauthorizedSource,
+} from "./transport/web-auth"
 import { notifyWebUnauthorized } from "./transport/web-connection-store"
 import { getCurrentEffectiveAppLocale } from "./i18n"
 import {
@@ -23,13 +27,20 @@ import type {
   LeakedTempReclaim,
   LeakedTempScan,
   AgentType,
+  CliAccessStatus,
+  CliToolStatus,
   AgentDelegationDefaults,
   AgentOptionsSnapshot,
+  AssistantDraft,
+  AssistantInfo,
+  AssistantPatch,
   Automation,
   AutomationRun,
   AutomationDraft,
   DeepSeekCatalogModel,
   DeepSeekModelCatalog,
+  ForgeAutoScanReport,
+  ForgeAutoStatus,
   ForgeChangeDetail,
   ForgeChangedFileList,
   ForgeComment,
@@ -58,6 +69,7 @@ import type {
   WorkTaskTemplate,
   ConversationSummary,
   ConversationDetail,
+  ConversationOutline,
   ConversationTurnsPage,
   DbConversationDetail,
   FolderInfo,
@@ -133,6 +145,8 @@ import type {
   GitResetMode,
   GitConflictFileVersions,
   GitCommitResult,
+  CommitMessageSettings,
+  GeneratedCommitMessage,
   GitRemote,
   GitStashEntry,
   PreflightResult,
@@ -538,6 +552,27 @@ export async function acpDownloadAgentBinary(
     version: version ?? null,
     taskId,
   })
+}
+
+/**
+ * Upgrade an agent codeg launches but does not install (Kiro CLI) through the
+ * vendor's own updater, streaming its output on the install topic. Resolves to
+ * the version found afterwards — the same one when nothing newer existed.
+ */
+export async function acpUpdateSystemAgent(
+  agentType: AgentType,
+  taskId: string
+): Promise<string | null> {
+  // The updater downloads a whole build (Kiro's are 150–360 MB), and the
+  // backend gives it up to 15 minutes (`SYSTEM_UPDATE_TIMEOUT`). Outlast that,
+  // so a slow update ends with the backend's own answer instead of the default
+  // 60 s web-call timeout — which would report a failure and free the Upgrade
+  // button while the updater is still running.
+  return getTransport().call(
+    "acp_update_system_agent",
+    { agentType, taskId },
+    { timeoutMs: 16 * 60_000 }
+  )
 }
 
 export async function acpInstallUvTool(taskId: string): Promise<void> {
@@ -1818,23 +1853,67 @@ export async function officecliRenderHtml(
  * officecli's own SSE channel, so the preview no longer re-reads (and locks)
  * the file the way the one-shot {@link officecliRenderHtml} did.
  *
- * `cap` is only used by web/server mode, where the iframe loads the preview
- * through the `/api/office-watch-proxy/{port}` reverse proxy and authenticates
- * with `?cap=` (the master token never enters the iframe). Desktop ignores it.
+ * `cap` names this watch: a new one mints a new `cap`. Web/server mode also
+ * authenticates the iframe with it, loading the preview through the
+ * `/api/office-watch-proxy/{port}` reverse proxy with `?cap=` (the master
+ * token never enters the iframe); desktop loads the loopback port directly.
+ *
+ * `hold` (web/server mode only) names the hold this start took on the watch,
+ * which the page renews and releases by name.
  */
 export async function startOfficeWatch(
   rootPath: string,
   path: string
-): Promise<{ port: number; cap: string }> {
-  return getTransport().call("start_office_watch", { rootPath, path })
+): Promise<{ port: number; cap: string; hold?: string }> {
+  // Allow the backend's 120s cold-start budget plus cleanup/response overhead.
+  return getTransport().call(
+    "start_office_watch",
+    { rootPath, path },
+    { timeoutMs: 150_000 }
+  )
 }
 
-/** Release one reference to an office file's watch preview server. */
+/**
+ * Release one reference to an office file's watch preview server. `cap` and
+ * `hold` are what {@link startOfficeWatch} returned: when that watch is gone
+ * (stopped with its folder, say) the release is a no-op instead of taking a
+ * reference from whatever watch serves the file now, and a web page's release
+ * takes only its own hold.
+ */
 export async function stopOfficeWatch(
   rootPath: string,
-  path: string
+  path: string,
+  cap?: string,
+  hold?: string
 ): Promise<void> {
-  return getTransport().call("stop_office_watch", { rootPath, path })
+  return getTransport().call("stop_office_watch", {
+    rootPath,
+    path,
+    cap,
+    hold,
+  })
+}
+
+/**
+ * Renew this window's hold on the watch named by `cap`, and say whether it is
+ * still the live one serving the file — false once it was stopped, crashed,
+ * or replaced by a new one. A web page's hold lapses when the page goes quiet
+ * (the server can't tell a closed browser from one that just isn't talking),
+ * so a preview renews on a timer, naming its `hold`; one that lapsed meanwhile
+ * comes back. A desktop window's never lapses, and for it this only asks.
+ */
+export async function renewOfficeWatch(
+  rootPath: string,
+  path: string,
+  cap: string,
+  hold?: string
+): Promise<boolean> {
+  return getTransport().call("renew_office_watch", {
+    rootPath,
+    path,
+    cap,
+    hold,
+  })
 }
 
 export async function getSystemProxySettings(): Promise<SystemProxySettings> {
@@ -2127,11 +2206,16 @@ export async function mcpUpsertLocalServer(params: {
   serverId: string
   spec: Record<string, unknown>
   apps: McpAppType[]
+  /** The spec the editor loaded before the edit (omit for a new server): an
+   * agent that keeps per-server settings of its own (Kiro) keeps them for
+   * every field the edit left alone. */
+  shownSpec?: Record<string, unknown> | null
 }): Promise<LocalMcpServer> {
   return getTransport().call("mcp_upsert_local_server", {
     serverId: params.serverId,
     spec: params.spec,
     apps: params.apps,
+    shownSpec: params.shownSpec ?? null,
   })
 }
 
@@ -2262,6 +2346,38 @@ export async function setFolderGroup(
   groupId: number | null
 ): Promise<void> {
   return getTransport().call("set_folder_group", { folderId, groupId })
+}
+
+/** Every assistant, tombstones included, in display order. */
+export async function assistantList(): Promise<AssistantInfo[]> {
+  return getTransport().call("assistant_list", {})
+}
+
+export async function assistantCreate(
+  draft: AssistantDraft
+): Promise<AssistantInfo> {
+  return getTransport().call("assistant_create", { draft })
+}
+
+/** Apply an edit; only the fields present change. */
+export async function assistantUpdate(
+  id: number,
+  patch: AssistantPatch
+): Promise<AssistantInfo> {
+  return getTransport().call("assistant_update", { id, patch })
+}
+
+/** Soft-delete; resolves to the tombstone. */
+export async function assistantDelete(id: number): Promise<AssistantInfo> {
+  return getTransport().call("assistant_delete", { id })
+}
+
+/** Persist the order after a drag (the complete list, first to last);
+ *  resolves to the rows whose position changed. */
+export async function assistantReorder(
+  ids: number[]
+): Promise<AssistantInfo[]> {
+  return getTransport().call("assistant_reorder", { ids })
 }
 
 export async function listConversationTags(): Promise<ConversationTagDetail[]> {
@@ -2404,6 +2520,17 @@ export async function getFolderConversationTurns(
     conversationId,
     beforeIndex,
     limit,
+  })
+}
+
+/** Fetch the message navigator's outline of the history before `beforeIndex`. */
+export async function getFolderConversationOutline(
+  conversationId: number,
+  beforeIndex: number
+): Promise<ConversationOutline> {
+  return getTransport().call("get_folder_conversation_outline", {
+    conversationId,
+    beforeIndex,
   })
 }
 
@@ -2980,6 +3107,71 @@ export async function gitCommit(
   })
 }
 
+/**
+ * Have an agent write a message for the commit `gitCommit(path, …, files)`
+ * would make. Runs as long as the agent takes — there is no deadline on the
+ * backend — so the call waits well past the transport defaults (60 s on web,
+ * 30 s through the remote-desktop proxy); stop it with
+ * `gitGenerateCommitMessageCancel(requestId)`.
+ */
+export async function gitGenerateCommitMessage(params: {
+  requestId: string
+  path: string
+  folderId: number | null
+  files: string[]
+  draft: string | null
+  fallbackAgent: AgentType | null
+}): Promise<GeneratedCommitMessage> {
+  return getTransport().call(
+    "git_generate_commit_message",
+    {
+      requestId: params.requestId,
+      path: params.path,
+      folderId: params.folderId,
+      files: params.files,
+      draft: params.draft,
+      fallbackAgent: params.fallbackAgent,
+    },
+    { timeoutMs: 30 * 60_000 }
+  )
+}
+
+/** Stop the generation started under `requestId` (a no-op once it ended). */
+export async function gitGenerateCommitMessageCancel(
+  requestId: string
+): Promise<void> {
+  return getTransport().call("git_generate_commit_message_cancel", {
+    requestId,
+  })
+}
+
+/** A project folder's own settings — `null` while it follows the global ones
+ *  — or with `folderId` null the global settings. */
+export async function getCommitMessageSettings(
+  folderId: number | null
+): Promise<CommitMessageSettings | null> {
+  return getTransport().call("get_commit_message_settings", { folderId })
+}
+
+/** Save a project folder's own settings, or with `folderId` null the global
+ *  ones. */
+export async function setCommitMessageSettings(
+  folderId: number | null,
+  settings: CommitMessageSettings
+): Promise<CommitMessageSettings> {
+  return getTransport().call("set_commit_message_settings", {
+    folderId,
+    settings,
+  })
+}
+
+/** Drop a project folder's own settings: it follows the global ones again. */
+export async function deleteCommitMessageSettings(
+  folderId: number
+): Promise<void> {
+  return getTransport().call("delete_commit_message_settings", { folderId })
+}
+
 export async function gitRollbackFile(
   path: string,
   file: string
@@ -3287,6 +3479,30 @@ export async function openInCode(path: string): Promise<void> {
 }
 
 /**
+ * Run a shell command detached on THIS desktop machine, even from a
+ * remote-desktop window — hence the shell transport. `folderPath` (the folder's
+ * path on its own host) and `remoteHost` reach the command as
+ * `$CODEG_FOLDER_PATH` / `$CODEG_REMOTE_HOST`. `remoteHost` is non-null exactly
+ * in a remote-desktop window (empty when its host's name can't be read): the
+ * backend then treats `folderPath` as the remote server's, not this machine's.
+ * It runs in `workingDir` when that is a directory on this machine, else in
+ * the home directory. Desktop only.
+ */
+export async function runLocalCommand(
+  command: string,
+  folderPath: string,
+  remoteHost: string | null,
+  workingDir: string | null
+): Promise<void> {
+  return getShellTransport().call("run_local_command", {
+    command,
+    folderPath,
+    remoteHost,
+    workingDir,
+  })
+}
+
+/**
  * Open a freshly created git worktree directory as a folder, recording the root
  * folder it descends from (`sourceFolderId` is the folder the worktree was
  * created from; the backend flattens to the root). Lets the worktree folder be
@@ -3585,18 +3801,25 @@ export async function deleteConversation(
 export async function listFolderCommands(
   folderId: number
 ): Promise<FolderCommand[]> {
-  return getTransport().call("list_folder_commands", { folderId })
+  // `includeLocal` tells the host this client knows `run_local`; it withholds
+  // such commands from older clients, which would run them in its terminal.
+  return getTransport().call("list_folder_commands", {
+    folderId,
+    includeLocal: true,
+  })
 }
 
 export async function createFolderCommand(
   folderId: number,
   name: string,
-  command: string
+  command: string,
+  runLocal: boolean
 ): Promise<FolderCommand> {
   return getTransport().call("create_folder_command", {
     folderId,
     name,
     command,
+    runLocal,
   })
 }
 
@@ -3604,13 +3827,16 @@ export async function updateFolderCommand(
   id: number,
   name?: string,
   command?: string,
-  sortOrder?: number
+  sortOrder?: number,
+  runLocal?: boolean
 ): Promise<FolderCommand> {
   return getTransport().call("update_folder_command", {
     id,
     name: name ?? null,
     command: command ?? null,
     sortOrder: sortOrder ?? null,
+    runLocal: runLocal ?? null,
+    includeLocal: true,
   })
 }
 
@@ -3632,6 +3858,7 @@ export async function bootstrapFolderCommandsFromPackageJson(
   return getTransport().call("bootstrap_folder_commands_from_package_json", {
     folderId,
     folderPath,
+    includeLocal: true,
   })
 }
 
@@ -3994,6 +4221,16 @@ export async function workTaskArchive(
   return getTransport().call("work_task_archive", { id, archived })
 }
 
+/** Put a reviewed / failed task aside to handle later ("以后处理" — it waits
+ *  under Done), or bring it back to "needs you". No status change: a follow-up,
+ *  retry or merge picks a deferred task back up on its own. */
+export async function workTaskDefer(
+  id: number,
+  deferred: boolean
+): Promise<void> {
+  return getTransport().call("work_task_defer", { id, deferred })
+}
+
 /** Remove the task's worktree + branch (also retries a failed cleanup). */
 export async function workTaskCleanup(id: number): Promise<void> {
   return getTransport().call("work_task_cleanup", { id })
@@ -4106,7 +4343,8 @@ export const UPLOAD_MAX_BYTES = 200 * 1024 * 1024
 
 // `btoa` only accepts a binary string, and `String.fromCharCode(...bytes)`
 // hits the call-stack limit somewhere around a few hundred KB. Chunk the
-// buffer so a 2 MB upload encodes without blowing the stack.
+// buffer so an upload at the full `UPLOAD_MAX_BYTES` encodes without
+// blowing the stack.
 function arrayBufferToBase64(buf: ArrayBuffer): string {
   const bytes = new Uint8Array(buf)
   let binary = ""
@@ -4272,7 +4510,9 @@ export async function uploadAttachment(
     const token = getCodegToken()
     const xhr = new XMLHttpRequest()
     xhr.open("POST", `${window.location.origin}/api/upload_attachment`)
-    xhr.setRequestHeader("Authorization", `Bearer ${token}`)
+    for (const [name, value] of Object.entries(codegAuthHeaders(token))) {
+      xhr.setRequestHeader(name, value)
+    }
 
     if (progress?.onProgress) {
       const onProgress = progress.onProgress
@@ -4283,7 +4523,9 @@ export async function uploadAttachment(
 
     xhr.onload = () => {
       if (xhr.status === 401) {
-        notifyWebUnauthorized()
+        notifyWebUnauthorized(
+          unauthorizedSource(xhr.getResponseHeader("www-authenticate"))
+        )
         reject(new Error("Unauthorized"))
         return
       }
@@ -4399,9 +4641,7 @@ async function workspaceFileFetch(
   isMultipart: boolean
 ): Promise<Response> {
   const token = getCodegToken()
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
-  }
+  const headers = codegAuthHeaders(token)
   if (!isMultipart) {
     headers["Content-Type"] = "application/json"
   }
@@ -4411,7 +4651,9 @@ async function workspaceFileFetch(
     body,
   })
   if (res.status === 401) {
-    notifyWebUnauthorized()
+    notifyWebUnauthorized(
+      unauthorizedSource(res.headers.get("www-authenticate"))
+    )
     throw new Error("Unauthorized")
   }
   if (!res.ok) {
@@ -4469,7 +4711,9 @@ export async function uploadWorkspaceFile(
     const token = getCodegToken()
     const xhr = new XMLHttpRequest()
     xhr.open("POST", `${window.location.origin}/api/upload_workspace_file`)
-    xhr.setRequestHeader("Authorization", `Bearer ${token}`)
+    for (const [name, value] of Object.entries(codegAuthHeaders(token))) {
+      xhr.setRequestHeader(name, value)
+    }
 
     if (args.onProgress) {
       const onProgress = args.onProgress
@@ -4482,7 +4726,9 @@ export async function uploadWorkspaceFile(
 
     xhr.onload = () => {
       if (xhr.status === 401) {
-        notifyWebUnauthorized()
+        notifyWebUnauthorized(
+          unauthorizedSource(xhr.getResponseHeader("www-authenticate"))
+        )
         reject(new Error("Unauthorized"))
         return
       }
@@ -5090,6 +5336,30 @@ export interface WebServiceConfig {
 
 export async function getWebServiceConfig(): Promise<WebServiceConfig> {
   return getTransport().call("get_web_service_config")
+}
+
+/** Whether `codeg-cli` on this machine can reach this runtime. */
+export async function getCliAccessStatus(): Promise<CliAccessStatus> {
+  return getTransport().call("cli_access_status")
+}
+
+/** Turn command-line access on or off; applied at once. */
+export async function setCliAccessEnabled(
+  enabled: boolean
+): Promise<CliAccessStatus> {
+  return getTransport().call("cli_access_set_enabled", { enabled })
+}
+
+/** Desktop only: whether this app's `codeg-cli` is on the user's PATH. Asked
+ *  of this window's own app, even one bound to a remote server. */
+export async function getCliToolStatus(): Promise<CliToolStatus> {
+  return getShellTransport().call("cli_tool_status")
+}
+
+/** Desktop only: put this app's `codeg-cli` on the user's PATH. On macOS
+ *  this may ask for an administrator's password. */
+export async function installCliTool(): Promise<CliToolStatus> {
+  return getShellTransport().call("cli_tool_install")
 }
 
 export async function updateWebServiceConfig(
@@ -5784,7 +6054,9 @@ export async function uploadBackupWeb(
     const token = getCodegToken()
     const xhr = new XMLHttpRequest()
     xhr.open("POST", `${window.location.origin}/api/backup_upload`)
-    xhr.setRequestHeader("Authorization", `Bearer ${token}`)
+    for (const [name, value] of Object.entries(codegAuthHeaders(token))) {
+      xhr.setRequestHeader(name, value)
+    }
     if (onProgress) {
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable) onProgress(event.loaded, event.total)
@@ -5792,7 +6064,9 @@ export async function uploadBackupWeb(
     }
     xhr.onload = () => {
       if (xhr.status === 401) {
-        notifyWebUnauthorized()
+        notifyWebUnauthorized(
+          unauthorizedSource(xhr.getResponseHeader("www-authenticate"))
+        )
         reject(new Error("Unauthorized"))
         return
       }
@@ -6309,4 +6583,20 @@ export async function forgeSettingsSet(
   settings: ForgePanelSettings | null
 ): Promise<ForgeSettingsStore> {
   return getTransport().call("forge_settings_set", { folderId, settings })
+}
+
+/** Where auto-processing stands for one folder: the last scan's report, the
+ *  next scheduled scan, the last webhook delivery. */
+export async function forgeAutoStatus(
+  folderId: number
+): Promise<ForgeAutoStatus> {
+  return getTransport().call("forge_auto_status", { folderId })
+}
+
+/** Scan one folder now with its SAVED rules, and get back what the scan did.
+ *  Resolves once the scan has finished. */
+export async function forgeAutoScanNow(
+  folderId: number
+): Promise<ForgeAutoScanReport> {
+  return getTransport().call("forge_auto_scan_now", { folderId })
 }

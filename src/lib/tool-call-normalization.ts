@@ -35,16 +35,15 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   // matcher below cannot help: its `\bshell\b` needs a word boundary that
   // "powershell" does not have.
   //
-  // Without the alias the name only half-resolved — `getToolIcon` and
-  // `classifyToolKind` matched it, so the call drew a terminal icon and counted
-  // as a command, while every dispatch keyed on the NORMALIZED name
-  // (`isCommandTool`, `deriveToolTitle`, `StructuredToolInput`) fell through to
-  // the generic renderer and dumped the input as raw JSON with no command line
-  // and no terminal body. The live ACP path was rescued only once `rawInput`
-  // streamed and `inferFromInput` found a `command` key in it; the history path
-  // never is, because `parsers/claude.rs` and `parsers/pi.rs` both read the raw
-  // tool name back out of the transcript — so the same call rendered one way
-  // while it ran and another way on reload.
+  // Without the alias the name only half-resolved — what matched the raw name
+  // drew a terminal icon and counted a command, while everything keyed on the
+  // NORMALIZED name fell through to the generic renderer and dumped the input
+  // as raw JSON with no command line and no terminal body. The live ACP path
+  // was rescued only once `rawInput` streamed and `inferFromInput` found a
+  // `command` key in it; the history path never is, because
+  // `parsers/claude.rs` and `parsers/pi.rs` both read the raw tool name back
+  // out of the transcript — so the same call rendered one way while it ran and
+  // another way on reload.
   powershell: "bash",
   exec_command: "exec_command",
   "functions.exec_command": "exec_command",
@@ -59,6 +58,10 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   read_text_file: "read",
   readfile: "read",
   "read file": "read",
+  // Codex's image viewer. codex-acp streams it as `kind: "read"` with the path
+  // as its input, so the live card is already a Read; the rollout keeps the raw
+  // function name, which made the reloaded card a generic tool instead.
+  view_image: "read",
   edit_file: "edit",
   update_file: "edit",
   write_file: "write",
@@ -539,7 +542,31 @@ function inferFromInput(
   return null
 }
 
+/**
+ * Names already normalized, by the name they came with. The same few names
+ * pass through here over and over — every call of a streaming turn, on every
+ * token — and each pass is a run of regular expressions. Short names only: a
+ * live call's title can hold a whole command.
+ */
+const normalizedNames = new Map<string, string>()
+const NORMALIZED_NAMES_MAX = 512
+const NORMALIZED_NAME_MAX_LENGTH = 160
+
 export function normalizeToolName(toolName: string): string {
+  if (toolName.length > NORMALIZED_NAME_MAX_LENGTH) {
+    return normalizeUncached(toolName)
+  }
+  const cached = normalizedNames.get(toolName)
+  if (cached !== undefined) return cached
+  const name = normalizeUncached(toolName)
+  if (normalizedNames.size >= NORMALIZED_NAMES_MAX) {
+    normalizedNames.delete(normalizedNames.keys().next().value!)
+  }
+  normalizedNames.set(toolName, name)
+  return name
+}
+
+function normalizeUncached(toolName: string): string {
   const raw = toolName.trim()
   const trimmed = raw
     .replace(/^[:：'"`“”‘’\s]+/, "")
@@ -555,7 +582,7 @@ export function normalizeToolName(toolName: string): string {
   // codex-acp command-action tool calls (`createCommandActionEvent`) carry no
   // tool name and no rawInput — only a human title — so the search / list-files
   // identity has to be read back out of it. Without this the whole title becomes
-  // the "tool name": no search icon, an "other" tool-group tally, and a body
+  // the "tool name": no search icon, an "other" tool tally, and a body
   // that dumps the raw `{formatted_output, exit_code}` envelope. The sibling
   // `Read file '<path>'` shape already resolves via the `^read` freeform rule.
   //
@@ -653,9 +680,9 @@ export function inferLiveToolName(params: {
   // `title` MUTATES across the lifecycle (`enter_plan_mode` → "Plan: Enter" →
   // "Plan mode entered"). Resolve them to the canonical name here, ahead of the
   // title-based fallbacks below, so the live stream routes into the same
-  // <PlanModeCard> (and its tool-group run-break) the historical path resolves
-  // from `x.ai/tool.name`. Scoped to plan-mode so every other Grok tool keeps
-  // its existing resolution. See `extractGrokPlanModeToolName`.
+  // plan-mode row the historical path resolves from `x.ai/tool.name`. Scoped
+  // to plan-mode so every other Grok tool keeps its existing resolution. See
+  // `extractGrokPlanModeToolName`.
   const grokPlanMode = extractGrokPlanModeToolName(params.meta)
   if (grokPlanMode) return grokPlanMode
 
@@ -743,6 +770,16 @@ export function inferLiveToolName(params: {
   // here (recorded from the arg-less opening frame) must not undo it.
   const openCodeToolName = extractOpenCodeToolName(params.meta)
   if (openCodeToolName) return normalizeToolName(openCodeToolName)
+
+  // Kiro: the backend rewrites a built-in tool's arguments into the canonical
+  // shape and records the canonical name beside Kiro's own
+  // (`stamp_kiro_tool_name`) — the only way to tell `glob` ({pattern}) from
+  // `grep`, or a directory listing ({path}) from a file read, both of which the
+  // history parser names correctly. An MCP call gets its `mcp__<server>__<tool>`
+  // name, which its `Running: @<server>/<tool>` title never yields. Same
+  // placement, and reason, as OpenCode's above.
+  const kiroToolName = extractKiroToolName(params.meta)
+  if (kiroToolName) return normalizeToolName(kiroToolName)
 
   // Input-shape detection runs FIRST so cross-agent heuristics (Claude Code
   // `Task` tool routed via `subagent_type`, OpenCode sub-agent calls, etc.)
@@ -875,6 +912,24 @@ function extractOpenCodeToolName(
   const opencode = (meta as Record<string, unknown>).opencode
   if (!opencode || typeof opencode !== "object") return null
   const name = (opencode as Record<string, unknown>).toolName
+  if (typeof name !== "string") return null
+  const trimmed = name.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+/**
+ * The canonical tool name the backend stamps into Kiro's own
+ * `_meta.kiro` namespace (`canonicalToolName`, beside Kiro's `toolName`). Only
+ * the opening frame carries it; the reducer keeps a block's `meta` across
+ * updates that omit it.
+ */
+function extractKiroToolName(
+  meta: Record<string, unknown> | null | undefined
+): string | null {
+  if (!meta || typeof meta !== "object") return null
+  const kiro = (meta as Record<string, unknown>).kiro
+  if (!kiro || typeof kiro !== "object") return null
+  const name = (kiro as Record<string, unknown>).canonicalToolName
   if (typeof name !== "string") return null
   const trimmed = name.trim()
   return trimmed.length > 0 ? trimmed : null

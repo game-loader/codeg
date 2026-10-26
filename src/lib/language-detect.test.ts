@@ -4,6 +4,7 @@ import {
   isHiddenPath,
   isVideoFile,
   isOfficeOwnerFile,
+  isPdfFile,
   languageFromPath,
 } from "./language-detect"
 
@@ -316,5 +317,32 @@ describe("isOfficeOwnerFile", () => {
     expect(isOfficeOwnerFile("")).toBe(false)
     expect(isOfficeOwnerFile(null)).toBe(false)
     expect(isOfficeOwnerFile(undefined)).toBe(false)
+  })
+})
+
+describe("isPdfFile", () => {
+  it.each([
+    ["report.pdf"],
+    ["/abs/docs/report.pdf"],
+    ["C:\\Users\\me\\Report.PDF"],
+    ["archive.tar.pdf"],
+  ])("%s -> pdf", (path) => {
+    expect(isPdfFile(path)).toBe(true)
+  })
+
+  it.each([
+    ["report.pdf.txt"],
+    ["pdf"],
+    [".pdf/notes.md"],
+    ["docs.pdf/readme"],
+    ["report.docx"],
+  ])("%s -> not pdf", (path) => {
+    expect(isPdfFile(path)).toBe(false)
+  })
+
+  it("treats empty and nullish input as not a pdf", () => {
+    expect(isPdfFile("")).toBe(false)
+    expect(isPdfFile(null)).toBe(false)
+    expect(isPdfFile(undefined)).toBe(false)
   })
 })

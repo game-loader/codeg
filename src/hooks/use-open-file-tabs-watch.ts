@@ -469,15 +469,16 @@ export function useOpenFileTabsWatch({
     if (!isTransition) return
     if (tab.loading || tab.saveState === "saving") return
     // Text files only: image/PDF/video tabs carry no etag (the resolver would
-    // misread a binary file as "missing"), and office tabs are refreshed
-    // by their own officecli watch.
+    // misread a binary file as "missing"), and office tabs are refreshed by
+    // their own officecli watch.
     if (
       isImageFile(tab.path) ||
       isPdfFile(tab.path) ||
       isVideoFile(tab.path) ||
       isOfficePreviewable(tab.path)
-    )
+    ) {
       return
+    }
     if (findOwningFolder(tab.path, allFolders)) return
     const io = splitAbsPath(tab.path)
     if (!io) return

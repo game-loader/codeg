@@ -11,7 +11,7 @@ use sea_orm::{
 
 use crate::models::*;
 use crate::parsers::opencode_context_window::{ModelLimitSources, ModelRef};
-use crate::parsers::{folder_name_from_path, truncate_str, AgentParser, ParseError};
+use crate::parsers::{folder_name_from_path, truncate_str, AgentEnv, AgentParser, ParseError};
 
 pub struct OpenCodeParser {
     base_dir: PathBuf,
@@ -27,10 +27,15 @@ impl Default for OpenCodeParser {
 
 impl OpenCodeParser {
     pub fn new() -> Self {
-        let base_dir = resolve_opencode_base_dir();
+        Self::for_env(&AgentEnv::inherited())
+    }
+
+    /// The history of the OpenCode launched with `env`, and the config files
+    /// that OpenCode reads its context windows from.
+    pub fn for_env(env: &AgentEnv) -> Self {
         Self {
-            base_dir,
-            model_limits: ModelLimitSources::from_env(),
+            base_dir: resolve_opencode_base_dir_for_env(env),
+            model_limits: ModelLimitSources::for_env(env),
         }
     }
 
@@ -547,6 +552,7 @@ impl OpenCodeParser {
                         is_error: false,
                         agent_stats: None,
                         images: Vec::new(),
+                        exit_code: None,
                     });
                 }
                 // A slash command that targets a sub-agent is recorded as a
@@ -690,6 +696,8 @@ impl OpenCodeParser {
                             lines_removed: None,
                             other_tool_count: None,
                             tool_calls,
+                            timeline: Vec::new(),
+                            recovered_result: None,
                             // OpenCode's sub-agent transcript is already folded
                             // into this stats block; there is no separate
                             // session for the card to open.
@@ -703,6 +711,7 @@ impl OpenCodeParser {
                             is_error: is_error_status(status) || has_error_field,
                             agent_stats,
                             images: Vec::new(),
+                            exit_code: None,
                         });
                     } else {
                         let normalized = normalize_tool_call(raw_tool_name, state);
@@ -727,6 +736,7 @@ impl OpenCodeParser {
                             is_error: normalized.is_error,
                             agent_stats: None,
                             images: Vec::new(),
+                            exit_code: None,
                         });
                     }
                 }
@@ -940,7 +950,12 @@ impl AgentParser for OpenCodeParser {
 }
 
 pub(crate) fn resolve_opencode_base_dir() -> PathBuf {
-    resolve_xdg_data_home(std::env::var_os("XDG_DATA_HOME"), dirs::home_dir())
+    resolve_opencode_base_dir_for_env(&AgentEnv::inherited())
+}
+
+/// The data dir of the OpenCode launched with `env`: `<XDG_DATA_HOME>/opencode`.
+pub(crate) fn resolve_opencode_base_dir_for_env(env: &AgentEnv) -> PathBuf {
+    resolve_xdg_data_home(env.var_os("XDG_DATA_HOME"), dirs::home_dir())
         .map(|xdg_data_home| xdg_data_home.join("opencode"))
         .unwrap_or_else(|| PathBuf::from("opencode"))
 }
@@ -2278,6 +2293,7 @@ fn v2_assistant_blocks(
                     is_error: normalized.is_error,
                     agent_stats: None,
                     images: Vec::new(),
+                    exit_code: None,
                 });
             }
             _ => {}
@@ -2368,11 +2384,14 @@ fn v2_agent_blocks(
                 lines_removed: None,
                 other_tool_count: None,
                 tool_calls,
+                timeline: Vec::new(),
+                recovered_result: None,
                 // As for a 1.x `task`, the child's transcript is folded into
                 // this block rather than opened as a session of its own.
                 child_session_id: None,
             }),
             images: Vec::new(),
+            exit_code: None,
         },
     ]
 }
@@ -3050,6 +3069,7 @@ mod tests {
             is_error: false,
             agent_stats: None,
             images: Vec::new(),
+            exit_code: None,
         };
 
         assert!(super::is_compaction_only(&[compaction(), result()]));
@@ -4321,5 +4341,47 @@ mod tests {
             .expect("stats");
         assert_eq!(stats.context_window_max_tokens, Some(32_768));
         assert_eq!(stats.context_window_used_tokens, Some(2_000));
+    }
+
+    /// #948: built with an agent's launch env, the parser reads where THAT
+    /// env puts the agent's files, not where codeg's own environment does.
+    #[test]
+    fn for_env_reads_the_store_and_config_of_the_launch_env() {
+        let env = crate::parsers::AgentEnv::with_overrides(&[
+            ("XDG_DATA_HOME", "/relocated/data"),
+            ("XDG_CONFIG_HOME", "/relocated/config"),
+            ("XDG_CACHE_HOME", "/relocated/cache"),
+            ("OPENCODE_CONFIG", "/relocated/opencode.json"),
+            ("OPENCODE_CONFIG_DIR", "/relocated/opencode-dir"),
+            ("OPENCODE_DISABLE_PROJECT_CONFIG", "1"),
+            ("OPENCODE_MODELS_PATH", ""),
+        ]);
+        let parser = super::OpenCodeParser::for_env(&env);
+        assert_eq!(
+            parser.base_dir,
+            PathBuf::from("/relocated/data").join("opencode")
+        );
+        let limits = &parser.model_limits;
+        assert_eq!(
+            limits.config_dir,
+            Some(PathBuf::from("/relocated/config").join("opencode"))
+        );
+        assert_eq!(
+            limits.config_file,
+            Some(PathBuf::from("/relocated/opencode.json"))
+        );
+        assert_eq!(
+            limits.config_dir_env,
+            Some(PathBuf::from("/relocated/opencode-dir"))
+        );
+        assert!(!limits.project_config);
+        assert_eq!(
+            limits.catalog_file,
+            Some(
+                PathBuf::from("/relocated/cache")
+                    .join("opencode")
+                    .join("models.json")
+            )
+        );
     }
 }
