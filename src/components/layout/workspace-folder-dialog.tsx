@@ -10,7 +10,6 @@ import {
   Link2,
   Link2Off,
   Loader2,
-  MonitorCloud,
   MonitorDot,
   Pencil,
   Plus,
@@ -32,13 +31,6 @@ import { InputGroupButton } from "@/components/ui/input-group"
 import { Checkbox } from "@/components/ui/checkbox"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -54,7 +46,6 @@ import {
 import {
   createFolderLinks,
   listFolderLinks,
-  openFolder as openFolderOn,
   previewFolderLinks,
   removeFolderLink,
   renameFolderLink,
@@ -64,21 +55,7 @@ import { useImeGuard } from "@/hooks/use-ime-guard"
 import { isDesktop, openFileDialog } from "@/lib/platform"
 import { parentFsPath } from "@/lib/path-utils"
 import { getActiveRemoteConnectionId } from "@/lib/transport"
-import type { CallTarget } from "@/lib/transport"
 import { toErrorMessage } from "@/lib/app-error"
-import { targetArgs } from "@/lib/call-target"
-import {
-  isBackendBindingChangedError,
-  parseBackendKey,
-  pinBackendClient,
-  remoteBackendKey,
-} from "@/lib/backend-client"
-import type { BackendKey } from "@/lib/project-identity"
-import {
-  listRemoteWorkspaceConnections,
-  openRemoteWorkspace,
-} from "@/lib/remote-workspace"
-import { requestProjectCatalogRefresh } from "@/hooks/use-project-catalog"
 import {
   basenameOf,
   linkNameKey,
@@ -91,42 +68,10 @@ import type {
   FolderLinkDetail,
   FolderLinkPlan,
   FolderLinkStatus,
-  RemoteWorkspaceConnection,
 } from "@/lib/types"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 
 type View = "pick-root" | "links" | "add-targets"
-
-/**
- * The machine a step works on, fixed when the step starts. `target` is
- * omitted for this machine, so its calls keep using the window's own backend
- * exactly as before; another machine gets a client pinned to the address its
- * connection had when it was picked (see `pinBackendClient`).
- */
-interface MachineBinding {
-  machine: BackendKey
-  target?: CallTarget
-}
-
-const LOCAL_BINDING: MachineBinding = { machine: "local" }
-
-/**
- * Binding for a picked machine, or null when its connection is no longer
- * saved. Null is not "fall back to this machine": callers refuse instead.
- */
-function machineBinding(
-  machine: BackendKey,
-  connections: readonly RemoteWorkspaceConnection[]
-): MachineBinding | null {
-  const parsed = parseBackendKey(machine)
-  if (parsed?.kind !== "remote") return LOCAL_BINDING
-  const connection = connections.find((c) => c.id === parsed.connectionId)
-  if (!connection) return null
-  return {
-    machine,
-    target: pinBackendClient(machine, connection.base_url),
-  }
-}
 
 interface WorkspaceFolderDialogProps {
   open: boolean
@@ -137,11 +82,7 @@ interface WorkspaceFolderDialogProps {
    * before moving on.
    */
   folder?: FolderDetail | null
-  /**
-   * Called once the workspace folder has been opened (creation flow only),
-   * and only for a folder on this window's own machine: another machine's
-   * folder id means nothing to this window's callers.
-   */
+  /** Called once the workspace folder has been opened (creation flow only). */
   onFolderOpened?: (folder: FolderDetail) => void
 }
 
@@ -162,8 +103,6 @@ export function WorkspaceFolderDialog({
 }: WorkspaceFolderDialogProps) {
   const t = useTranslations("Folder.workspaceDialog")
   const tBrowser = useTranslations("DirectoryBrowser")
-  const tProjects = useTranslations("ProjectCatalog")
-  const tRemote = useTranslations("RemoteWorkspace")
   const openFolder = useAppWorkspaceStore((s) => s.openFolder)
 
   const manageMode = !!folder
@@ -191,30 +130,8 @@ export function WorkspaceFolderDialog({
   const [renameValue, setRenameValue] = useState("")
   const [busyLinkId, setBusyLinkId] = useState<number | null>(null)
 
-  // Which machine a new workspace is opened on, and the machine the opened
-  // root lives on. The root and its machine move together: every link call
-  // goes to `rootBinding`, never to whatever the picker shows by then.
-  const [machine, setMachine] = useState<BackendKey>("local")
-  const [connections, setConnections] = useState<RemoteWorkspaceConnection[]>(
-    []
-  )
-  const [rootBinding, setRootBinding] = useState<MachineBinding>(LOCAL_BINDING)
-
-  // Only this machine's desktop window can reach other saved machines: a web
-  // page talks to the one server serving it, and a remote window's own
-  // backend is already another machine.
-  const localDesktopWindow =
+  const nativePickerAvailable =
     isDesktop() && getActiveRemoteConnectionId() === null
-  const machinePickerEnabled = localDesktopWindow && !manageMode
-  const pickBinding = useMemo(
-    () => machineBinding(machine, connections),
-    [machine, connections]
-  )
-  // The native picker only sees this computer's filesystem.
-  const rootNativePickerAvailable =
-    localDesktopWindow && pickBinding?.machine === "local"
-  const targetNativePickerAvailable =
-    localDesktopWindow && rootBinding.machine === "local"
 
   const linkBrowseStart = useMemo(
     () =>
@@ -239,131 +156,48 @@ export function WorkspaceFolderDialog({
     setOpeningRoot(false)
     setCreating(false)
     setPreviewing(false)
-    setMachine("local")
-    setRootBinding(LOCAL_BINDING)
   }, [open, folder])
 
-  const loadConnections = useCallback(() => {
-    return listRemoteWorkspaceConnections().then(
-      (list) => {
-        setConnections(list)
-        // A machine whose connection is gone can't stay picked.
-        setMachine((current) => {
-          const parsed = parseBackendKey(current)
-          return parsed?.kind === "remote" &&
-            !list.some((c) => c.id === parsed.connectionId)
-            ? "local"
-            : current
-        })
-      },
-      // No machine list just hides the picker: this machine still works.
-      () => setConnections([])
-    )
+  const refreshLinks = useCallback(async (folderId: number) => {
+    setLoadingLinks(true)
+    try {
+      setLinks(await listFolderLinks(folderId))
+    } catch (err) {
+      console.error("[WorkspaceFolderDialog] failed to list links:", err)
+    } finally {
+      setLoadingLinks(false)
+    }
   }, [])
 
   useEffect(() => {
-    if (!open || !machinePickerEnabled) return
-    void loadConnections()
-  }, [open, machinePickerEnabled, loadConnections])
-
-  const machineName = useCallback(
-    (key: BackendKey) => {
-      if (key === "local") return tProjects("thisComputer")
-      const parsed = parseBackendKey(key)
-      const connection =
-        parsed?.kind === "remote"
-          ? connections.find((c) => c.id === parsed.connectionId)
-          : undefined
-      return connection?.name ?? key
-    },
-    [connections, tProjects]
-  )
-
-  // The connection behind a remote root now points at another server, or is
-  // gone: none of its folder or link ids belong to whatever answers now, so
-  // the flow starts over from the machine pick.
-  const handleBindingChanged = useCallback(() => {
-    toast.error(tProjects("bindingChanged"), {
-      description: tProjects("bindingChangedDescription"),
-    })
-    setRootFolder(null)
-    setRootBinding(LOCAL_BINDING)
-    setRootPath("")
-    setPending([])
-    setSkipped([])
-    setLinks([])
-    setRenamingId(null)
-    setMachine("local")
-    setView("pick-root")
-    void loadConnections()
-  }, [tProjects, loadConnections])
-
-  const reportError = useCallback(
-    (title: string, err: unknown) => {
-      if (isBackendBindingChangedError(err)) handleBindingChanged()
-      else toast.error(title, { description: toErrorMessage(err) })
-    },
-    [handleBindingChanged]
-  )
-
-  const refreshLinks = useCallback(
-    async (folderId: number, binding: MachineBinding) => {
-      setLoadingLinks(true)
-      try {
-        setLinks(await listFolderLinks(folderId, ...targetArgs(binding.target)))
-      } catch (err) {
-        if (isBackendBindingChangedError(err)) handleBindingChanged()
-        else console.error("[WorkspaceFolderDialog] failed to list links:", err)
-      } finally {
-        setLoadingLinks(false)
-      }
-    },
-    [handleBindingChanged]
-  )
-
-  useEffect(() => {
     if (!open || !rootFolder) return
-    void refreshLinks(rootFolder.id, rootBinding)
-  }, [open, rootFolder, rootBinding, refreshLinks])
+    void refreshLinks(rootFolder.id)
+  }, [open, rootFolder, refreshLinks])
 
   // ── Step 1: workspace root ────────────────────────────────────────────────
 
   const commitRoot = useCallback(
     async (path: string) => {
-      // Pinned to the machine whose browser picked the path, so a machine
-      // switch while this is in flight can't move where the folder opens.
-      const binding = pickBinding
-      if (!binding) return
       setOpeningRoot(true)
       try {
-        let detail: FolderDetail
-        if (binding.machine === "local") {
-          detail = await openFolder(path)
-          onFolderOpened?.(detail)
-        } else {
-          // Another machine's folder stays out of this window's workspace
-          // store: its ids belong to that machine's database. The sidebar
-          // picks it up through the cross-machine catalog instead.
-          detail = await openFolderOn(path, ...targetArgs(binding.target))
-          requestProjectCatalogRefresh()
-        }
+        const detail = await openFolder(path)
         setRootFolder(detail)
-        setRootBinding(binding)
+        onFolderOpened?.(detail)
         setView("links")
       } catch (err) {
-        reportError(t("openFailed"), err)
+        toast.error(t("openFailed"), { description: toErrorMessage(err) })
       } finally {
         setOpeningRoot(false)
       }
     },
-    [pickBinding, openFolder, onFolderOpened, reportError, t]
+    [openFolder, onFolderOpened, t]
   )
 
   const handleConfirmRoot = useCallback(async () => {
-    if (openingRoot || browserBusy || !pickBinding) return
+    if (openingRoot || browserBusy) return
     const selected = await rootBrowserRef.current?.confirm()
     if (selected) await commitRoot(selected)
-  }, [openingRoot, browserBusy, pickBinding, commitRoot])
+  }, [openingRoot, browserBusy, commitRoot])
 
   // The picker fills the path box and stops there. It sits inside that box, so
   // it has to behave like typing into it — opening the folder outright would
@@ -391,11 +225,7 @@ export function WorkspaceFolderDialog({
       if (!rootFolder || paths.length === 0) return
       setPreviewing(true)
       try {
-        const plans = await previewFolderLinks(
-          rootFolder.id,
-          paths,
-          ...targetArgs(rootBinding.target)
-        )
+        const plans = await previewFolderLinks(rootFolder.id, paths)
         const { usable, skipped: rejected } = partitionPlans(plans)
         // Merge rather than replace: a second "add" round keeps what the user
         // already queued (and edited) instead of dropping it.
@@ -415,12 +245,12 @@ export function WorkspaceFolderDialog({
         setSkipped(rejected)
         setView("links")
       } catch (err) {
-        reportError(t("previewFailed"), err)
+        toast.error(t("previewFailed"), { description: toErrorMessage(err) })
       } finally {
         setPreviewing(false)
       }
     },
-    [rootFolder, rootBinding, reportError, t]
+    [rootFolder, t]
   )
 
   const handleAddPicked = useCallback(async () => {
@@ -475,30 +305,20 @@ export function WorkspaceFolderDialog({
       const created = await createFolderLinks(
         rootFolder.id,
         pending.map((item) => ({ path: item.targetPath, name: item.name })),
-        gitExclude,
-        ...targetArgs(rootBinding.target)
+        gitExclude
       )
       setPending([])
       setSkipped([])
-      await refreshLinks(rootFolder.id, rootBinding)
+      await refreshLinks(rootFolder.id)
       if (created.length < pending.length) {
         toast.warning(t("partiallyCreated", { count: created.length }))
       }
     } catch (err) {
-      reportError(t("createFailed"), err)
+      toast.error(t("createFailed"), { description: toErrorMessage(err) })
     } finally {
       setCreating(false)
     }
-  }, [
-    rootFolder,
-    rootBinding,
-    pending,
-    pendingIssues,
-    gitExclude,
-    refreshLinks,
-    reportError,
-    t,
-  ])
+  }, [rootFolder, pending, pendingIssues, gitExclude, refreshLinks, t])
 
   // ── Existing link actions ─────────────────────────────────────────────────
 
@@ -515,68 +335,45 @@ export function WorkspaceFolderDialog({
     const id = renamingId
     setBusyLinkId(id)
     try {
-      await renameFolderLink(
-        id,
-        renameValue.trim(),
-        ...targetArgs(rootBinding.target)
-      )
+      await renameFolderLink(id, renameValue.trim())
       setRenamingId(null)
-      if (rootFolder) await refreshLinks(rootFolder.id, rootBinding)
+      if (rootFolder) await refreshLinks(rootFolder.id)
     } catch (err) {
-      reportError(t("renameFailed"), err)
+      toast.error(t("renameFailed"), { description: toErrorMessage(err) })
     } finally {
       setBusyLinkId(null)
     }
-  }, [
-    renamingId,
-    renameIssue,
-    renameValue,
-    rootFolder,
-    rootBinding,
-    refreshLinks,
-    reportError,
-    t,
-  ])
+  }, [renamingId, renameIssue, renameValue, rootFolder, refreshLinks, t])
 
   const handleRemove = useCallback(
     async (link: FolderLinkDetail) => {
       setBusyLinkId(link.id)
       try {
-        await removeFolderLink(link.id, true, ...targetArgs(rootBinding.target))
-        if (rootFolder) await refreshLinks(rootFolder.id, rootBinding)
+        await removeFolderLink(link.id, true)
+        if (rootFolder) await refreshLinks(rootFolder.id)
       } catch (err) {
-        reportError(t("removeFailed"), err)
+        toast.error(t("removeFailed"), { description: toErrorMessage(err) })
       } finally {
         setBusyLinkId(null)
       }
     },
-    [rootFolder, rootBinding, refreshLinks, reportError, t]
+    [rootFolder, refreshLinks, t]
   )
 
   const handleRepair = useCallback(
     async (link: FolderLinkDetail) => {
       setBusyLinkId(link.id)
       try {
-        await repairFolderLink(link.id, ...targetArgs(rootBinding.target))
-        if (rootFolder) await refreshLinks(rootFolder.id, rootBinding)
+        await repairFolderLink(link.id)
+        if (rootFolder) await refreshLinks(rootFolder.id)
       } catch (err) {
-        reportError(t("repairFailed"), err)
+        toast.error(t("repairFailed"), { description: toErrorMessage(err) })
       } finally {
         setBusyLinkId(null)
       }
     },
-    [rootFolder, rootBinding, refreshLinks, reportError, t]
+    [rootFolder, refreshLinks, t]
   )
-
-  // A root on another machine is used from that machine's own window.
-  const openRootMachine = useCallback(() => {
-    const parsed = parseBackendKey(rootBinding.machine)
-    if (parsed?.kind !== "remote") return
-    openRemoteWorkspace(parsed.connectionId).catch((err) => {
-      toast.error(tRemote("openFailed"), { description: toErrorMessage(err) })
-    })
-    onOpenChange(false)
-  }, [rootBinding, onOpenChange, tRemote])
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -603,65 +400,18 @@ export function WorkspaceFolderDialog({
 
         {view === "pick-root" ? (
           <>
-            {machinePickerEnabled && connections.length > 0 ? (
-              <div className="flex flex-col gap-1.5">
-                <div className="flex items-center gap-2">
-                  <span className="shrink-0 text-xs font-medium text-muted-foreground">
-                    {tProjects("machine")}
-                  </span>
-                  <Select
-                    value={machine}
-                    onValueChange={(value) => {
-                      setMachine(value as BackendKey)
-                      // The path box belongs to the machine being left.
-                      setRootPath("")
-                    }}
-                    disabled={openingRoot || browserBusy}
-                  >
-                    <SelectTrigger
-                      size="sm"
-                      className="min-w-0 max-w-[18rem]"
-                      aria-label={tProjects("machine")}
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="local">
-                        {tProjects("thisComputer")}
-                      </SelectItem>
-                      {connections.map((c) => (
-                        <SelectItem key={c.id} value={remoteBackendKey(c.id)}>
-                          {c.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                {machine !== "local" ? (
-                  <p className="text-xs text-muted-foreground">
-                    {tProjects("remoteMachineHint", {
-                      machine: machineName(machine),
-                    })}
-                  </p>
-                ) : null}
-              </div>
-            ) : null}
             <DirectoryBrowser
-              // One panel per machine: a switch remounts it, so no listing or
-              // in-flight request from one machine reaches the other.
-              key={machine}
               ref={rootBrowserRef}
               active={open && view === "pick-root"}
               value={rootPath}
               onValueChange={setRootPath}
               onQuickSelect={commitRoot}
               onBusyChange={setBrowserBusy}
-              target={pickBinding?.target}
               // A new project often starts as an empty folder: make it here,
               // land in it, and "Next" opens it.
               allowCreateFolder
               pathInputAction={
-                rootNativePickerAvailable ? (
+                nativePickerAvailable ? (
                   <NativePickerButton
                     onPick={handleNativeRootPick}
                     disabled={openingRoot}
@@ -680,9 +430,7 @@ export function WorkspaceFolderDialog({
               <Button
                 type="button"
                 onClick={handleConfirmRoot}
-                disabled={
-                  !rootPath.trim() || openingRoot || browserBusy || !pickBinding
-                }
+                disabled={!rootPath.trim() || openingRoot || browserBusy}
               >
                 {openingRoot ? (
                   <Loader2 className="size-4 animate-spin" />
@@ -696,11 +444,7 @@ export function WorkspaceFolderDialog({
         {view === "add-targets" ? (
           <>
             <DirectoryBrowser
-              key={rootBinding.machine}
               active={open && view === "add-targets"}
-              // Link targets live on the root's machine, whatever the picker
-              // shows by now.
-              target={rootBinding.target}
               // Start beside the workspace, not inside it: anything under the
               // root is already reachable and gets rejected, while sibling
               // projects are what people actually link.
@@ -711,7 +455,7 @@ export function WorkspaceFolderDialog({
               selectedPaths={pickedTargets}
               onToggleSelected={toggleTarget}
               pathInputAction={
-                targetNativePickerAvailable ? (
+                nativePickerAvailable ? (
                   <NativePickerButton
                     onPick={handleNativeTargetPick}
                     disabled={previewing}
@@ -761,14 +505,6 @@ export function WorkspaceFolderDialog({
                 >
                   {rootFolder?.path ?? ""}
                 </span>
-                {rootBinding.machine !== "local" ? (
-                  <span className="flex min-w-0 max-w-[40%] shrink items-center gap-1 text-xs text-muted-foreground">
-                    <MonitorCloud aria-hidden className="size-3.5 shrink-0" />
-                    <span className="truncate">
-                      {machineName(rootBinding.machine)}
-                    </span>
-                  </span>
-                ) : null}
                 {!manageMode ? (
                   <Button
                     variant="ghost"
@@ -913,23 +649,9 @@ export function WorkspaceFolderDialog({
                   </Button>
                 </>
               ) : (
-                <>
-                  {rootBinding.machine !== "local" ? (
-                    <Button
-                      variant="outline"
-                      type="button"
-                      onClick={openRootMachine}
-                    >
-                      <MonitorCloud className="size-4" />
-                      {tProjects("openMachineWindow", {
-                        machine: machineName(rootBinding.machine),
-                      })}
-                    </Button>
-                  ) : null}
-                  <Button type="button" onClick={() => onOpenChange(false)}>
-                    {t("done")}
-                  </Button>
-                </>
+                <Button type="button" onClick={() => onOpenChange(false)}>
+                  {t("done")}
+                </Button>
               )}
             </DialogFooter>
           </>

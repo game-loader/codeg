@@ -94,13 +94,6 @@ export interface CallOptions {
   timeoutMs?: number
 }
 
-/**
- * Anything that can answer a backend command: a whole `Transport`, or a
- * `BackendClient` pinned to one machine. API functions that accept an
- * explicit target take this, so they don't need the rest of a transport.
- */
-export type CallTarget = Pick<Transport, "call">
-
 export interface Transport {
   /**
    * Invoke a backend command (replaces Tauri's invoke()).

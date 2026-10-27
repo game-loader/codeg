@@ -6,7 +6,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import arMessages from "@/i18n/messages/ar.json"
 import enMessages from "@/i18n/messages/en.json"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
-import type { CallTarget } from "@/lib/transport"
 import type { DirectoryEntry } from "@/lib/types"
 import {
   DirectoryBrowser,
@@ -49,15 +48,11 @@ function Harness({
   allowCreateFolder = true,
   locale = "en",
   keepOpen = false,
-  target,
-  initialPath = "/home/me",
 }: {
   allowCreateFolder?: boolean
   locale?: "en" | "ar"
   /** Report the dialog's close requests without acting on them. */
   keepOpen?: boolean
-  target?: CallTarget
-  initialPath?: string
 }) {
   const [open, setOpen] = useState(true)
   const [value, setValue] = useState("")
@@ -83,8 +78,7 @@ function Harness({
           <DirectoryBrowser
             ref={ref}
             active={open}
-            initialPath={initialPath || undefined}
-            target={target}
+            initialPath="/home/me"
             value={value}
             onValueChange={setValue}
             onBusyChange={onBusyChange}
@@ -487,38 +481,5 @@ describe("DirectoryBrowser — new folder", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "«work» موجود هنا بالفعل."
     )
-  })
-})
-
-describe("DirectoryBrowser — another machine", () => {
-  const target = { call: vi.fn() } as unknown as CallTarget
-
-  it("walks and creates folders on the given machine", async () => {
-    render(<Harness target={target} initialPath="" />)
-    const input = await openNewFolderRow()
-
-    expect(api.getHomeDirectory).toHaveBeenCalledWith(target)
-    expect(api.listDirectoryEntries).toHaveBeenCalledWith("/home/me", target)
-
-    fireEvent.change(input, { target: { value: "fresh" } })
-    await act(async () => {
-      fireEvent.keyDown(input, { key: "Enter" })
-    })
-    expect(api.createDirectory).toHaveBeenCalledWith(
-      "/home/me",
-      "fresh",
-      target
-    )
-    expect(api.listDirectoryEntries).toHaveBeenLastCalledWith(
-      "/home/me/fresh",
-      target
-    )
-  })
-
-  it("keeps the window's own backend when no machine is given", async () => {
-    render(<Harness initialPath="" />)
-    await screen.findByText("work")
-    expect(api.getHomeDirectory).toHaveBeenCalledWith()
-    expect(api.listDirectoryEntries).toHaveBeenCalledWith("/home/me")
   })
 })

@@ -22,30 +22,8 @@ const api = vi.hoisted(() => ({
   renameFolderLink: vi.fn(),
   repairFolderLink: vi.fn(),
   removeFolderLink: vi.fn(),
-  openFolder: vi.fn(),
 }))
 vi.mock("@/lib/api", () => api)
-
-// Saved machines. Empty by default, which keeps the machine picker away and
-// every call on this machine with exactly its old arguments.
-const remote = vi.hoisted(() => ({
-  listRemoteWorkspaceConnections: vi.fn(),
-  openRemoteWorkspace: vi.fn(),
-}))
-vi.mock("@/lib/remote-workspace", () => remote)
-
-// A pinned client is an opaque token here: the test only checks that every
-// call for that machine carries it.
-const backend = vi.hoisted(() => ({
-  pinBackendClient: vi.fn(),
-}))
-vi.mock("@/lib/backend-client", async (importActual) => ({
-  ...(await importActual<typeof import("@/lib/backend-client")>()),
-  pinBackendClient: backend.pinBackendClient,
-}))
-
-const catalog = vi.hoisted(() => ({ requestProjectCatalogRefresh: vi.fn() }))
-vi.mock("@/hooks/use-project-catalog", () => catalog)
 
 // Default to the in-app browser path: the native picker is a shortcut, not a
 // separate flow, and jsdom has no Tauri. Individual tests opt into desktop.
@@ -138,11 +116,6 @@ beforeEach(() => {
   api.previewFolderLinks.mockResolvedValue([])
   api.createFolderLinks.mockResolvedValue([])
   openFolder.mockResolvedValue(folder())
-  remote.listRemoteWorkspaceConnections.mockResolvedValue([])
-  remote.openRemoteWorkspace.mockResolvedValue(undefined)
-  backend.pinBackendClient.mockImplementation(
-    (key: string, baseUrl: string) => ({ pinned: key, baseUrl })
-  )
 })
 
 describe("WorkspaceFolderDialog — creation flow", () => {
@@ -780,164 +753,5 @@ describe("WorkspaceFolderDialog — selection bookkeeping", () => {
     })
 
     expect(api.previewFolderLinks).toHaveBeenCalledWith(7, ["/home/me/typed"])
-  })
-})
-
-describe("WorkspaceFolderDialog — on another machine", () => {
-  const NAS = { pinned: "remote:4", baseUrl: "http://nas:3080" }
-
-  beforeEach(() => {
-    platform.desktop = true
-    remote.listRemoteWorkspaceConnections.mockResolvedValue([
-      {
-        id: 4,
-        name: "NAS",
-        base_url: "http://nas:3080",
-        token: "t",
-        headers: [],
-        sort_order: 0,
-        created_at: "",
-        updated_at: "",
-      },
-    ])
-    // The two machines share folder id 7 on purpose: ids are per database.
-    api.openFolder.mockResolvedValue(folder({ path: "/srv/proj" }))
-    api.getHomeDirectory.mockImplementation((target?: unknown) =>
-      Promise.resolve(target ? "/srv" : "/home/me")
-    )
-    api.listDirectoryEntries.mockImplementation(
-      (path: string, target?: unknown) =>
-        Promise.resolve(
-          target && path === "/srv" ? [dir("proj", "/srv/proj")] : []
-        )
-    )
-  })
-
-  async function pickNas() {
-    render(<Harness />)
-    await screen.findByDisplayValue("/home/me")
-    const trigger = await screen.findByRole("combobox", { name: "Machine" })
-    await act(async () => {
-      fireEvent.click(trigger)
-    })
-    await act(async () => {
-      fireEvent.click(await screen.findByRole("option", { name: "NAS" }))
-    })
-    await screen.findByDisplayValue("/srv")
-  }
-
-  it("browses and opens the folder on the picked machine only", async () => {
-    await pickNas()
-
-    expect(backend.pinBackendClient).toHaveBeenCalledWith(
-      "remote:4",
-      "http://nas:3080"
-    )
-    expect(api.getHomeDirectory).toHaveBeenLastCalledWith(NAS)
-    expect(api.listDirectoryEntries).toHaveBeenLastCalledWith("/srv", NAS)
-    // This computer's native picker can't see that machine's disk.
-    expect(screen.queryByRole("button", { name: "System picker" })).toBeNull()
-
-    fireEvent.click(screen.getByRole("button", { name: "proj" }))
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Next" }))
-    })
-
-    expect(api.openFolder).toHaveBeenCalledWith("/srv/proj", NAS)
-    // Never into this window's store: folder 7 there is a different folder.
-    expect(openFolder).not.toHaveBeenCalled()
-    expect(catalog.requestProjectCatalogRefresh).toHaveBeenCalled()
-    expect(await screen.findByText("/srv/proj")).toBeInTheDocument()
-    expect(api.listFolderLinks).toHaveBeenLastCalledWith(7, NAS)
-    expect(
-      screen.getByRole("button", { name: "Open NAS window" })
-    ).toBeInTheDocument()
-  })
-
-  it("links folders on the root's machine", async () => {
-    await pickNas()
-    fireEvent.click(screen.getByRole("button", { name: "proj" }))
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Next" }))
-    })
-    await screen.findByText("/srv/proj")
-
-    api.previewFolderLinks.mockResolvedValue([
-      plan({ targetPath: "/srv/lib", baseName: "lib", name: "lib" }),
-    ])
-    api.createFolderLinks.mockResolvedValue([
-      link({ name: "lib", targetPath: "/srv/lib" }),
-    ])
-    fireEvent.click(screen.getByRole("button", { name: /Add folders/ }))
-    // Opens beside the root, on the root's machine.
-    const pathBox = await screen.findByDisplayValue("/srv")
-    expect(api.listDirectoryEntries).toHaveBeenLastCalledWith("/srv", NAS)
-    fireEvent.change(pathBox, { target: { value: "/srv/lib" } })
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Add" }))
-    })
-    expect(api.previewFolderLinks).toHaveBeenCalledWith(7, ["/srv/lib"], NAS)
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /Link 1 folder/ }))
-    })
-    expect(api.createFolderLinks).toHaveBeenCalledWith(
-      7,
-      [{ path: "/srv/lib", name: "lib" }],
-      true,
-      NAS
-    )
-  })
-
-  it("opens that machine's window when done", async () => {
-    await pickNas()
-    fireEvent.click(screen.getByRole("button", { name: "proj" }))
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Next" }))
-    })
-    await act(async () => {
-      fireEvent.click(
-        await screen.findByRole("button", { name: "Open NAS window" })
-      )
-    })
-    expect(remote.openRemoteWorkspace).toHaveBeenCalledWith(4)
-  })
-
-  it("starts over when the machine's connection changed underneath", async () => {
-    const { BackendBindingChangedError } = await vi.importActual<
-      typeof import("@/lib/backend-client")
-    >("@/lib/backend-client")
-    api.openFolder.mockRejectedValue(new BackendBindingChangedError("remote:4"))
-    await pickNas()
-    fireEvent.click(screen.getByRole("button", { name: "proj" }))
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Next" }))
-    })
-
-    expect(toast.error).toHaveBeenCalledWith(
-      "The connection for this machine changed",
-      expect.anything()
-    )
-    // Back on this machine, with the machine list read again.
-    expect(await screen.findByDisplayValue("/home/me")).toBeInTheDocument()
-    expect(remote.listRemoteWorkspaceConnections).toHaveBeenCalledTimes(2)
-    expect(screen.getByRole("combobox", { name: "Machine" })).toHaveTextContent(
-      "This computer"
-    )
-  })
-
-  it("keeps the picker away when only this machine is saved", async () => {
-    remote.listRemoteWorkspaceConnections.mockResolvedValue([])
-    render(<Harness />)
-    await screen.findByDisplayValue("/home/me")
-    await act(async () => {})
-    expect(screen.queryByRole("combobox", { name: "Machine" })).toBeNull()
-  })
-
-  it("never offers machines when managing an existing folder", async () => {
-    render(<Harness manage={folder()} />)
-    await screen.findByText("No linked folders yet.")
-    expect(remote.listRemoteWorkspaceConnections).not.toHaveBeenCalled()
-    expect(api.listFolderLinks).toHaveBeenCalledWith(7)
   })
 })

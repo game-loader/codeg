@@ -7618,16 +7618,5 @@
       "privacy": "凭据保存在当前连接的 Codeg 后端，不会包含在对话引用中。",
       "viaJump": "经由 {user}@{host}:{port}"
     }
-  },
-  "ProjectCatalog": {
-    "openOnMachine": "在其它机器上打开",
-    "alsoOn": "也在 {machines} 上",
-    "openProjectOn": "在 {machines} 上打开 {project}",
-    "machine": "机器",
-    "thisComputer": "本机",
-    "remoteMachineHint": "浏览目录、新建文件夹和关联都在 {machine} 上进行，它的会话在该机器的窗口中打开。",
-    "openMachineWindow": "打开 {machine} 的窗口",
-    "bindingChanged": "这台机器的连接已变更",
-    "bindingChangedDescription": "它现在指向另一台服务器，或已被删除。请重新选择机器。"
   }
 }

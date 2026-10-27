@@ -7618,16 +7618,5 @@
       "privacy": "Credentials are saved on the active Codeg backend and never included in conversation details.",
       "viaJump": "Via {user}@{host}:{port}"
     }
-  },
-  "ProjectCatalog": {
-    "openOnMachine": "Open on machine",
-    "alsoOn": "Also on {machines}",
-    "openProjectOn": "Open {project} on {machines}",
-    "machine": "Machine",
-    "thisComputer": "This computer",
-    "remoteMachineHint": "Browsing, new folders and links happen on {machine}. Its conversations open in that machine’s window.",
-    "openMachineWindow": "Open {machine} window",
-    "bindingChanged": "The connection for this machine changed",
-    "bindingChangedDescription": "It now points at another server, or was deleted. Pick the machine again."
   }
 }
