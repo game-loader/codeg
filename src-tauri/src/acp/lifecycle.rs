@@ -15,7 +15,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sea_orm::DatabaseConnection;
+use sea_orm::{DatabaseConnection, EntityTrait};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::acp::delegation::broker::{DelegationBroker, DelegationMatchKey};
@@ -23,10 +23,10 @@ use crate::acp::delegation::types::{DelegationError, DelegationOutcome, Delegati
 use crate::acp::internal_bus::InternalEventBus;
 use crate::acp::manager::ConnectionManager;
 use crate::acp::session_state::{SessionState, TurnStatusWriter};
-use crate::acp::types::{AcpEvent, ConnectionStatus, EventEnvelope};
+use crate::acp::types::{AcpEvent, ConnectionStatus, EventEnvelope, SessionConfigKindInfo};
 use crate::db::entities::conversation::ConversationStatus;
 use crate::db::error::DbError;
-use crate::db::service::{conversation_service, tool_approval_service};
+use crate::db::service::{conversation_service, session_selector_service, tool_approval_service};
 use crate::logging::throttle::{LagLogThrottle, LAG_LOG_WINDOW};
 use crate::web::event_bridge::{emit_with_state, EventEmitter};
 use tokio::sync::RwLock;
@@ -34,12 +34,13 @@ use tokio::sync::RwLock;
 /// Per-connection worker queue depth. Sized for the **filtered** event set
 /// only (see `is_lifecycle_relevant`) — high-frequency events (ContentDelta,
 /// ToolCall*, PermissionRequest) are dropped at the dispatcher and never
-/// enter the queue. The remaining 8 event types arrive at most a handful
+/// enter the queue. The remaining event types arrive at most a handful
 /// of times per turn, so 64 slots is comfortable headroom for a sustained
 /// SQLite stall without forcing the dispatcher to block on `send`.
 /// (SessionStarted, TurnComplete, ConversationLinked, NativeSessionTitle,
-/// TranscriptRolledOver, ToolApproval, Disconnected, Error.) `ToolApproval`
-/// is one per answered permission card, so it is paced by a person.
+/// TranscriptRolledOver, ToolApproval, SelectorsReady, ModeChanged,
+/// SessionConfigOptions, Disconnected, Error.) `ToolApproval` is one per
+/// answered permission card, so it is paced by a person.
 const WORKER_QUEUE_CAPACITY: usize = 64;
 
 /// Whether an event needs to reach the per-connection worker. Mirrors the
@@ -70,6 +71,9 @@ fn is_lifecycle_relevant(event: &AcpEvent) -> bool {
             | AcpEvent::NativeSessionTitle { .. }
             | AcpEvent::TranscriptRolledOver { .. }
             | AcpEvent::ToolApproval { .. }
+            | AcpEvent::SelectorsReady
+            | AcpEvent::ModeChanged { .. }
+            | AcpEvent::SessionConfigOptions { .. }
             | AcpEvent::StatusChanged {
                 status: ConnectionStatus::Disconnected
             }
@@ -247,6 +251,67 @@ pub(crate) async fn write_turn_status(
         },
     )
     .await;
+    Ok(())
+}
+
+/// Write a connection's current mode + config option values to
+/// `session_selector_state` under its agent session id, which is what clients
+/// pass back as `sessionId` when they resume it.
+///
+/// Reads the LIVE state rather than the triggering event: the worker runs
+/// behind the emitter, so by the time an event is handled the state may already
+/// hold a later value, and persisting that one is what converges. Nothing is
+/// written until establishment has replayed the connecting client's selections
+/// (`selectors_ready`), so the agent's pre-replay defaults never overwrite the
+/// stored state they are about to be replaced with.
+async fn persist_session_selectors(
+    db_conn: &DatabaseConnection,
+    state_arc: &Arc<RwLock<SessionState>>,
+) -> Result<(), DbError> {
+    let (agent_type, external_id, conversation_id, selectors) = {
+        let s = state_arc.read().await;
+        if !s.selectors_ready {
+            return Ok(());
+        }
+        let Some(external_id) = s.external_id.clone().filter(|id| !id.is_empty()) else {
+            return Ok(());
+        };
+        let selectors = session_selector_service::SessionSelectors {
+            mode_id: s.modes.as_ref().map(|m| m.current_mode_id.clone()),
+            config_values: s
+                .config_options
+                .iter()
+                .flatten()
+                .map(|opt| {
+                    let value = match &opt.kind {
+                        SessionConfigKindInfo::Select(sel) => sel.current_value.clone(),
+                        SessionConfigKindInfo::Boolean(b) => b.current_value.to_string(),
+                    };
+                    (opt.id.clone(), value)
+                })
+                .collect(),
+        };
+        (s.agent_type, external_id, s.conversation_id, selectors)
+    };
+    if selectors.is_empty() {
+        return Ok(());
+    }
+    session_selector_service::upsert(db_conn, agent_type, &external_id, &selectors).await?;
+
+    // After a Claude `/clear` the conversation row points at the new transcript
+    // id while the live ACP session keeps the old one, and the next resume
+    // passes the row's id. Keep that key current too.
+    if let Some(cid) = conversation_id {
+        let row_external_id = crate::db::entities::conversation::Entity::find_by_id(cid)
+            .one(db_conn)
+            .await?
+            .and_then(|row| row.external_id)
+            .filter(|id| !id.is_empty() && *id != external_id);
+        if let Some(row_external_id) = row_external_id {
+            session_selector_service::upsert(db_conn, agent_type, &row_external_id, &selectors)
+                .await?;
+        }
+    }
     Ok(())
 }
 
@@ -441,6 +506,9 @@ pub(crate) async fn handle_event(
                     &emitter, db_conn, preserved,
                 )
                 .await;
+                // Clients resume this conversation under the new transcript id
+                // from now on; carry the session's selectors over to it.
+                persist_session_selectors(db_conn, &state_arc).await?;
             }
             Ok(())
         }
@@ -458,6 +526,17 @@ pub(crate) async fn handle_event(
                 return Ok(());
             };
             tool_approval_service::record(db_conn, cid, approval).await
+        }
+        // The live selectors moved (establishment finished, the user picked a
+        // mode/model/effort, or the agent changed one itself). Record them so
+        // the next resume — from any device — starts where this one is.
+        AcpEvent::SelectorsReady
+        | AcpEvent::ModeChanged { .. }
+        | AcpEvent::SessionConfigOptions { .. } => {
+            let Some(state_arc) = manager.get_state(&envelope.connection_id).await else {
+                return Ok(());
+            };
+            persist_session_selectors(db_conn, &state_arc).await
         }
         // Other events don't need cross-connection DB persistence today; extend
         // this dispatcher with new arms as the lifecycle scope grows.
@@ -1738,7 +1817,7 @@ async fn connection_worker_loop(
 /// connections, workers run independently so a slow SQLite write on one
 /// connection doesn't backpressure the others.
 ///
-/// All forwarded events (the 7 types in `is_lifecycle_relevant`) use
+/// All forwarded events (the types in `is_lifecycle_relevant`) use
 /// blocking `send().await` to guarantee delivery even when the worker
 /// mailbox is full — `SessionStarted` (writes external_id) and
 /// `TurnComplete` (writes terminal status) are correctness-critical and
@@ -2048,6 +2127,220 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(reloaded.external_id.as_deref(), Some("newer-sess"));
+    }
+
+    fn claude_selector_state(state: &mut SessionState, mode: &str, model: &str, effort: &str) {
+        use crate::acp::types::{
+            SessionConfigOptionInfo, SessionConfigSelectInfo, SessionModeInfo, SessionModeStateInfo,
+        };
+        let select = |id: &str, value: &str| SessionConfigOptionInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: None,
+            category: None,
+            kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
+                current_value: value.to_string(),
+                options: Vec::new(),
+                groups: Vec::new(),
+            }),
+            recommended_value: None,
+        };
+        state.modes = Some(SessionModeStateInfo {
+            current_mode_id: mode.to_string(),
+            available_modes: vec![SessionModeInfo {
+                id: mode.to_string(),
+                name: mode.to_string(),
+                description: None,
+            }],
+        });
+        state.config_options = Some(vec![
+            select("mode", mode),
+            select("model", model),
+            select("effort", effort),
+        ]);
+    }
+
+    fn selector_event(payload: AcpEvent) -> EventEnvelope {
+        EventEnvelope {
+            seq: 1,
+            connection_id: "c1".to_string(),
+            payload,
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_event_records_session_selectors_once_establishment_replayed() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let mgr = ConnectionManager::new();
+        let conn = fake_connection_with_state("c1", None);
+        let state = conn.state.clone();
+        {
+            let mut s = state.write().await;
+            s.external_id = Some("sess-1".into());
+            claude_selector_state(&mut s, "default", "default", "high");
+        }
+        mgr.connections.lock().await.insert("c1".to_string(), conn);
+
+        // Before the connect-time replay finishes, the agent still shows its
+        // own defaults — they must not overwrite what the replay will restore.
+        handle_event(
+            &db.conn,
+            &mgr,
+            &selector_event(AcpEvent::SessionConfigOptions {
+                config_options: Vec::new(),
+            }),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            session_selector_service::get(&db.conn, AgentType::ClaudeCode, "sess-1")
+                .await
+                .unwrap(),
+            None
+        );
+
+        {
+            let mut s = state.write().await;
+            s.selectors_ready = true;
+            claude_selector_state(&mut s, "bypassPermissions", "opus", "max");
+        }
+        handle_event(
+            &db.conn,
+            &mgr,
+            &selector_event(AcpEvent::SelectorsReady),
+            None,
+        )
+        .await
+        .unwrap();
+        let stored = session_selector_service::get(&db.conn, AgentType::ClaudeCode, "sess-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.mode_id.as_deref(), Some("bypassPermissions"));
+        assert_eq!(
+            stored.config_values.get("model").map(String::as_str),
+            Some("opus")
+        );
+        assert_eq!(
+            stored.config_values.get("effort").map(String::as_str),
+            Some("max")
+        );
+
+        // A later change made on the live connection replaces the record.
+        claude_selector_state(&mut *state.write().await, "plan", "opus", "high");
+        handle_event(
+            &db.conn,
+            &mgr,
+            &selector_event(AcpEvent::ModeChanged {
+                mode_id: "plan".into(),
+            }),
+            None,
+        )
+        .await
+        .unwrap();
+        let stored = session_selector_service::get(&db.conn, AgentType::ClaudeCode, "sess-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.mode_id.as_deref(), Some("plan"));
+        assert_eq!(
+            stored.config_values.get("effort").map(String::as_str),
+            Some("high")
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_event_skips_selectors_without_a_session_id() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let mgr = ConnectionManager::new();
+        let conn = fake_connection_with_state("c1", None);
+        {
+            let mut s = conn.state.write().await;
+            s.selectors_ready = true;
+            claude_selector_state(&mut s, "plan", "opus", "max");
+        }
+        mgr.connections.lock().await.insert("c1".to_string(), conn);
+        handle_event(
+            &db.conn,
+            &mgr,
+            &selector_event(AcpEvent::SelectorsReady),
+            None,
+        )
+        .await
+        .unwrap();
+        let rows = crate::db::entities::session_selector_state::Entity::find()
+            .all(&db.conn)
+            .await
+            .unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn handle_event_clear_rollover_carries_selectors_to_the_new_transcript_id() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/test-selector-rollover").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        conversation_service::bind_external_id(&db.conn, conv.id, "acp-sess", &[])
+            .await
+            .unwrap();
+        let mgr = ConnectionManager::new();
+        let conn = fake_connection_with_state("c1", Some(conv.id));
+        let state = conn.state.clone();
+        {
+            let mut s = state.write().await;
+            s.external_id = Some("acp-sess".into());
+            s.selectors_ready = true;
+            claude_selector_state(&mut s, "bypassPermissions", "opus", "max");
+        }
+        mgr.connections.lock().await.insert("c1".to_string(), conn);
+
+        handle_event(
+            &db.conn,
+            &mgr,
+            &selector_event(AcpEvent::TranscriptRolledOver {
+                transcript_id: "transcript-2".into(),
+            }),
+            None,
+        )
+        .await
+        .unwrap();
+        for key in ["acp-sess", "transcript-2"] {
+            let stored = session_selector_service::get(&db.conn, AgentType::ClaudeCode, key)
+                .await
+                .unwrap()
+                .unwrap_or_else(|| panic!("no selectors stored under {key}"));
+            assert_eq!(stored.mode_id.as_deref(), Some("bypassPermissions"));
+        }
+
+        // Later picks keep the id the next resume will pass in step too.
+        claude_selector_state(
+            &mut *state.write().await,
+            "bypassPermissions",
+            "sonnet",
+            "max",
+        );
+        handle_event(
+            &db.conn,
+            &mgr,
+            &selector_event(AcpEvent::SessionConfigOptions {
+                config_options: Vec::new(),
+            }),
+            None,
+        )
+        .await
+        .unwrap();
+        let stored = session_selector_service::get(&db.conn, AgentType::ClaudeCode, "transcript-2")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored.config_values.get("model").map(String::as_str),
+            Some("sonnet")
+        );
     }
 
     #[tokio::test]
@@ -2903,6 +3196,13 @@ mod tests {
         }));
         assert!(is_lifecycle_relevant(&AcpEvent::TranscriptRolledOver {
             transcript_id: "new-sess".into(),
+        }));
+        assert!(is_lifecycle_relevant(&AcpEvent::SelectorsReady));
+        assert!(is_lifecycle_relevant(&AcpEvent::ModeChanged {
+            mode_id: "plan".into(),
+        }));
+        assert!(is_lifecycle_relevant(&AcpEvent::SessionConfigOptions {
+            config_options: Vec::new(),
         }));
         assert!(is_lifecycle_relevant(&AcpEvent::StatusChanged {
             status: ConnectionStatus::Disconnected,

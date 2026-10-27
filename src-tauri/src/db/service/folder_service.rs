@@ -90,6 +90,25 @@ pub async fn get_folder_by_id(
     Ok(row.map(to_detail))
 }
 
+/// Bounded catalog lookup: never scan the folder catalog or include chat/deleted rows.
+pub(crate) async fn repository_project_paths(
+    conn: &DatabaseConnection,
+    folder_ids: &[i32],
+) -> Result<Vec<(i32, String)>, DbError> {
+    if folder_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(folder::Entity::find()
+        .filter(folder::Column::Id.is_in(folder_ids.iter().copied()))
+        .filter(folder::Column::Kind.eq(FolderKind::Regular))
+        .filter(folder::Column::DeletedAt.is_null())
+        .all(conn)
+        .await?
+        .into_iter()
+        .map(|row| (row.id, row.path))
+        .collect())
+}
+
 /// How [`add_folder_inner`] writes the `parent_id` column. The two callers want
 /// different semantics on reopen of an existing path, which a bare `Option<i32>`
 /// could not express (it conflates "no parent" with "don't touch the parent").

@@ -1,13 +1,16 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import { workTaskRequeue, workTaskRetry } from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import { followUpComposerTarget } from "@/lib/task-follow-up"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -58,6 +61,11 @@ export function TaskRestartDialog({
   task,
   kind,
 }: TaskRestartDialogProps) {
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Tasks")
   // The upload-in-flight toast is the conversation composer's own message.
   const tChat = useTranslations("Folder.chat.messageInput")
@@ -113,9 +121,19 @@ export function TaskRestartDialog({
     setSubmitting(true)
     try {
       if (kind === "retry") {
-        await workTaskRetry(task.id, note, blocks, allowDuplicateSource)
+        await backendApi.workTaskRetry(
+          task.id,
+          note,
+          blocks,
+          allowDuplicateSource
+        )
       } else {
-        await workTaskRequeue(task.id, note, blocks, allowDuplicateSource)
+        await backendApi.workTaskRequeue(
+          task.id,
+          note,
+          blocks,
+          allowDuplicateSource
+        )
       }
       onOpenChange(false)
     } catch (e) {

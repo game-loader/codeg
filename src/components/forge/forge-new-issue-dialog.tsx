@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Plus } from "lucide-react"
@@ -17,7 +18,7 @@ import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
 import { useImeGuard } from "@/hooks/use-ime-guard"
-import { forgeCreateIssue } from "@/lib/api"
+
 import {
   type AppErrorTranslator,
   toLocalizedErrorMessage,
@@ -68,6 +69,8 @@ export function ForgeNewIssueDialog({
    *  labels that actually stuck, none of which exist until it is written. */
   onCreated: (row: ForgeIssueRow) => void
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Forge")
   // Root-scoped: backend errors carry FULL dotted keys the namespaced `t`
   // cannot resolve.
@@ -97,7 +100,7 @@ export function ForgeNewIssueDialog({
     setCreating(true)
     setFailure(null)
     try {
-      const row = await forgeCreateIssue(folderId, {
+      const row = await backendApi.forgeCreateIssue(folderId, {
         title: trimmedTitle,
         body: body.trim() === "" ? null : body.trim(),
         labels,
@@ -111,7 +114,16 @@ export function ForgeNewIssueDialog({
     } finally {
       setCreating(false)
     }
-  }, [body, canCreate, folderId, labels, onCreated, reset, trimmedTitle])
+  }, [
+    body,
+    canCreate,
+    folderId,
+    labels,
+    onCreated,
+    reset,
+    trimmedTitle,
+    backendApi,
+  ])
 
   return (
     <Dialog

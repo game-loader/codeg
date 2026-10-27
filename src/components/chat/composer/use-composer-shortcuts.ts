@@ -1,5 +1,7 @@
 "use client"
 
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import {
   useCallback,
   useEffect,
@@ -11,9 +13,8 @@ import {
 import { useLocale, useTranslations } from "next-intl"
 import { toast } from "sonner"
 
-import { openSettingsWindow, quickMessagesList } from "@/lib/api"
 import type { SettingsSection } from "@/lib/api"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import { getExpertIcon, pickLocalized } from "@/lib/expert-presentation"
 import { getScienceIcon } from "@/lib/science-presentation"
 import { OFFICE_ACTIONS, type OfficeAction } from "@/lib/office-actions"
@@ -90,6 +91,10 @@ export function useComposerShortcuts({
   onAfterInsert,
   logLabel = "Composer",
 }: ComposerShortcutsOptions): ComposerShortcuts {
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendApi = useBackendApi()
+
   const locale = useLocale()
   // Office labels/prompts and the locked-skill toast live with the welcome
   // page's quick actions — the "+" menu mirrors that surface.
@@ -115,13 +120,14 @@ export function useComposerShortcuts({
 
   const refreshQuickMessages = useCallback(() => {
     setQuickMessagesLoading(true)
-    quickMessagesList()
+    backendApi
+      .quickMessagesList()
       .then((list) => setQuickMessages(list))
       .catch((error) => {
         console.error(`[${logLabel}] load quick messages failed:`, error)
       })
       .finally(() => setQuickMessagesLoading(false))
-  }, [logLabel])
+  }, [logLabel, backendApi])
 
   const insertQuickMessage = useCallback(
     (message: QuickMessage) => {
@@ -191,15 +197,17 @@ export function useComposerShortcuts({
           action: {
             label: tQa("notEnabled.action"),
             onClick: () => {
-              void openSettingsWindow(section).catch((err) =>
-                console.error(`[${logLabel}] failed to open settings:`, err)
-              )
+              void backendApi
+                .openSettingsWindow(section)
+                .catch((err) =>
+                  console.error(`[${logLabel}] failed to open settings:`, err)
+                )
             },
           },
         }
       )
     },
-    [agentType, logLabel, tQa]
+    [agentType, logLabel, tQa, backendApi, getAgentLabel]
   )
 
   // Insert a skill shortcut: seed the template only into an *empty* composer

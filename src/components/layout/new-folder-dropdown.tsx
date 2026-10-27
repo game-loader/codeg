@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useState } from "react"
 import { FolderGit2, FolderOpenDot, FolderPlus, Rocket } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -10,11 +11,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
-import { openProjectBootWindow } from "@/lib/api"
+
 import { CloneDialog } from "@/components/layout/clone-dialog"
 import { WorkspaceFolderDialog } from "@/components/layout/workspace-folder-dialog"
 
 export function NewFolderDropdown() {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.folderNameDropdown")
   const [cloneOpen, setCloneOpen] = useState(false)
   const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
@@ -41,7 +44,7 @@ export function NewFolderDropdown() {
             <FolderGit2 className="h-3.5 w-3.5 shrink-0" />
             {t("cloneRepository")}
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => openProjectBootWindow()}>
+          <DropdownMenuItem onSelect={() => backendApi.openProjectBootWindow()}>
             <Rocket className="h-3.5 w-3.5 shrink-0" />
             {t("projectBoot")}
           </DropdownMenuItem>

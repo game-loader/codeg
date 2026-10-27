@@ -1,5 +1,6 @@
 "use client"
 
+import { useAgentDisplay } from "@/hooks/use-agent-display"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { useAcpActions } from "@/contexts/acp-connections-context"
@@ -10,7 +11,6 @@ import { notify } from "@/lib/notify"
 import { isConnectionBusy } from "@/lib/connection-teardown"
 import { TurnBusyError } from "@/lib/turn-busy"
 import { type AgentType, type PromptDraft } from "@/lib/types"
-import { getAgentLabel } from "@/lib/custom-agents"
 
 interface UseConnectionLifecycleOptions {
   contextKey: string
@@ -136,6 +136,8 @@ export function useConnectionLifecycle({
   preparing = false,
   isTransientUnmount,
 }: UseConnectionLifecycleOptions): UseConnectionLifecycleReturn {
+  const { getAgentLabel } = useAgentDisplay()
+
   const t = useTranslations("Folder.chat.connectionLifecycle")
   const { setActiveKey, touchActivity } = useAcpActions()
   const { addTask, updateTask, removeTask } = useTaskContext()
@@ -332,6 +334,7 @@ export function useConnectionLifecycle({
     agentType,
     connAgentType,
     t,
+    getAgentLabel,
   ])
 
   const clearSelectorTask = useCallback(() => {
@@ -372,6 +375,7 @@ export function useConnectionLifecycle({
     updateTask,
     clearSelectorTask,
     t,
+    getAgentLabel,
   ])
 
   // Keep a ref to disconnect so the unmount cleanup always calls the

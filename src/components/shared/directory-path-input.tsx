@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useCallback, useState } from "react"
 import { useTranslations } from "next-intl"
 import { FolderSearch, MonitorDot } from "lucide-react"
@@ -17,8 +18,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { DirectoryBrowserDialog } from "@/components/shared/directory-browser-dialog"
-import { isDesktop, openFileDialog } from "@/lib/platform"
-import { getActiveRemoteConnectionId } from "@/lib/transport"
+import { isDesktop } from "@/lib/platform"
 
 interface DirectoryPathInputProps {
   value: string
@@ -55,10 +55,13 @@ export function DirectoryPathInput({
   browserTitle,
   initialPath,
 }: DirectoryPathInputProps) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("DirectoryBrowser")
   const [browserOpen, setBrowserOpen] = useState(false)
 
-  const nativePicker = isDesktop() && getActiveRemoteConnectionId() === null
+  const nativePicker =
+    isDesktop() && backendPlatform.getActiveRemoteConnectionId() === null
   const label = browseLabel ?? t("title")
 
   const handleBrowse = useCallback(async () => {
@@ -66,11 +69,14 @@ export function DirectoryPathInput({
       setBrowserOpen(true)
       return
     }
-    const selected = await openFileDialog({ directory: true, multiple: false })
+    const selected = await backendPlatform.openFileDialog({
+      directory: true,
+      multiple: false,
+    })
     if (!selected) return
     const path = Array.isArray(selected) ? selected[0] : selected
     if (path) onValueChange(path)
-  }, [nativePicker, onValueChange])
+  }, [nativePicker, onValueChange, backendPlatform])
 
   return (
     <>

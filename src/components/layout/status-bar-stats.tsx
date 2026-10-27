@@ -1,8 +1,10 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { ChartNoAxesColumn, MonitorCloud } from "lucide-react"
 import { useTranslations } from "next-intl"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import { useRemoteConnection } from "@/contexts/remote-connection-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { cn } from "@/lib/utils"
@@ -21,6 +23,9 @@ import { cn } from "@/lib/utils"
  * also avoids two different hover delays side by side.
  */
 export function StatusBarStats() {
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
   const t = useTranslations("Folder.statusBar.stats")
   const stats = useAppWorkspaceStore((s) => s.stats)
   // Non-null only in a remote-desktop window (a Tauri client bound to a remote

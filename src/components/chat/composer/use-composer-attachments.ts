@@ -1,6 +1,10 @@
 "use client"
 
 import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
+import {
   useCallback,
   useEffect,
   useMemo,
@@ -16,9 +20,6 @@ import { toast } from "sonner"
 
 import {
   isEmptyAttachmentError,
-  readFileBase64,
-  uploadAttachment,
-  uploadLocalPathToRemote,
   UPLOAD_I18N_KEY_NOT_A_FILE,
   UPLOAD_I18N_KEY_QUOTA_EXCEEDED,
   UPLOAD_I18N_KEY_TOO_LARGE,
@@ -42,14 +43,14 @@ import {
   readFileTreeDragPayload,
 } from "@/lib/file-tree-dnd"
 import type { KnownInvocations } from "@/lib/invocation-token"
-import { isDesktop, openFileDialog } from "@/lib/platform"
+import { isDesktop } from "@/lib/platform"
 import {
   buildFileUri,
   buildFileUriWithRange,
   formatFileRangeLabel,
 } from "@/lib/reference-link"
 import { disposeTauriListener } from "@/lib/tauri-listener"
-import { getActiveRemoteConnectionId } from "@/lib/transport"
+
 import { randomUUID } from "@/lib/utils"
 import { withUploadedImageReferences } from "@/lib/uploaded-image-reference"
 import type { PromptCapabilitiesInfo, PromptInputBlock } from "@/lib/types"
@@ -224,6 +225,9 @@ export function useComposerAttachments({
   defaultPath = null,
   logLabel = "Composer",
 }: ComposerAttachmentsOptions): ComposerAttachments {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   // Same namespace the conversation composer has always used for these toasts,
   // so no message moves and every surface reports uploads identically.
   const tAttach = useTranslations("Folder.chat.messageInput")
@@ -236,8 +240,8 @@ export function useComposerAttachments({
   // would be ENOENT on the remote agent. Only the truly local desktop
   // shows the native Paperclip picker.
   const showNativePaperclip = useMemo(
-    () => desktopMode && getActiveRemoteConnectionId() === null,
-    [desktopMode]
+    () => desktopMode && backendPlatform.getActiveRemoteConnectionId() === null,
+    [desktopMode, backendPlatform]
   )
 
   // Route pasted / dropped / picked images to the thumbnail strip whenever the
@@ -501,10 +505,14 @@ export function useComposerAttachments({
             const file = accepted[idx]
             const tracker = trackers[idx]
             try {
-              const r = await uploadAttachment(file, attachmentTabId ?? null, {
-                id: tracker.id,
-                onProgress: tracker.onProgress,
-              })
+              const r = await backendApi.uploadAttachment(
+                file,
+                attachmentTabId ?? null,
+                {
+                  id: tracker.id,
+                  onProgress: tracker.onProgress,
+                }
+              )
               uploaded.push(r.path)
             } catch (error) {
               if (isEmptyAttachmentError(error)) {
@@ -564,7 +572,14 @@ export function useComposerAttachments({
         appendResourceAttachments(uploaded)
       }
     },
-    [appendResourceAttachments, attachmentTabId, beginUpload, logLabel, tAttach]
+    [
+      appendResourceAttachments,
+      attachmentTabId,
+      beginUpload,
+      logLabel,
+      tAttach,
+      backendApi,
+    ]
   )
 
   const appendEmbeddedResources = useCallback(
@@ -771,25 +786,29 @@ export function useComposerAttachments({
             // One thumbnail redraw per integer percent (see `beginUpload`).
             let lastPercent = -1
             try {
-              const r = await uploadAttachment(file, attachmentTabId ?? null, {
-                id: attachment.id,
-                onProgress: (loaded, total) => {
-                  if (total <= 0) return
-                  const percent = Math.min(
-                    99,
-                    Math.floor((loaded / total) * 100)
-                  )
-                  if (percent === lastPercent) return
-                  lastPercent = percent
-                  setAttachments((prev) =>
-                    prev.map((a) =>
-                      a.id === attachment.id
-                        ? { ...a, uploadProgress: loaded / total }
-                        : a
+              const r = await backendApi.uploadAttachment(
+                file,
+                attachmentTabId ?? null,
+                {
+                  id: attachment.id,
+                  onProgress: (loaded, total) => {
+                    if (total <= 0) return
+                    const percent = Math.min(
+                      99,
+                      Math.floor((loaded / total) * 100)
                     )
-                  )
-                },
-              })
+                    if (percent === lastPercent) return
+                    lastPercent = percent
+                    setAttachments((prev) =>
+                      prev.map((a) =>
+                        a.id === attachment.id
+                          ? { ...a, uploadProgress: loaded / total }
+                          : a
+                      )
+                    )
+                  },
+                }
+              )
               const uri = buildFileUri(r.path)
               setAttachments((prev) =>
                 prev.map((a) =>
@@ -850,7 +869,7 @@ export function useComposerAttachments({
         )
       }
     },
-    [attachmentTabId, logLabel, showNativePaperclip, tAttach]
+    [attachmentTabId, logLabel, showNativePaperclip, tAttach, backendApi]
   )
 
   const appendImagePathAttachments = useCallback(
@@ -858,7 +877,10 @@ export function useComposerAttachments({
       if (paths.length === 0 || !canAttachImages) return
       const settled = await Promise.allSettled(
         paths.map(async (path, index) => {
-          const data = await readFileBase64(path, DRAG_DROP_IMAGE_MAX_BYTES)
+          const data = await backendApi.readFileBase64(
+            path,
+            DRAG_DROP_IMAGE_MAX_BYTES
+          )
           return {
             id: `image:${Date.now()}:${index}:${randomUUID()}`,
             type: "image" as const,
@@ -884,7 +906,7 @@ export function useComposerAttachments({
       if (parsed.length === 0) return
       setAttachments((prev) => [...prev, ...parsed])
     },
-    [canAttachImages, logLabel]
+    [canAttachImages, logLabel, backendApi]
   )
 
   const appendPathsFromDrop = useCallback(
@@ -956,7 +978,7 @@ export function useComposerAttachments({
             const name = path.split(/[/\\]/).pop() || path
             const tracker = trackers[idx]
             try {
-              const r = await uploadLocalPathToRemote(
+              const r = await backendApi.uploadLocalPathToRemote(
                 path,
                 attachmentTabId ?? null,
                 { id: tracker.id, onProgress: tracker.onProgress }
@@ -1068,6 +1090,7 @@ export function useComposerAttachments({
       canAttachImages,
       logLabel,
       tAttach,
+      backendApi,
     ]
   )
 
@@ -1174,7 +1197,7 @@ export function useComposerAttachments({
         matchedPaths.push(path)
       }
       if (matchedPaths.length > 0) {
-        if (getActiveRemoteConnectionId() !== null) {
+        if (backendPlatform.getActiveRemoteConnectionId() !== null) {
           await uploadPathsToRemote(matchedPaths)
         } else {
           await appendPathsFromDrop(matchedPaths)
@@ -1189,6 +1212,7 @@ export function useComposerAttachments({
       appendPathsFromDrop,
       desktopMode,
       uploadPathsToRemote,
+      backendPlatform,
     ]
   )
 
@@ -1350,7 +1374,7 @@ export function useComposerAttachments({
           )
           return
         }
-        if (getActiveRemoteConnectionId() !== null) {
+        if (backendPlatform.getActiveRemoteConnectionId() !== null) {
           // Remote workspace: local OS paths are unreachable from the
           // remote agent, so stream the bytes through the upload proxy and
           // attach the resulting server-side paths instead.
@@ -1436,14 +1460,14 @@ export function useComposerAttachments({
       cancelled = true
       cleanupListeners()
     }
-  }, [containerRef, logLabel, setDragActiveIfChanged])
+  }, [containerRef, logLabel, setDragActiveIfChanged, backendPlatform])
 
   const handlePickFiles = useCallback(async () => {
     if (disabled) return
     // Only wired up when `showNativePaperclip` is true (i.e. local desktop),
     // so we can hand raw OS paths to the local agent without a round-trip.
     try {
-      const selected = await openFileDialog({
+      const selected = await backendPlatform.openFileDialog({
         multiple: true,
         directory: false,
         defaultPath: defaultPath ?? undefined,
@@ -1454,7 +1478,13 @@ export function useComposerAttachments({
     } catch (error) {
       console.error(`[${logLabel}] pick files failed:`, error)
     }
-  }, [appendResourceAttachments, defaultPath, disabled, logLabel])
+  }, [
+    appendResourceAttachments,
+    defaultPath,
+    disabled,
+    logLabel,
+    backendPlatform,
+  ])
 
   const handleUploadLocalFiles = useCallback(async () => {
     if (disabled) return

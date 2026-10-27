@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useState } from "react"
 import { useTranslations } from "next-intl"
 import { ChevronDown, MessageSquare } from "lucide-react"
@@ -22,7 +23,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
 import { cn } from "@/lib/utils"
-import { workTaskCreateFromForge } from "@/lib/api"
+
 import {
   toLocalizedErrorMessage,
   type AppErrorTranslator,
@@ -108,6 +109,8 @@ export function ForgeStartDialog({
   onClose: () => void
   onCreated: (task: WorkTask) => void
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Forge")
   // Root-scoped: backend errors carry FULL dotted keys the namespaced `t`
   // above cannot resolve. See `backup-settings.tsx` for the same pairing.
@@ -139,7 +142,7 @@ export function ForgeStartDialog({
     setSubmitting(true)
     setError(null)
     try {
-      const result = await workTaskCreateFromForge({
+      const result = await backendApi.workTaskCreateFromForge({
         folder_id: folderId,
         source: {
           kind: row.is_pr ? "pr" : "issue",

@@ -4,7 +4,7 @@
 
 ## 触发与下载
 
-- 推送到 `feat/academic-zotero` 或 `main` 会触发构建；不通过 Pull Request 发布。
+- 推送到 `feat/academic-zotero`、`feat/multi-host-worktrees` 或 `main` 会触发构建；不通过 Pull Request 发布。
 - 工作流也声明了 `workflow_dispatch`。GitHub 的手动运行入口要求工作流存在于默认分支；届时可以在 Actions 中选择分支并点击 **Run workflow**。
 - 所有构建成功后，在当前仓库创建独立的预览版 Release，标签为 `preview-<run_id>-<run_attempt>`，记录对应提交和构建链接。它不会移动旧标签或替换正式版的 `latest`。
 - 从 [Releases](https://github.com/game-loader/codeg/releases) 下载。构建失败时不会公开不完整的 Release，可以在 Actions 日志中查看失败步骤。
@@ -37,3 +37,7 @@ Linux Server 保留 x64 和 ARM64 构建，分别使用 Ubuntu 22.04 和 Ubuntu 
 单独的网页压缩包不能代替 Codeg Server。远端工作区的界面由桌面客户端内置，因此使用学术功能需要同步更新客户端和服务器。Zotero 插件的安装及配对参见 [学术工作区说明](academic-zotero.md)。
 
 预览包用于手动安装和替换更新，不生成签名更新清单。应用中原有更新入口仍面向上游正式版本；不要用它更新这套预览版，否则可能覆盖学术功能。后续预览版从本 fork 的 Releases 下载，工作流不修改或绕过应用的更新签名校验。
+
+## 单窗口项目与历史
+
+新版桌面主工作区使用统一左侧栏，同源仓库跨机器和工作树的历史直接汇总到一个项目；新建会话和文件/Git/终端操作保留明确执行位置。项目身份识别需要同步升级服务器。用法与旧服务器兼容说明参见[单窗口项目、机器与会话历史](logical-projects.md)。

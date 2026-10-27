@@ -1,9 +1,10 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import { workTaskCancel } from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -52,6 +53,8 @@ export function TaskCancelDialog({
   onOpenChange,
   task,
 }: TaskCancelDialogProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Tasks")
   const [reason, setReason] = useState("")
   const [deleteWorktree, setDeleteWorktree] = useState(false)
@@ -75,7 +78,7 @@ export function TaskCancelDialog({
     if (!task) return
     setSubmitting(true)
     try {
-      await workTaskCancel(
+      await backendApi.workTaskCancel(
         task.id,
         reason.trim() || null,
         hasWorktree && deleteWorktree

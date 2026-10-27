@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Loader2 } from "lucide-react"
@@ -24,6 +25,8 @@ interface PetImporterProps {
 }
 
 export function PetImporter({ open, onClose, onDone }: PetImporterProps) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Pet.import")
   const [items, setItems] = useState<ImportablePet[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -38,7 +41,7 @@ export function PetImporter({ open, onClose, onDone }: PetImporterProps) {
     setError(null)
     setResultMessage(null)
     try {
-      const list = await listImportableCodexPets()
+      const list = await listImportableCodexPets(backendPlatform)
       setItems(list)
       setSelected(
         new Set(list.filter((p) => !p.alreadyImported).map((p) => p.id))
@@ -48,7 +51,7 @@ export function PetImporter({ open, onClose, onDone }: PetImporterProps) {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [backendPlatform])
 
   useEffect(() => {
     if (open) void refresh()
@@ -73,10 +76,13 @@ export function PetImporter({ open, onClose, onDone }: PetImporterProps) {
     setSubmitting(true)
     setError(null)
     try {
-      const result = await importCodexPets({
-        ids: Array.from(selected),
-        overwriteWithSuffix,
-      })
+      const result = await importCodexPets(
+        {
+          ids: Array.from(selected),
+          overwriteWithSuffix,
+        },
+        backendPlatform
+      )
       setResultMessage(t("imported"))
       await onDone()
       if (result.skipped.length > 0) {

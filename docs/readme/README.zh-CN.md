@@ -29,6 +29,10 @@
   </picture>
 </p>
 
+## Fork 工作区预览
+
+此 fork 合并上游 v0.35.1 与单窗口多机器工作区和统一侧栏，同源项目下直接汇总各机器与工作树的会话历史，执行仍绑定原机器和路径。参见[工作区使用说明](../logical-projects.md)、[合并记录](../upstream-0.35.1-multi-host-merge.md)与[预览版安装说明](../preview-release.md)。
+
 <table>
   <tr>
     <td width="50%" valign="top">🧩 <strong>一个界面，容纳所有智能体</strong><br/>内置十九个智能体，任何兼容 ACP 的智能体都能加入——全部呈现为同一套结构化对话，而不是一个终端。</td>

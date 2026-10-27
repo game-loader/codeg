@@ -8,7 +8,23 @@
  * its authority (`file://server/share/…`) so it can never collide with the
  * single-slash POSIX form of the same tail.
  */
-export function buildMonacoModelPath(path: string | null, id: string): string {
+export function buildMonacoModelPath(
+  path: string | null,
+  id: string,
+  backendKey?: string
+): string {
+  if (backendKey) {
+    const host = encodeURIComponent(backendKey.replace(":", "-"))
+    if (!path) return `codeg://${host}/model/${encodeURIComponent(id)}`
+    const normalized = path.replace(/\\/g, "/")
+    const kind = normalized.startsWith("//") ? "unc" : "file"
+    const encoded = normalized
+      .replace(/^\/+/, "")
+      .split("/")
+      .map(encodeURIComponent)
+      .join("/")
+    return `codeg://${host}/${kind}/${encoded}`
+  }
   if (!path) return `inmemory://model/${encodeURIComponent(id)}`
   const normalized = path.replace(/\\/g, "/")
   if (normalized.startsWith("//")) {
@@ -37,11 +53,12 @@ export function buildMonacoModelPath(path: string | null, id: string): string {
  * entry.
  */
 export function collectLiveModelPaths(
-  tabs: ReadonlyArray<{ id: string; path: string | null }>
+  tabs: ReadonlyArray<{ id: string; path: string | null }>,
+  backendKey?: string
 ): string[] {
   const uris = new Set<string>()
   for (const tab of tabs) {
-    uris.add(buildMonacoModelPath(tab.path, tab.id))
+    uris.add(buildMonacoModelPath(tab.path, tab.id, backendKey))
   }
   return [...uris]
 }

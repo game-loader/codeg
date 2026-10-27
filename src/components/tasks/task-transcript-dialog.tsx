@@ -24,6 +24,9 @@
  * transcript's own `delegate_to_agent` cards then open a third layer.
  */
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Loader2 } from "lucide-react"
@@ -40,8 +43,7 @@ import {
   SIDE_PANEL_CONTENT_CLASS,
 } from "@/components/ui/drawer"
 import { useAcpActions } from "@/contexts/acp-connections-context"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { getFolderConversation, workTaskEvents } from "@/lib/api"
+
 import { FOLLOW_UP_SCENARIOS } from "@/lib/task-follow-up"
 import {
   extractRounds,
@@ -113,6 +115,11 @@ export function TaskTranscriptDialog({
  * covering a failed read.
  */
 function TaskAgentResolver({ task }: { task: WorkTask }) {
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendApi = useBackendApi()
+
   const folders = useAppWorkspaceStore((s) => s.folders)
   const override = task.config?.agent_type ?? null
   const folderDefault =
@@ -122,7 +129,8 @@ function TaskAgentResolver({ task }: { task: WorkTask }) {
   useEffect(() => {
     if (override != null) return
     let cancelled = false
-    getFolderConversation(conversationId)
+    backendApi
+      .getFolderConversation(conversationId)
       .then((detail) => {
         if (cancelled) return
         setResolved(detail.summary.agent_type ?? folderDefault ?? "claude_code")
@@ -134,7 +142,7 @@ function TaskAgentResolver({ task }: { task: WorkTask }) {
     return () => {
       cancelled = true
     }
-  }, [override, conversationId, folderDefault])
+  }, [override, conversationId, folderDefault, backendApi])
 
   if (resolved == null) {
     return (
@@ -156,6 +164,8 @@ function TaskTranscriptBody({
   task: WorkTask
   agentType: AgentType
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Tasks")
   const { attachDelegationChild, detachDelegationChild } = useAcpActions()
 
@@ -173,7 +183,8 @@ function TaskTranscriptBody({
   const compacting = task.compacting === true
   useEffect(() => {
     let cancelled = false
-    workTaskEvents(task.id, 500)
+    backendApi
+      .workTaskEvents(task.id, 500)
       .then((events) => {
         if (!cancelled) setRounds(extractRounds(events))
       })
@@ -181,7 +192,7 @@ function TaskTranscriptBody({
     return () => {
       cancelled = true
     }
-  }, [task.id, runSeq, compacting])
+  }, [task.id, runSeq, compacting, backendApi])
   const userTurnHeader = useCallback(
     (group: ResolvedMessageGroup) => {
       const round = matchRound(rounds, firstTextOfParts(group.parts))

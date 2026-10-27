@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import {
   useCallback,
   useEffect,
@@ -21,13 +22,6 @@ import {
 import { Reorder, useDragControls } from "motion/react"
 import { useTranslations } from "next-intl"
 import { detectPlatform } from "@/hooks/use-platform"
-import {
-  createFolderCommand,
-  deleteFolderCommand,
-  listFolderCommands,
-  reorderFolderCommands,
-  updateFolderCommand,
-} from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import {
   createGlobalCommand,
@@ -205,6 +199,8 @@ export function CommandManageDialog({
   folderId,
   onChanged,
 }: CommandManageDialogProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.commandDropdown.manageDialog")
   const tCommon = useTranslations("Folder.common")
   const [commands, setCommands] = useState<FolderCommand[]>([])
@@ -238,7 +234,7 @@ export function CommandManageDialog({
     setLoadError(null)
     try {
       const list = [
-        ...withoutGlobalIds(await listFolderCommands(folderId)),
+        ...withoutGlobalIds(await backendApi.listFolderCommands(folderId)),
         ...listGlobalCommands(),
       ]
       if (seq !== loadSeqRef.current) return
@@ -259,7 +255,7 @@ export function CommandManageDialog({
     } finally {
       if (seq === loadSeqRef.current) setLoading(false)
     }
-  }, [folderId, t])
+  }, [folderId, t, backendApi])
 
   // Reloads on open and whenever folderId changes while open (refresh is keyed
   // on folderId), resetting transient UI so a folder switch never shows stale
@@ -380,7 +376,7 @@ export function CommandManageDialog({
         reorderGlobalCommands(ids.filter(isGlobalCommandId))
         const folderIds = ids.filter((id) => !isGlobalCommandId(id))
         if (folderIds.length > 0) {
-          await reorderFolderCommands(folderId, folderIds)
+          await backendApi.reorderFolderCommands(folderId, folderIds)
         }
         onChanged()
       } catch (err) {
@@ -390,7 +386,7 @@ export function CommandManageDialog({
         setReordering(false)
       }
     },
-    [folderId, onChanged, refresh, t]
+    [folderId, onChanged, refresh, t, backendApi]
   )
 
   const handleReorder = useCallback(
@@ -427,7 +423,7 @@ export function CommandManageDialog({
           saved = updateGlobalCommand(previousId, name, command, runLocal)
         } else {
           const updated = requireHostCommand(
-            await updateFolderCommand(
+            await backendApi.updateFolderCommand(
               previousId,
               name,
               command,
@@ -452,12 +448,17 @@ export function CommandManageDialog({
           saved = createGlobalCommand(name, command, runLocal)
         } else {
           const created = requireHostCommand(
-            await createFolderCommand(folderId, name, command, runLocal)
+            await backendApi.createFolderCommand(
+              folderId,
+              name,
+              command,
+              runLocal
+            )
           )
           if (runLocal && !isLocalCommand(created)) {
             // Take it back out, so the save adds nothing — or, when that
             // fails too, show the copy the host kept.
-            await deleteFolderCommand(created.id).catch(() => {
+            await backendApi.deleteFolderCommand(created.id).catch(() => {
               setCommands((prev) => groupByScope([...prev, created]))
               onChanged()
             })
@@ -467,7 +468,7 @@ export function CommandManageDialog({
         }
         if (previousId !== null) {
           if (isGlobalCommandId(previousId)) deleteGlobalCommand(previousId)
-          else await deleteFolderCommand(previousId)
+          else await backendApi.deleteFolderCommand(previousId)
         }
       }
       setCommands((prev) => {
@@ -499,7 +500,7 @@ export function CommandManageDialog({
     } finally {
       setSaving(false)
     }
-  }, [draft, folderId, onChanged, refresh, t])
+  }, [draft, folderId, onChanged, refresh, t, backendApi])
 
   const handleDelete = useCallback(async () => {
     if (deleteTargetId === null) return
@@ -508,7 +509,7 @@ export function CommandManageDialog({
     setFormError(null)
     try {
       if (isGlobalCommandId(target)) deleteGlobalCommand(target)
-      else await deleteFolderCommand(target)
+      else await backendApi.deleteFolderCommand(target)
       setCommands((prev) => {
         const next = prev.filter((item) => item.id !== target)
         setSelectedId((current) =>
@@ -524,7 +525,7 @@ export function CommandManageDialog({
     } finally {
       setDeleting(false)
     }
-  }, [deleteTargetId, onChanged, t])
+  }, [deleteTargetId, onChanged, t, backendApi])
 
   const saveDisabled =
     saving || deleting || loading || !draft.name.trim() || !draft.command.trim()

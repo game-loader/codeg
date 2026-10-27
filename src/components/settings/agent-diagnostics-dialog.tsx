@@ -1,5 +1,7 @@
 "use client"
 
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -25,8 +27,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { cn, copyTextToClipboard } from "@/lib/utils"
-import { getAgentLabel } from "@/lib/custom-agents"
-import { acpEnvDiagnostics } from "@/lib/api"
+
 import type { AgentDiagnosticsReport, AgentType, DiagLevel } from "@/lib/types"
 
 export interface AgentDiagnosticsDialogProps {
@@ -110,6 +111,10 @@ export function AgentDiagnosticsDialog({
   onOpenChange,
   agentType,
 }: AgentDiagnosticsDialogProps) {
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("DiagnosticsSettings")
   const [report, setReport] = useState<AgentDiagnosticsReport | null>(null)
   const [loading, setLoading] = useState(false)
@@ -119,13 +124,13 @@ export function AgentDiagnosticsDialog({
     setLoading(true)
     setError(null)
     try {
-      setReport(await acpEnvDiagnostics(agentType))
+      setReport(await backendApi.acpEnvDiagnostics(agentType))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
     }
-  }, [agentType])
+  }, [agentType, backendApi])
 
   // Run once each time the dialog opens; clear when it closes.
   useEffect(() => {

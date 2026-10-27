@@ -1,10 +1,15 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useEffect } from "react"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabActions } from "@/contexts/tab-context"
+
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
-import { subscribe } from "@/lib/platform"
+
 import { FOLDER_OPEN_IN_WORKSPACE_EVENT } from "@/lib/api"
 import type { FolderDetail } from "@/lib/types"
 
@@ -21,6 +26,16 @@ import type { FolderDetail } from "@/lib/types"
  * extra round-trip is required to apply it.
  */
 export function WorkspaceOpenFolderListener() {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendPlatform = useBackendPlatform()
+
   const { openNewConversationTab } = useTabActions()
   const { openConversations } = useWorkbenchRoute()
 
@@ -29,7 +44,7 @@ export function WorkspaceOpenFolderListener() {
     let unlisten: (() => void) | undefined
 
     void (async () => {
-      const dispose = await subscribe<FolderDetail>(
+      const dispose = await backendPlatform.subscribe<FolderDetail>(
         FOLDER_OPEN_IN_WORKSPACE_EVENT,
         (detail) => {
           const store = useAppWorkspaceStore.getState()
@@ -52,7 +67,12 @@ export function WorkspaceOpenFolderListener() {
       disposed = true
       unlisten?.()
     }
-  }, [openNewConversationTab, openConversations])
+  }, [
+    openNewConversationTab,
+    openConversations,
+    backendPlatform,
+    useAppWorkspaceStore,
+  ])
 
   return null
 }

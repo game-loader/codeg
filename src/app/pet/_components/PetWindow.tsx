@@ -1,5 +1,9 @@
 "use client"
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Loader2 } from "lucide-react"
@@ -10,7 +14,7 @@ import {
   revokePetSpriteObjectUrl,
 } from "@/lib/pet/sprite-url"
 import { disposeTauriListener } from "@/lib/tauri-listener"
-import { getTransport, isDesktop } from "@/lib/transport"
+import { isDesktop } from "@/lib/transport"
 import {
   PET_FRAME_DURATIONS_MS,
   PET_ONESHOT_LOOPS,
@@ -55,6 +59,9 @@ function oneShotDuration(state: PetOneShotKind): number {
 }
 
 export function PetWindow({ petId }: PetWindowProps) {
+  const backendPlatform = useBackendPlatform()
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Pet")
   const [pet, setPet] = useState<PetDetail | null>(null)
   const [spritesheetUrl, setSpritesheetUrl] = useState<string | null>(null)
@@ -214,9 +221,9 @@ export function PetWindow({ petId }: PetWindowProps) {
     async function load() {
       try {
         const [detail, sprite, config] = await Promise.all([
-          getPet(activePetId),
-          readPetSpritesheet(activePetId),
-          getPetSettings(),
+          getPet(activePetId, backendPlatform),
+          readPetSpritesheet(activePetId, backendPlatform),
+          getPetSettings(backendPlatform),
         ])
         objectUrl = createPetSpriteObjectUrl(sprite)
         if (cancelled) {
@@ -236,7 +243,7 @@ export function PetWindow({ petId }: PetWindowProps) {
       cancelled = true
       revokePetSpriteObjectUrl(objectUrl)
     }
-  }, [activePetId])
+  }, [activePetId, backendPlatform])
 
   // Settings UI emits `pet://active-changed` when the user picks a new
   // active pet. Swap the rendered id in place; the loader effect above
@@ -248,14 +255,13 @@ export function PetWindow({ petId }: PetWindowProps) {
     let cancelled = false
     void (async () => {
       try {
-        const off = await getTransport().subscribe<PetWindowConfig>(
-          PET_ACTIVE_CHANGED_EVENT,
-          (payload) => {
+        const off = await backendPlatform
+          .getTransport()
+          .subscribe<PetWindowConfig>(PET_ACTIVE_CHANGED_EVENT, (payload) => {
             if (cancelled) return
             const next = payload?.activePetId
             if (next) setActivePetId(next)
-          }
-        )
+          })
         if (cancelled) off()
         else unlisten = off
       } catch (err) {
@@ -266,7 +272,7 @@ export function PetWindow({ petId }: PetWindowProps) {
       cancelled = true
       if (unlisten) unlisten()
     }
-  }, [])
+  }, [backendPlatform])
 
   // Keep the document title clean. macOS hides it via title_bar_style anyway,
   // but server-mode preview shows it.
@@ -293,8 +299,7 @@ export function PetWindow({ petId }: PetWindowProps) {
     if (!isDesktop()) return
     void (async () => {
       try {
-        const { openSettingsWindow } = await import("@/lib/api")
-        await openSettingsWindow("appearance")
+        await backendApi.openSettingsWindow("appearance")
       } catch (err) {
         console.warn("[Pet] failed to open manager:", err)
       }

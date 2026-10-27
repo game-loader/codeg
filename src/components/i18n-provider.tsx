@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import {
   createContext,
   useCallback,
@@ -23,7 +24,7 @@ import {
   toIntlLocale,
   type IntlLocale,
 } from "@/lib/i18n"
-import { getSystemLanguageSettings } from "@/lib/api"
+
 import { disposeTauriListener } from "@/lib/tauri-listener"
 import { AppBootLoading } from "@/components/layout/app-boot-loading"
 import type { AppLocale, SystemLanguageSettings } from "@/lib/types"
@@ -98,6 +99,8 @@ export function AppI18nProvider({
   initialLocale = "en",
   initialMessages,
 }: AppI18nProviderProps) {
+  const backendApi = useBackendApi()
+
   const initialAppLocale = fromIntlLocale(initialLocale)
   const [languageSettings, setLanguageSettingsState] =
     useState<SystemLanguageSettings>({
@@ -183,7 +186,8 @@ export function AppI18nProvider({
   useEffect(() => {
     let cancelled = false
 
-    getSystemLanguageSettings()
+    backendApi
+      .getSystemLanguageSettings()
       .then((settings) => {
         if (cancelled) return
         setLanguageSettings(settings)
@@ -200,7 +204,7 @@ export function AppI18nProvider({
     return () => {
       cancelled = true
     }
-  }, [setLanguageSettings])
+  }, [setLanguageSettings, backendApi])
 
   const appLocale = useMemo(
     () => resolveAppLocale(languageSettings, systemLocaleCandidates),

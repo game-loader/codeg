@@ -1,21 +1,23 @@
 "use client"
 
+import { defaultBackendStoreStorage as legacyStorage } from "@/stores/backend-store-storage"
+import { useCanvasBoardsStore as legacyCanvasBoards } from "@/stores/canvas-boards-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useCallback, useEffect } from "react"
 import { toast } from "sonner"
-import {
-  canvasCreateBoard,
-  canvasDeleteBoard,
-  canvasUpdateBoard,
-} from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
-import { forgetCanvasBoardViewState } from "@/lib/canvas-view-storage"
-import { onTransportReconnect, subscribe } from "@/lib/platform"
+import { getCanvasViewStorage } from "@/lib/canvas-view-storage"
+
 import {
   CANVAS_BOARD_CHANGED_EVENT,
   CANVAS_CHANGED_EVENT,
   type CanvasBoardChange,
 } from "@/lib/types"
-import { useCanvasBoardsStore } from "@/stores/canvas-boards-store"
 
 /** What the create / edit dialog hands back. Empty strings mean "none": the
  *  backend trims every field and stores blank as NULL, so an edit that empties
@@ -33,24 +35,38 @@ export interface CanvasBoardFormValues {
  * user typed is not thrown away.
  */
 export function useCanvasBoardActions() {
-  const createBoard = useCallback(async (values: CanvasBoardFormValues) => {
-    const scope = useCanvasBoardsStore.getState().scope()
-    try {
-      const board = await canvasCreateBoard({
-        name: values.name,
-        description: values.description,
-        color: values.color,
-      })
-      const store = useCanvasBoardsStore.getState()
-      // A new canvas is created to be worked on: open it straight away —
-      // unless the answer belongs to a backend this client has since left.
-      if (store.applyCreatedBoard(board, scope)) store.openBoard(board.id)
-      return true
-    } catch (e) {
-      toast.error(toErrorMessage(e))
-      return false
-    }
-  }, [])
+  const backendStores = useBackendStores({
+    storage: legacyStorage,
+    canvasBoards: legacyCanvasBoards,
+  })
+  const { forgetCanvasBoardViewState } = getCanvasViewStorage(
+    backendStores.storage
+  )
+  const useCanvasBoardsStore = backendStores.canvasBoards
+
+  const backendApi = useBackendApi()
+
+  const createBoard = useCallback(
+    async (values: CanvasBoardFormValues) => {
+      const scope = useCanvasBoardsStore.getState().scope()
+      try {
+        const board = await backendApi.canvasCreateBoard({
+          name: values.name,
+          description: values.description,
+          color: values.color,
+        })
+        const store = useCanvasBoardsStore.getState()
+        // A new canvas is created to be worked on: open it straight away —
+        // unless the answer belongs to a backend this client has since left.
+        if (store.applyCreatedBoard(board, scope)) store.openBoard(board.id)
+        return true
+      } catch (e) {
+        toast.error(toErrorMessage(e))
+        return false
+      }
+    },
+    [backendApi, useCanvasBoardsStore]
+  )
 
   const updateBoard = useCallback(
     async (boardId: number, values: CanvasBoardFormValues) => {
@@ -58,7 +74,7 @@ export function useCanvasBoardActions() {
         // The answer is not applied: the edit's own event (or, if the
         // transport dropped it, the reconnect read) is what updates the row —
         // see the boards store for why an answer can't be ordered safely.
-        await canvasUpdateBoard(boardId, {
+        await backendApi.canvasUpdateBoard(boardId, {
           name: values.name,
           description: values.description,
           color: values.color,
@@ -69,28 +85,31 @@ export function useCanvasBoardActions() {
         return false
       }
     },
-    []
+    [backendApi]
   )
 
-  const deleteBoard = useCallback(async (boardId: number) => {
-    // Leave it first: the board view unmounts (ending its fetches and letting
-    // go of its live cards) before the rows it is drawing disappear under it.
-    const store = useCanvasBoardsStore.getState()
-    const scope = store.scope()
-    if (store.activeBoardId === boardId) store.closeBoard()
-    try {
-      await canvasDeleteBoard(boardId)
-      // Only in the scope that asked: after a backend switch the same id may
-      // name some other backend's board.
-      if (useCanvasBoardsStore.getState().removeBoard(boardId, scope)) {
-        forgetCanvasBoardViewState(boardId)
+  const deleteBoard = useCallback(
+    async (boardId: number) => {
+      // Leave it first: the board view unmounts (ending its fetches and letting
+      // go of its live cards) before the rows it is drawing disappear under it.
+      const store = useCanvasBoardsStore.getState()
+      const scope = store.scope()
+      if (store.activeBoardId === boardId) store.closeBoard()
+      try {
+        await backendApi.canvasDeleteBoard(boardId)
+        // Only in the scope that asked: after a backend switch the same id may
+        // name some other backend's board.
+        if (useCanvasBoardsStore.getState().removeBoard(boardId, scope)) {
+          forgetCanvasBoardViewState(boardId)
+        }
+        return true
+      } catch (e) {
+        toast.error(toErrorMessage(e))
+        return false
       }
-      return true
-    } catch (e) {
-      toast.error(toErrorMessage(e))
-      return false
-    }
-  }, [])
+    },
+    [backendApi, useCanvasBoardsStore, forgetCanvasBoardViewState]
+  )
 
   return { createBoard, updateBoard, deleteBoard }
 }
@@ -103,11 +122,19 @@ export function useCanvasBoardActions() {
  * transport reconnect since events are dropped while the socket is down.
  */
 export function useCanvasBoardsData(): void {
+  const backendStores = useBackendStores({
+    storage: legacyStorage,
+    canvasBoards: legacyCanvasBoards,
+  })
+  const useCanvasBoardsStore = backendStores.canvasBoards
+
+  const backendPlatform = useBackendPlatform()
+
   useEffect(() => {
     let disposed = false
     let unlisten: (() => void) | undefined
     void (async () => {
-      const dispose = await subscribe<CanvasBoardChange>(
+      const dispose = await backendPlatform.subscribe<CanvasBoardChange>(
         CANVAS_BOARD_CHANGED_EVENT,
         (change) => useCanvasBoardsStore.getState().handleBoardChanged(change)
       )
@@ -118,7 +145,7 @@ export function useCanvasBoardsData(): void {
       unlisten = dispose
       void useCanvasBoardsStore.getState().refetch()
     })()
-    const offReconnect = onTransportReconnect(() =>
+    const offReconnect = backendPlatform.onTransportReconnect(() =>
       useCanvasBoardsStore.getState().refetch()
     )
     return () => {
@@ -126,7 +153,7 @@ export function useCanvasBoardsData(): void {
       unlisten?.()
       offReconnect?.()
     }
-  }, [])
+  }, [backendPlatform, useCanvasBoardsStore])
 }
 
 /** How long node activity must be quiet before the list re-reads its counts
@@ -141,19 +168,30 @@ const STATS_REFRESH_DELAY_MS = 800
  * from inside a board is exactly when that board's card is stale.
  */
 export function useCanvasBoardStatsRefresh(): void {
+  const backendStores = useBackendStores({
+    storage: legacyStorage,
+    canvasBoards: legacyCanvasBoards,
+  })
+  const useCanvasBoardsStore = backendStores.canvasBoards
+
+  const backendPlatform = useBackendPlatform()
+
   useEffect(() => {
     void useCanvasBoardsStore.getState().refetch()
     let disposed = false
     let unlisten: (() => void) | undefined
     let timer: ReturnType<typeof setTimeout> | null = null
     void (async () => {
-      const dispose = await subscribe(CANVAS_CHANGED_EVENT, () => {
-        if (timer != null) clearTimeout(timer)
-        timer = setTimeout(() => {
-          timer = null
-          void useCanvasBoardsStore.getState().refetch()
-        }, STATS_REFRESH_DELAY_MS)
-      })
+      const dispose = await backendPlatform.subscribe(
+        CANVAS_CHANGED_EVENT,
+        () => {
+          if (timer != null) clearTimeout(timer)
+          timer = setTimeout(() => {
+            timer = null
+            void useCanvasBoardsStore.getState().refetch()
+          }, STATS_REFRESH_DELAY_MS)
+        }
+      )
       if (disposed) {
         dispose()
         return
@@ -165,5 +203,5 @@ export function useCanvasBoardStatsRefresh(): void {
       unlisten?.()
       if (timer != null) clearTimeout(timer)
     }
-  }, [])
+  }, [backendPlatform, useCanvasBoardsStore])
 }

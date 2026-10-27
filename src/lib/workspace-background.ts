@@ -7,7 +7,8 @@
 // mask, blur, fill, panel opacity) lives in localStorage via the appearance
 // provider; only the image itself round-trips through here.
 
-import { getTransport } from "@/lib/transport"
+import type { BackendPlatform } from "@/lib/backend/types"
+import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
 
 // ─── Types ───
 
@@ -213,16 +214,21 @@ export function revokeBackgroundObjectUrl(
 // ─── Transport bindings (dual-mode, mirrors src/lib/pet/api.ts) ───
 
 /** Returns the stored background asset, or `null` when none is set. */
-export async function readWorkspaceBackground(): Promise<BackgroundAsset | null> {
-  return getTransport().call("background_read")
+export async function readWorkspaceBackground(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<BackgroundAsset | null> {
+  return backendPlatform.getTransport().call("background_read")
 }
 
 export async function setWorkspaceBackground(
-  imageBase64: string
+  imageBase64: string,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
 ): Promise<void> {
-  return getTransport().call("background_set", { imageBase64 })
+  return backendPlatform.getTransport().call("background_set", { imageBase64 })
 }
 
-export async function clearWorkspaceBackground(): Promise<void> {
-  return getTransport().call("background_clear")
+export async function clearWorkspaceBackground(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<void> {
+  return backendPlatform.getTransport().call("background_clear")
 }

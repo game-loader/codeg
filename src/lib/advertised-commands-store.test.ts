@@ -437,3 +437,32 @@ describe("getLastAdvertisedCommands", () => {
     expect([...result.current]).toEqual(["/review"])
   })
 })
+
+it("keeps same-path agent commands separate across machines and replacement revisions", async () => {
+  const store = await load()
+  store.rememberAdvertisedCommands("codex", "/same", [command("local")])
+  store.rememberAdvertisedCommands(
+    "codex",
+    "/same",
+    [command("remote-a")],
+    "remote:1:old"
+  )
+  store.rememberAdvertisedCommands(
+    "codex",
+    "/same",
+    [command("remote-b")],
+    "remote:2:old"
+  )
+  expect(names(store.getLastAdvertisedCommands("codex", "/same"))).toEqual([
+    "local",
+  ])
+  expect(
+    names(store.getLastAdvertisedCommands("codex", "/same", "remote:1:old"))
+  ).toEqual(["remote-a"])
+  expect(
+    names(store.getLastAdvertisedCommands("codex", "/same", "remote:2:old"))
+  ).toEqual(["remote-b"])
+  expect(
+    store.getLastAdvertisedCommands("codex", "/same", "remote:1:new")
+  ).toBeNull()
+})

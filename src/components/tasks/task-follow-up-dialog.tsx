@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { CircleAlert } from "lucide-react"
-import { workTaskReturn } from "@/lib/api"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { toErrorMessage } from "@/lib/app-error"
 import {
   canSubmitFollowUp,
@@ -65,6 +65,7 @@ export function TaskFollowUpDialog({
   task,
 }: TaskFollowUpDialogProps) {
   const t = useTranslations("Tasks")
+  const backendApi = useBackendApi()
   // The upload-in-flight toast is the conversation composer's own message.
   const tChat = useTranslations("Folder.chat.messageInput")
   // The whole list: a task's worktree is normally not among the open folders.
@@ -129,7 +130,7 @@ export function TaskFollowUpDialog({
     setSubmitting(true)
     setError(null)
     try {
-      await workTaskReturn(task.id, feedback, intent, blocks)
+      await backendApi.workTaskReturn(task.id, feedback, intent, blocks)
       onOpenChange(false)
     } catch (e) {
       setError(toErrorMessage(e))

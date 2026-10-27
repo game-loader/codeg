@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -69,6 +70,8 @@ export function PetMarketplaceDialog({
   installedIds,
   onInstalled,
 }: PetMarketplaceDialogProps) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Pet.marketplace")
 
   const [searchInput, setSearchInput] = useState("")
@@ -113,13 +116,16 @@ export function PetMarketplaceDialog({
     setLoading(true)
     setError(null)
     try {
-      const response = await listMarketplacePets({
-        page,
-        pageSize: PAGE_SIZE,
-        q: q || undefined,
-        kind: kind === "all" ? undefined : kind,
-        sort: sort === "latest" ? undefined : sort,
-      })
+      const response = await listMarketplacePets(
+        {
+          page,
+          pageSize: PAGE_SIZE,
+          q: q || undefined,
+          kind: kind === "all" ? undefined : kind,
+          sort: sort === "latest" ? undefined : sort,
+        },
+        backendPlatform
+      )
       if (!mountedRef.current || seq !== requestSeqRef.current) return
       setPets(response.pets)
       setTotal(response.total)
@@ -134,7 +140,7 @@ export function PetMarketplaceDialog({
         setLoading(false)
       }
     }
-  }, [page, q, kind, sort, t])
+  }, [page, q, kind, sort, t, backendPlatform])
 
   useEffect(() => {
     if (!open) return
@@ -158,11 +164,14 @@ export function PetMarketplaceDialog({
     async (pet: MarketplacePet, overwrite: boolean) => {
       setInstallingId(pet.id)
       try {
-        await installMarketplacePet({
-          id: pet.id,
-          downloadUrl: pet.downloadUrl,
-          overwrite,
-        })
+        await installMarketplacePet(
+          {
+            id: pet.id,
+            downloadUrl: pet.downloadUrl,
+            overwrite,
+          },
+          backendPlatform
+        )
         toast.success(t("successInstalled", { name: pet.displayName }))
         // Optimistically mark as installed in the local list so the button
         // updates without waiting for the next reload.
@@ -178,7 +187,7 @@ export function PetMarketplaceDialog({
         setInstallingId(null)
       }
     },
-    [onInstalled, t]
+    [onInstalled, t, backendPlatform]
   )
 
   const handleInstallClick = useCallback(

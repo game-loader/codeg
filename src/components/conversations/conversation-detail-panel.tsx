@@ -1,5 +1,27 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useWorkspaceRuntimeVisibility } from "@/contexts/workspace-runtime-visibility-context"
+import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+import { useConversationRuntimeActions as standaloneUseConversationRuntimeActions } from "@/stores/conversation-runtime-store"
+import { reparentedViewRuntimeConversationId as standaloneReparentedViewRuntimeConversationId } from "@/stores/tab-store"
+import { trackConversationView as standaloneTrackConversationView } from "@/stores/tab-store"
+import { claimRuntimeSession as standaloneClaimRuntimeSession } from "@/stores/conversation-runtime-store"
+import { isReparentUnmount as standaloneIsReparentUnmount } from "@/stores/tab-store"
+import { releaseRuntimeSession as standaloneReleaseRuntimeSession } from "@/stores/conversation-runtime-store"
+import { getTimelineTurns as standaloneGetTimelineTurns } from "@/stores/conversation-runtime-store"
+import { getConversationIdByExternalIdFromStore as standaloneGetConversationIdByExternalIdFromStore } from "@/stores/conversation-runtime-store"
+import { getRuntimeSession as standaloneGetRuntimeSession } from "@/stores/conversation-runtime-store"
+import { defaultBackendStoreStorage as legacyStorage } from "@/stores/backend-store-storage"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useTabStore as legacyTabs } from "@/contexts/tab-context"
+import { useConversationRuntimeStore as legacyConversationRuntime } from "@/stores/conversation-runtime-store"
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import {
+  useBackendAcademicApi,
+  useBackendApi,
+} from "@/contexts/backend-client-context"
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertCircle,
@@ -27,22 +49,14 @@ import {
 import { ActivityLiveProvider } from "@/components/message/activity/activity-live-context"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { useActiveFolder } from "@/contexts/active-folder-context"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabActions, useTabStore } from "@/contexts/tab-context"
-import {
-  groupOfTab,
-  isReparentUnmount,
-  reparentedViewRuntimeConversationId,
-  trackConversationView,
-} from "@/stores/tab-store"
+
+import { groupOfTab } from "@/stores/tab-store"
 import { computeRects, leafIds } from "@/lib/tab-group-layout"
 import { useTaskContext } from "@/contexts/task-context"
 import { cn, copyTextToClipboard, randomUUID } from "@/lib/utils"
 import { buildAskPrompt, buildQuotedMarkdown } from "@/lib/message-quote"
 import {
   ASK_SELECTION_PARKED_EVENT,
-  consumeAskSelectionPrompts,
-  parkAskSelectionPrompt,
   type AskSelectionParkedDetail,
 } from "@/lib/ask-selection-handoff"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
@@ -66,7 +80,7 @@ import { AgentSelector } from "@/components/chat/agent-selector"
 import { ChatInput } from "@/components/chat/chat-input"
 import { WelcomeHero, WelcomeTip } from "@/components/chat/welcome-hero"
 import { AcademicContextBar } from "@/components/academic/academic-context-bar"
-import { academicConversationPaper } from "@/lib/academic"
+
 import { QuickActions } from "@/components/chat/quick-actions"
 import type { ComposerInjectContent } from "@/components/chat/message-input"
 import { TileScrollContainer } from "@/components/conversations/tile-scroll-container"
@@ -85,15 +99,7 @@ import { useZoomLevel } from "@/hooks/use-appearance"
 import { isDesktop } from "@/lib/platform"
 import { ChromeReserve } from "@/components/layout/chrome-reserve"
 import { leftChromeReserve, rightChromeReserve } from "@/lib/window-chrome"
-import {
-  acpFork,
-  acpStopAsyncTask,
-  createChatConversation,
-  createChatDir,
-  createConversation,
-  getFolderConversation,
-  openSettingsWindow,
-} from "@/lib/api"
+
 import { isWindowedDetail } from "@/lib/turn-window"
 import {
   flushRetryDelayMs,
@@ -106,15 +112,7 @@ import { deliverQueuedSteer } from "@/lib/queued-steer"
 import { toErrorMessage } from "@/lib/app-error"
 import { blockingPrompts } from "@/lib/blocking-prompts"
 import { notify } from "@/lib/notify"
-import {
-  claimRuntimeSession,
-  getConversationIdByExternalIdFromStore,
-  getRuntimeSession,
-  getTimelineTurns,
-  releaseRuntimeSession,
-  useConversationRuntimeActions,
-  useConversationRuntimeStore,
-} from "@/stores/conversation-runtime-store"
+
 import { useShallow } from "zustand/react/shallow"
 import { useConversationDetail } from "@/hooks/use-conversation-detail"
 import { useOutOfTurnContentNotice } from "@/hooks/use-out-of-turn-content-notice"
@@ -142,15 +140,10 @@ import {
 } from "@/lib/session-failures"
 import { userPromptHistory } from "@/lib/composer-history"
 import { contentBlocksFromUserMessage } from "@/lib/user-message-blocks"
-import { getAgentLabel } from "@/lib/custom-agents"
-import {
-  getSavedModeId,
-  saveModePreference,
-} from "@/lib/selector-prefs-storage"
+
 import {
   adoptLegacyNewConversationDraft,
   buildConversationDraftStorageKey,
-  buildNewConversationDraftStorageKey,
   clearMessageInputDraft,
   saveMessageInputDraft,
 } from "@/lib/message-input-draft"
@@ -271,6 +264,52 @@ const ConversationTabView = memo(function ConversationTabView({
   groupId,
   isVisible,
 }: ConversationTabViewProps) {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendStores = useBackendStores({
+    storage: legacyStorage,
+    workspace: legacyWorkspace,
+    tabs: legacyTabs,
+    conversationRuntime: legacyConversationRuntime,
+  })
+  const { buildNewConversationDraftStorageKey } = backendStores.storage.drafts
+  const { parkAskSelectionPrompt, consumeAskSelectionPrompts } =
+    backendStores.storage.askSelection
+  const { saveModePreference, getSavedModeId } =
+    backendStores.storage.selectorPreferences
+  const useAppWorkspaceStore = backendStores.workspace
+  const useTabStore = backendStores.tabs
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+  const useConversationRuntimeActions = backendStoreSelection
+    ? backendStores.conversationRuntime.useConversationRuntimeActions
+    : standaloneUseConversationRuntimeActions
+  const reparentedViewRuntimeConversationId = backendStoreSelection
+    ? backendStores.tabs.reparentedViewRuntimeConversationId
+    : standaloneReparentedViewRuntimeConversationId
+  const trackConversationView = backendStoreSelection
+    ? backendStores.tabs.trackConversationView
+    : standaloneTrackConversationView
+  const claimRuntimeSession = backendStoreSelection
+    ? backendStores.conversationRuntime.claimRuntimeSession
+    : standaloneClaimRuntimeSession
+  const useConversationRuntimeStore = backendStores.conversationRuntime
+  const isReparentUnmount = backendStoreSelection
+    ? backendStores.tabs.isReparentUnmount
+    : standaloneIsReparentUnmount
+  const releaseRuntimeSession = backendStoreSelection
+    ? backendStores.conversationRuntime.releaseRuntimeSession
+    : standaloneReleaseRuntimeSession
+  const getTimelineTurns = backendStoreSelection
+    ? backendStores.conversationRuntime.getTimelineTurns
+    : standaloneGetTimelineTurns
+
+  const backendAcademic = useBackendAcademicApi()
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.conversation")
   // Composer-namespace copy for the queue row's click-to-insert outcomes
   // (same keys the composer's own mid-turn send reports).
@@ -345,7 +384,7 @@ const ConversationTabView = memo(function ConversationTabView({
   )
   useEffect(
     () => trackConversationView(tabId, groupId, effectiveConversationId),
-    [tabId, groupId, effectiveConversationId]
+    [tabId, groupId, effectiveConversationId, trackConversationView]
   )
   const [createdConversationId, setCreatedConversationId] = useState<
     number | null
@@ -357,7 +396,8 @@ const ConversationTabView = memo(function ConversationTabView({
     let cancelled = false
     setPersistedPaperId(undefined)
     if (dbConversationId == null) return
-    void academicConversationPaper(dbConversationId)
+    void backendAcademic
+      .academicConversationPaper(dbConversationId)
       .then((paper) => {
         if (!cancelled) {
           setPersistedPaperId(paper?.id)
@@ -372,22 +412,24 @@ const ConversationTabView = memo(function ConversationTabView({
     return () => {
       cancelled = true
     }
-  }, [dbConversationId, tabId])
+  }, [dbConversationId, tabId, backendAcademic, useTabStore])
 
   const [draftAgentType, setDraftAgentType] = useState<AgentType>(agentType)
   const selectedAgent = conversationId != null ? agentType : draftAgentType
-  // Seed from localStorage so the React state reflects the user's saved
-  // mode for this agent immediately on mount. Without this seed, a reuse-
-  // path connect (idle window after a refresh, before the agent is GC'd)
-  // would silently fall back to whatever `current_mode_id` the backend
-  // happens to be on: `handleModeChange` updates only React state and
-  // localStorage, not the agent — the agent gets synced inside
-  // `handleSend` by diffing `modeId` against `modes.current_mode_id`.
-  // A null seed here means that diff is "agent default vs null", which
-  // resolves the displayed mode through `conn.modes.current_mode_id`
-  // and never triggers the catch-up `setMode`.
+  // A new conversation seeds from localStorage so the React state reflects
+  // the user's saved mode for this agent immediately on mount:
+  // `handleModeChange` updates only React state and localStorage, not the
+  // agent — the agent gets synced inside `handleSend` by diffing `modeId`
+  // against `modes.current_mode_id`.
+  //
+  // A persisted conversation seeds null instead, so the displayed mode
+  // resolves through `conn.modes.current_mode_id` and no catch-up `setMode`
+  // fires. The backend resumes a session in its OWN last mode (recorded per
+  // session, ahead of this device's saved default), which may have been
+  // picked on another device; seeding this device's default here would
+  // show it and then silently switch the conversation to it on send.
   const [modeId, setModeId] = useState<string | null>(() =>
-    getSavedModeId(agentType)
+    conversationId != null ? null : getSavedModeId(agentType)
   )
   const [sendSignal, setSendSignal] = useState(0)
   const [agentsLoaded, setAgentsLoaded] = useState(false)
@@ -434,7 +476,7 @@ const ConversationTabView = memo(function ConversationTabView({
   useEffect(() => {
     claimRuntimeSession(effectiveConversationId)
     setPendingCleanup(effectiveConversationId, false)
-  }, [effectiveConversationId, setPendingCleanup])
+  }, [effectiveConversationId, setPendingCleanup, claimRuntimeSession])
 
   const latestReloadSignal = useRef(reloadSignal)
   const pendingReloadState = useRef<{
@@ -484,7 +526,7 @@ const ConversationTabView = memo(function ConversationTabView({
     prepareChatDirPendingRef.current = true
     void (async () => {
       try {
-        const res = await createChatDir()
+        const res = await backendApi.createChatDir()
         if (mountedRef.current) {
           setChatDraftWorkingDir(tabId, res.path)
         }
@@ -509,6 +551,7 @@ const ConversationTabView = memo(function ConversationTabView({
     tabId,
     setChatDraftWorkingDir,
     tWelcome,
+    backendApi,
   ])
 
   // Sync the agentType prop into draftAgentType for draft tabs. The prop
@@ -524,7 +567,7 @@ const ConversationTabView = memo(function ConversationTabView({
     setDraftAgentType(agentType)
     setModeId(getSavedModeId(agentType))
     setAgentConnectError(null)
-  }, [agentType, conversationId])
+  }, [agentType, conversationId, getSavedModeId])
 
   // Gate the auto-fetch on VISIBILITY, not on mount. Every open tab stays
   // mounted (that is what keeps a background session's stream and scroll state
@@ -550,6 +593,7 @@ const ConversationTabView = memo(function ConversationTabView({
   // Latched on a held detail rather than on having been shown, so a view
   // remounted while hidden onto a session that is already loaded (a move to
   // another group) keeps it loaded too.
+  const { visible: runtimeVisible } = useWorkspaceRuntimeVisibility()
   const [heldDetail, setHeldDetail] = useState(false)
   const {
     detail,
@@ -557,7 +601,7 @@ const ConversationTabView = memo(function ConversationTabView({
     error: detailError,
     acpLoadError,
   } = useConversationDetail(effectiveConversationId, {
-    enabled: isVisible || isActive || heldDetail,
+    enabled: heldDetail || (runtimeVisible && (isVisible || isActive)),
   })
   if (detail != null && !heldDetail) setHeldDetail(true)
 
@@ -649,6 +693,7 @@ const ConversationTabView = memo(function ConversationTabView({
     [acpAgents, selectedAgent]
   )
   const canAutoConnect =
+    (!hasPersistedConversation || runtimeVisible || heldDetail) &&
     (hasPersistedConversation || (agentsLoaded && usableAgentCount > 0)) &&
     !awaitingHistoricalSessionId &&
     // Skip the doomed auto-connect for a not-installed agent ONLY in the draft
@@ -663,16 +708,24 @@ const ConversationTabView = memo(function ConversationTabView({
   // survives restarts with the tab id (persisted in the group blob).
   const draftStorageKey = useMemo(() => {
     if (dbConversationId != null) {
-      return buildConversationDraftStorageKey(dbConversationId)
+      return backendStores.storage.key(
+        buildConversationDraftStorageKey(dbConversationId)
+      )
     }
     return buildNewConversationDraftStorageKey(tabId)
-  }, [dbConversationId, tabId])
+  }, [
+    dbConversationId,
+    tabId,
+    backendStores,
+    buildNewConversationDraftStorageKey,
+  ])
   // One-shot handover of the pre-per-tab shared draft, so an in-flight draft
   // isn't stranded by the upgrade (no-ops for every later draft tab).
   useEffect(() => {
     if (dbConversationId != null) return
-    adoptLegacyNewConversationDraft(draftStorageKey)
-  }, [dbConversationId, draftStorageKey])
+    if (backendStores.storage.backendKey == null)
+      adoptLegacyNewConversationDraft(draftStorageKey)
+  }, [dbConversationId, draftStorageKey, backendStores])
   // Use the per-tab workingDir (derived from the tab's own folderId by the
   // parent) rather than the active folder's path — otherwise switching tabs
   // briefly exposes the previous folder's path to the ACP auto-connect
@@ -712,7 +765,7 @@ const ConversationTabView = memo(function ConversationTabView({
     // down. See `isReparentUnmount` for why "still open" alone is too broad.
     isTransientUnmount: useCallback(
       () => isReparentUnmount(useTabStore.getState(), tabId, groupId),
-      [tabId, groupId]
+      [tabId, groupId, isReparentUnmount, useTabStore]
     ),
   })
   const { status: connStatus, sessionId: connSessionId } = conn
@@ -1123,7 +1176,15 @@ const ConversationTabView = memo(function ConversationTabView({
         releaseRuntimeSession(effectiveConversationId)
       }
     }
-  }, [effectiveConversationId, groupId, setPendingCleanup, tabId])
+  }, [
+    effectiveConversationId,
+    groupId,
+    setPendingCleanup,
+    tabId,
+    isReparentUnmount,
+    useTabStore,
+    releaseRuntimeSession,
+  ])
 
   const handleSend = useCallback(
     (
@@ -1273,7 +1334,7 @@ const ConversationTabView = memo(function ConversationTabView({
           // overrides it with the backend-created hidden chat folder.
           let sendFolderId = folderId
           if (chatSend) {
-            const res = await createChatConversation(
+            const res = await backendApi.createChatConversation(
               selectedAgent,
               title,
               chatExistingDir,
@@ -1308,7 +1369,7 @@ const ConversationTabView = memo(function ConversationTabView({
               res.folder.path
             )
           } else {
-            newConversationId = await createConversation(
+            newConversationId = await backendApi.createConversation(
               folderId,
               selectedAgent,
               title,
@@ -1406,6 +1467,9 @@ const ConversationTabView = memo(function ConversationTabView({
       tWelcome,
       tabId,
       upsertFolder,
+      backendApi,
+      useTabStore,
+      buildNewConversationDraftStorageKey,
     ]
   )
 
@@ -1455,7 +1519,7 @@ const ConversationTabView = memo(function ConversationTabView({
         (t) => t.id
       )
       try {
-        const { forkedSessionId } = await acpFork(
+        const { forkedSessionId } = await backendApi.acpFork(
           connectionId,
           dbConvIdRef.current,
           folderId,
@@ -1511,6 +1575,8 @@ const ConversationTabView = memo(function ConversationTabView({
       refreshConversations,
       setExternalId,
       t,
+      backendApi,
+      useConversationRuntimeStore,
     ]
   )
 
@@ -1523,7 +1589,7 @@ const ConversationTabView = memo(function ConversationTabView({
       const connectionId = conn.connectionId
       if (!connectionId) return false
       try {
-        const stopped = await acpStopAsyncTask(connectionId, taskId)
+        const stopped = await backendApi.acpStopAsyncTask(connectionId, taskId)
         if (!stopped) {
           notify({
             level: "warning",
@@ -1543,7 +1609,7 @@ const ConversationTabView = memo(function ConversationTabView({
         return false
       }
     },
-    [conn.connectionId, tAsyncTasks]
+    [conn.connectionId, tAsyncTasks, backendApi]
   )
 
   /** Turn Claude Code's Remote Control off the way the user would: by sending
@@ -1557,13 +1623,15 @@ const ConversationTabView = memo(function ConversationTabView({
   }, [handleSend])
 
   const handleOpenAgentsSettings = useCallback(() => {
-    openSettingsWindow("agents", { agentType: selectedAgent }).catch((err) => {
-      console.error(
-        "[ConversationTabView] failed to open settings window:",
-        err
-      )
-    })
-  }, [selectedAgent])
+    backendApi
+      .openSettingsWindow("agents", { agentType: selectedAgent })
+      .catch((err) => {
+        console.error(
+          "[ConversationTabView] failed to open settings window:",
+          err
+        )
+      })
+  }, [selectedAgent, backendApi])
 
   // Manual agent switch only updates local draft state. The single source of
   // truth for (dis)connecting is `useConnectionLifecycle`'s auto-connect
@@ -1586,7 +1654,7 @@ const ConversationTabView = memo(function ConversationTabView({
       // correction effect leaves this tab alone.
       confirmDraftAgent(tabId, nextAgentType)
     },
-    [confirmDraftAgent, tabId]
+    [confirmDraftAgent, tabId, getSavedModeId]
   )
 
   // AgentSelector auto-fallback: the requested default agent was missing
@@ -1605,7 +1673,7 @@ const ConversationTabView = memo(function ConversationTabView({
       setAgentConnectError(null)
       setDraftAgentFromFallback(tabId, nextAgentType)
     },
-    [setDraftAgentFromFallback, tabId]
+    [setDraftAgentFromFallback, tabId, getSavedModeId]
   )
 
   const handleModeChange = useCallback(
@@ -1622,7 +1690,7 @@ const ConversationTabView = memo(function ConversationTabView({
         })
       }
     },
-    [effectiveModes, selectedAgent]
+    [effectiveModes, selectedAgent, saveModePreference]
   )
 
   const handleAnswerQuestion = useCallback(
@@ -1852,6 +1920,7 @@ const ConversationTabView = memo(function ConversationTabView({
       selectedAgent,
       academicPaperId,
       workingDirForConnection,
+      parkAskSelectionPrompt,
     ]
   )
 
@@ -1890,12 +1959,24 @@ const ConversationTabView = memo(function ConversationTabView({
     const onParked = (event: Event) => {
       const detail = (event as CustomEvent<AskSelectionParkedDetail>).detail
       if (detail?.tabId !== tabId) return
+      if (
+        (detail as AskSelectionParkedDetail & { backendKey?: string })
+          .backendKey !== backendStores.storage.backendKey
+      )
+        return
       drain()
     }
     window.addEventListener(ASK_SELECTION_PARKED_EVENT, onParked)
     return () =>
       window.removeEventListener(ASK_SELECTION_PARKED_EVENT, onParked)
-  }, [folderId, mqEnqueue, selectedAgent, tabId])
+  }, [
+    folderId,
+    mqEnqueue,
+    selectedAgent,
+    tabId,
+    backendStores,
+    consumeAskSelectionPrompts,
+  ])
 
   const canShowDetailErrorActions =
     hasPersistedConversation && dbConversationId != null && !!folder
@@ -2116,6 +2197,7 @@ const ConversationTabView = memo(function ConversationTabView({
       handleOpenAgentsSettings,
       handleOpenNewSession,
       tSessionFailure,
+      getTimelineTurns,
     ]
   )
   // Offered to this session's failure notifications while the view is
@@ -2154,7 +2236,7 @@ const ConversationTabView = memo(function ConversationTabView({
       userPromptHistory(
         getTimelineTurns(effectiveConversationId).map((entry) => entry.turn)
       ),
-    [effectiveConversationId]
+    [effectiveConversationId, getTimelineTurns]
   )
 
   // Which tool call a pending approval is about, so the activity timeline can
@@ -2658,13 +2740,14 @@ const GROUP_EDGE_EPSILON = 0.1
  * toggles re-render these slivers, not the whole panel.
  */
 function SplitStripCornerReserve({ side }: { side: "left" | "right" }) {
+  const { managed } = useWorkspaceRuntimeVisibility()
   const isMobile = useIsMobile()
   const { isOpen: sidebarOpen } = useSidebarContext()
   const { isOpen: auxOpen } = useAuxPanelContext()
   const { mode, conversationMaximized } = useWorkspaceView()
   const { isMac, isWindows, isLinux } = usePlatform()
   const { zoomLevel } = useZoomLevel()
-  if (isMobile) return null
+  if (isMobile || managed) return null
   const holdsRight = mode === "conversation" || conversationMaximized
   if (side === "right" && !holdsRight) return null
   const width =
@@ -2679,6 +2762,34 @@ function SplitStripCornerReserve({ side }: { side: "left" | "right" }) {
 }
 
 export function ConversationDetailPanel() {
+  const backendStoreSelection = useBackendStoreSelection()
+  const { managed } = useWorkspaceRuntimeVisibility()
+
+  const { getAgentLabel } = useAgentDisplay()
+  const backendStores = useBackendStores({
+    storage: legacyStorage,
+    workspace: legacyWorkspace,
+    tabs: legacyTabs,
+    conversationRuntime: legacyConversationRuntime,
+  })
+  const useConversationRuntimeActions = backendStoreSelection
+    ? backendStores.conversationRuntime.useConversationRuntimeActions
+    : standaloneUseConversationRuntimeActions
+  const useAppWorkspaceStore = backendStores.workspace
+  const useTabStore = backendStores.tabs
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+  const getConversationIdByExternalIdFromStore = backendStoreSelection
+    ? backendStores.conversationRuntime.getConversationIdByExternalIdFromStore
+    : standaloneGetConversationIdByExternalIdFromStore
+  const getRuntimeSession = backendStoreSelection
+    ? backendStores.conversationRuntime.getRuntimeSession
+    : standaloneGetRuntimeSession
+  const useConversationRuntimeStore = backendStores.conversationRuntime
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.conversation")
   const tDetails = useTranslations("Folder.sessionDetails")
   const {
@@ -2788,7 +2899,14 @@ export function ConversationDetailPanel() {
           runtimeRemoveConversation(matchedConversationId)
         }
       },
-      [tabs, runtimeCompleteTurn, runtimeRemoveConversation]
+      [
+        tabs,
+        runtimeCompleteTurn,
+        runtimeRemoveConversation,
+        getConversationIdByExternalIdFromStore,
+        useAppWorkspaceStore,
+        getRuntimeSession,
+      ]
     )
   )
 
@@ -2871,17 +2989,24 @@ export function ConversationDetailPanel() {
     // must cover the whole transcript, so fetch the legacy full response on
     // demand. The window is full when it starts at offset 0.
     if (isWindowedDetail(detail) && detail.turns_offset > 0) {
-      detail = await getFolderConversation(
+      detail = await backendApi.getFolderConversation(
         session.dbConversationId ?? activeConversationTab.conversationId
       )
     }
     return {
       summary: detail.summary,
+      agentLabel: getAgentLabel(detail.summary.agent_type),
       turns: detail.turns,
       sessionStats: detail.session_stats,
       labels: exportLabels,
     }
-  }, [activeConversationTab, exportLabels])
+  }, [
+    activeConversationTab,
+    exportLabels,
+    backendApi,
+    getRuntimeSession,
+    getAgentLabel,
+  ])
 
   const handleExportMarkdown = useCallback(async () => {
     try {
@@ -2933,9 +3058,10 @@ export function ConversationDetailPanel() {
     }
   }, [getExportData, t, addTask, updateTask])
 
-  // Ensure no-tab state is immediately bridged to a real new-conversation tab.
+  // Managed catalog selection only activates context; New Session creates the
+  // draft. TabProvider still owns initial recovery in both workspace modes.
   useEffect(() => {
-    if (!folder) return
+    if (managed || !folder) return
 
     if (hasNoTabs) {
       openNewConversationTab(
@@ -2943,7 +3069,13 @@ export function ConversationDetailPanel() {
         newConversation?.workingDir ?? folder.path
       )
     }
-  }, [folder, hasNoTabs, newConversation?.workingDir, openNewConversationTab])
+  }, [
+    managed,
+    folder,
+    hasNoTabs,
+    newConversation?.workingDir,
+    openNewConversationTab,
+  ])
 
   // Split-group render model: the layout tree only ever produces PERCENTAGE
   // RECTS — every group shell is an absolutely-positioned SIBLING keyed by its
@@ -3009,7 +3141,7 @@ export function ConversationDetailPanel() {
     if (st.tabDrag && !tabs.some((tab) => tab.id === st.tabDrag?.tabId)) {
       st.endTabDrag()
     }
-  }, [tabs])
+  }, [tabs, useTabStore])
 
   if (hasNoTabs) {
     return null
@@ -3129,7 +3261,7 @@ export function ConversationDetailPanel() {
             corner reserves that row normally carries. The top-right one also
             takes over the unsplit strip's maximize/restore button — the
             column has one, so only one strip may carry it. */}
-        {isSplit && (
+        {isSplit && !managed && (
           <div className="flex h-10 shrink-0 items-stretch bg-muted ws-transparent-bg">
             {touchesLeft && <SplitStripCornerReserve side="left" />}
             <TabBar groupId={groupId} maximizeControl={touchesRight} />

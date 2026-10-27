@@ -17,6 +17,7 @@
  * already running keeps the servers it was started with.
  */
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Plug } from "lucide-react"
@@ -24,11 +25,7 @@ import { toast } from "sonner"
 
 import { SettingCard, SettingRow } from "@/components/shared/setting-card"
 import { Switch } from "@/components/ui/switch"
-import {
-  acpListCustomAgents,
-  acpPatchCustomAgent,
-  type CustomAgentInfo,
-} from "@/lib/api"
+import { type CustomAgentInfo } from "@/lib/api"
 
 const MCP_SWITCH_ID = "custom-agent-mcp-supported"
 
@@ -39,6 +36,8 @@ interface CustomAgentMcpToggleProps {
 export function CustomAgentMcpToggle({
   registryId,
 }: CustomAgentMcpToggleProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("AcpAgentSettings")
   const [info, setInfo] = useState<CustomAgentInfo | null>(null)
   const [saving, setSaving] = useState(false)
@@ -47,7 +46,8 @@ export function CustomAgentMcpToggle({
   useEffect(() => {
     mountedRef.current = true
     let cancelled = false
-    acpListCustomAgents()
+    backendApi
+      .acpListCustomAgents()
       .then((list) => {
         if (cancelled) return
         setInfo(list.find((a) => a.registryId === registryId) ?? null)
@@ -60,7 +60,7 @@ export function CustomAgentMcpToggle({
       cancelled = true
       mountedRef.current = false
     }
-  }, [registryId])
+  }, [registryId, backendApi])
 
   const handleToggle = useCallback(
     async (next: boolean) => {
@@ -73,7 +73,9 @@ export function CustomAgentMcpToggle({
         // Only this declaration is patched — `acpPatchCustomAgent` re-reads the
         // rest, so this card cannot revert a skills change the card above it
         // made after this one mounted.
-        await acpPatchCustomAgent(info.registryId, { supportsMcp: next })
+        await backendApi.acpPatchCustomAgent(info.registryId, {
+          supportsMcp: next,
+        })
       } catch (err) {
         if (mountedRef.current) setInfo({ ...info, supportsMcp: !next })
         toast.error(err instanceof Error ? err.message : String(err))
@@ -81,7 +83,7 @@ export function CustomAgentMcpToggle({
         if (mountedRef.current) setSaving(false)
       }
     },
-    [info]
+    [info, backendApi]
   )
 
   if (!info) return null

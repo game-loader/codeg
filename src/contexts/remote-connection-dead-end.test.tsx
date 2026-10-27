@@ -26,7 +26,8 @@ vi.mock("next/navigation", () => {
 vi.mock("@/lib/transport", () => ({
   clearRemoteDesktopTransport: vi.fn(),
   configureRemoteDesktopTransport: mocks.configureRemoteDesktopTransport,
-  getTransport: vi.fn(),
+  invalidateRemoteDesktopTransport: vi.fn(),
+  getTransport: () => ({ subscribe: vi.fn(async () => () => {}) }),
 }))
 
 vi.mock("@/lib/platform", () => ({ isDesktop: () => mocks.desktop }))
@@ -59,6 +60,7 @@ const CONNECTION: RemoteWorkspaceConnection = {
   sort_order: 0,
   created_at: "",
   updated_at: "",
+  config_revision: "revision-one",
 }
 
 const OPEN_LOCAL = { name: "Open local workspace" }

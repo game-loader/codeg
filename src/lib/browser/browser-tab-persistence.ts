@@ -7,12 +7,14 @@
 // loaded" — a native surface is created for one when it is first shown — so
 // restoring twenty tabs costs twenty small records and nothing else.
 //
-// One localStorage key per window label (`main`, `remote-workspace-*`): each
-// workspace window owns its own tabs. The stored order is the strip order.
+// One localStorage key per window label and fixed backend in a multi-host
+// workspace. Standalone callers retain the window-only key. The stored order
+// is the strip order.
 // Pure functions here; `BrowserTabsPersistence` (components/browser) does
 // the wiring.
 
 import type { FileWorkspaceTab } from "@/contexts/workspace-context"
+import type { BackendKey } from "@/lib/backend/types"
 
 import {
   parseEmulatedBrowserDevice,
@@ -51,9 +53,10 @@ interface StoredShape {
 }
 
 export function browserTabsStorageKey(
-  windowLabel: string = getCurrentWindowLabel()
+  windowLabel: string = getCurrentWindowLabel(),
+  backendKey?: BackendKey
 ): string {
-  return `${KEY_PREFIX}${windowLabel}`
+  return `${KEY_PREFIX}${windowLabel}${backendKey ? `:backend:${backendKey}` : ""}`
 }
 
 function isWebUrl(url: string): boolean {
@@ -91,12 +94,13 @@ function sanitize(raw: unknown): PersistedBrowserTab | null {
 }
 
 export function readPersistedBrowserTabs(
-  windowLabel?: string
+  windowLabel?: string,
+  backendKey?: BackendKey
 ): PersistedBrowserTab[] {
   if (typeof window === "undefined") return []
   let raw: string | null
   try {
-    raw = localStorage.getItem(browserTabsStorageKey(windowLabel))
+    raw = localStorage.getItem(browserTabsStorageKey(windowLabel, backendKey))
   } catch {
     return []
   }
@@ -121,10 +125,11 @@ export function readPersistedBrowserTabs(
 
 export function writePersistedBrowserTabs(
   tabs: readonly PersistedBrowserTab[],
-  windowLabel?: string
+  windowLabel?: string,
+  backendKey?: BackendKey
 ): void {
   if (typeof window === "undefined") return
-  const key = browserTabsStorageKey(windowLabel)
+  const key = browserTabsStorageKey(windowLabel, backendKey)
   try {
     if (tabs.length === 0) {
       localStorage.removeItem(key)

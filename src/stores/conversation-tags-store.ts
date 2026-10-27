@@ -1,17 +1,13 @@
 import { useEffect } from "react"
-import { create } from "zustand"
+import * as defaultApi from "@/lib/api"
+import * as defaultPlatform from "@/lib/platform"
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
 import {
-  createConversationTag as apiCreateTag,
-  deleteConversationTag as apiDeleteTag,
-  getConversationBranchTag,
-  listConversationTags,
-  reorderConversationTags as apiReorderTags,
-  updateConversationBranchTag as apiUpdateBranchTag,
-  updateConversationTag as apiUpdateTag,
-} from "@/lib/api"
+  createStoreScope,
+  isStaleStoreRequest,
+} from "@/stores/backend-store-scope"
 import { toErrorMessage } from "@/lib/app-error"
 import { DEFAULT_BRANCH_TAG_COLOR, compareTags } from "@/lib/conversation-tags"
-import { onTransportReconnect, subscribe } from "@/lib/platform"
 import {
   CONVERSATION_TAG_CHANGED_EVENT,
   type ConversationBranchTag,
@@ -94,355 +90,446 @@ function withTags(tags: ConversationTagDetail[]) {
 // been out for more than 512 changes, and the next broadcast or refetch still
 // converges it.
 const SEQ_CAP = 512
-const deletedTagSeq = new Map<number, number>()
-const upsertedTagSeq = new Map<number, number>()
-let mutationSeq = 0
-let fetchSeq = 0
-let lastAppliedFetch = 0
+export function createConversationTagsStore(
+  api: Pick<
+    typeof defaultApi,
+    | "createConversationTag"
+    | "deleteConversationTag"
+    | "getConversationBranchTag"
+    | "listConversationTags"
+    | "reorderConversationTags"
+    | "updateConversationBranchTag"
+    | "updateConversationTag"
+  >,
+  platform: Pick<typeof defaultPlatform, "subscribe" | "onTransportReconnect"> &
+    Partial<Pick<typeof defaultPlatform, "onTransportReady">> = defaultPlatform
+) {
+  const scope = createStoreScope()
+  let retiring = false
+  const {
+    createConversationTag: apiCreateTag,
+    deleteConversationTag: apiDeleteTag,
+    getConversationBranchTag,
+    listConversationTags,
+    reorderConversationTags: apiReorderTags,
+    updateConversationBranchTag: apiUpdateBranchTag,
+    updateConversationTag: apiUpdateTag,
+  } = scope.bindApi(api)
 
-// The branch tag is one value, so one counter does what the two maps do for
-// tags: it moves on every value applied here — a broadcast, an optimistic
-// write, a write's reply — and a read or a reply requested before it moved is
-// older than what is on screen.
-const DEFAULT_BRANCH_TAG: ConversationBranchTag = {
-  enabled: false,
-  color: DEFAULT_BRANCH_TAG_COLOR,
-}
-let branchTagSeq = 0
-let branchFetchSeq = 0
-let lastAppliedBranchFetch = 0
-/** The reorder write in flight, if any: writes run one at a time, in order. */
-let reorderTail: Promise<unknown> = Promise.resolve()
+  const deletedTagSeq = new Map<number, number>()
+  const upsertedTagSeq = new Map<number, number>()
+  let mutationSeq = 0
+  let fetchSeq = 0
+  let lastAppliedFetch = 0
+  /** The reorder write in flight, if any: writes run one at a time, in order. */
+  let reorderTail: Promise<unknown> = Promise.resolve()
 
-function sameBranchTag(
-  a: ConversationBranchTag,
-  b: ConversationBranchTag
-): boolean {
-  return a.enabled === b.enabled && a.color === b.color
-}
-
-function stamp(map: Map<number, number>, tagId: number): void {
-  mutationSeq += 1
-  // Re-insert so the FIFO order follows the latest stamp.
-  map.delete(tagId)
-  map.set(tagId, mutationSeq)
-  if (map.size > SEQ_CAP) {
-    const oldest = map.keys().next().value
-    if (oldest !== undefined) map.delete(oldest)
+  // The branch tag is one value, so one counter does what the two maps do for
+  // tags: it moves on every value applied here — a broadcast, an optimistic
+  // write, a write's reply — and a read or a reply requested before it moved is
+  // older than what is on screen.
+  const DEFAULT_BRANCH_TAG: ConversationBranchTag = {
+    enabled: false,
+    color: DEFAULT_BRANCH_TAG_COLOR,
   }
-}
+  let branchTagSeq = 0
+  let branchFetchSeq = 0
+  let lastAppliedBranchFetch = 0
 
-/** Apply one tag as the newest known version of it (a broadcast, or a reply
- *  nothing newer has overtaken). Returns the next `tags` array, or null when
- *  nothing changed. */
-function upsertInto(
-  tags: ConversationTagDetail[],
-  tag: ConversationTagDetail
-): ConversationTagDetail[] | null {
-  const idx = tags.findIndex((t) => t.id === tag.id)
-  if (idx < 0) return [...tags, tag]
-  const current = tags[idx]
-  if (
-    current.name === tag.name &&
-    current.color === tag.color &&
-    current.sort_order === tag.sort_order &&
-    current.folder_id === tag.folder_id
-  ) {
-    // Our own echo of a write already applied: no new arrays, so no chip
-    // anywhere re-renders for it.
-    return null
+  function sameBranchTag(
+    a: ConversationBranchTag,
+    b: ConversationBranchTag
+  ): boolean {
+    return a.enabled === b.enabled && a.color === b.color
   }
-  const next = [...tags]
-  next[idx] = tag
-  return next
-}
 
-export const useConversationTagsStore = create<ConversationTagsState>()(
-  (set, get) => ({
-    tags: [],
-    tagsById: new Map(),
-    hydrated: false,
-    loadError: null,
-    branchTag: DEFAULT_BRANCH_TAG,
-    branchTagLoaded: false,
-    branchTagLoadError: null,
+  function stamp(map: Map<number, number>, tagId: number): void {
+    mutationSeq += 1
+    // Re-insert so the FIFO order follows the latest stamp.
+    map.delete(tagId)
+    map.set(tagId, mutationSeq)
+    if (map.size > SEQ_CAP) {
+      const oldest = map.keys().next().value
+      if (oldest !== undefined) map.delete(oldest)
+    }
+  }
 
-    fetchTags: async () => {
-      const seqAtRequest = mutationSeq
-      const id = ++fetchSeq
-      try {
-        const list = await listConversationTags()
-        // Newest request wins: an older snapshot is a strictly earlier view
-        // of the same list, never extra information.
-        if (id < lastAppliedFetch) return
-        lastAppliedFetch = id
-        // Merge rather than replace. The snapshot was read at some point after
-        // `seqAtRequest`; anything applied here since then may be newer than
-        // it, and replacing wholesale would quietly roll that back with no
-        // later event to repair it.
-        const current = get().tagsById
-        const merged = new Map<number, ConversationTagDetail>()
-        for (const tag of list) {
-          const deletedAt = deletedTagSeq.get(tag.id)
-          if (deletedAt !== undefined && deletedAt > seqAtRequest) continue
-          const upsertedAt = upsertedTagSeq.get(tag.id)
-          const local = current.get(tag.id)
-          merged.set(
-            tag.id,
-            upsertedAt !== undefined && upsertedAt > seqAtRequest && local
-              ? local
-              : tag
-          )
-        }
-        // Created (or first seen) while the request was out, so not in it.
-        for (const [tagId, upsertedAt] of upsertedTagSeq) {
-          if (upsertedAt <= seqAtRequest || merged.has(tagId)) continue
-          const local = current.get(tagId)
-          if (local && !deletedTagSeq.has(tagId)) merged.set(tagId, local)
-        }
-        set({
-          ...withTags([...merged.values()]),
-          loadError: null,
-          hydrated: true,
-        })
-      } catch (err) {
-        console.error("[ConversationTags] fetch failed:", err)
-        // `hydrated` stays as it was: it means "the list is known". A failed
-        // first load must not read as "there are no tags" — the sidebar would
-        // prune a persisted filter down to nothing on the strength of it.
-        set({ loadError: toErrorMessage(err) })
-      }
-    },
+  /** Apply one tag as the newest known version of it (a broadcast, or a reply
+   *  nothing newer has overtaken). Returns the next `tags` array, or null when
+   *  nothing changed. */
+  function upsertInto(
+    tags: ConversationTagDetail[],
+    tag: ConversationTagDetail
+  ): ConversationTagDetail[] | null {
+    const idx = tags.findIndex((t) => t.id === tag.id)
+    if (idx < 0) return [...tags, tag]
+    const current = tags[idx]
+    if (
+      current.name === tag.name &&
+      current.color === tag.color &&
+      current.sort_order === tag.sort_order &&
+      current.folder_id === tag.folder_id
+    ) {
+      // Our own echo of a write already applied: no new arrays, so no chip
+      // anywhere re-renders for it.
+      return null
+    }
+    const next = [...tags]
+    next[idx] = tag
+    return next
+  }
 
-    fetchBranchTag: async () => {
-      const seqAtRequest = branchTagSeq
-      const id = ++branchFetchSeq
-      try {
-        const setting = await getConversationBranchTag()
-        if (id < lastAppliedBranchFetch) return
-        lastAppliedBranchFetch = id
-        const next: Partial<ConversationTagsState> = {
-          branchTagLoaded: true,
-          branchTagLoadError: null,
-        }
-        // A value applied while the read was out is newer than it.
-        if (
-          branchTagSeq === seqAtRequest &&
-          !sameBranchTag(get().branchTag, setting)
-        ) {
-          next.branchTag = setting
-        }
-        set(next)
-      } catch (err) {
-        console.error("[ConversationTags] branch tag fetch failed:", err)
-        set({ branchTagLoadError: toErrorMessage(err) })
-      }
-    },
+  const useConversationTagsStore = scope.create<ConversationTagsState>(
+    (set, get) => ({
+      tags: [],
+      tagsById: new Map(),
+      hydrated: false,
+      loadError: null,
+      branchTag: DEFAULT_BRANCH_TAG,
+      branchTagLoaded: false,
+      branchTagLoadError: null,
 
-    setBranchTag: async (setting) => {
-      const previous = get().branchTag
-      branchTagSeq += 1
-      const seqOfWrite = branchTagSeq
-      set({ branchTag: setting })
-      try {
-        const saved = await apiUpdateBranchTag(setting)
-        // Only if nothing arrived while the write was out — its own broadcast
-        // usually has, carrying this very value.
-        if (branchTagSeq === seqOfWrite) {
-          branchTagSeq += 1
-          if (!sameBranchTag(get().branchTag, saved)) set({ branchTag: saved })
-          // Reconciled with a read requested after it, for the same reason
-          // as a tag's create or update reply.
-          void get().fetchBranchTag()
+      fetchTags: async () => {
+        const seqAtRequest = mutationSeq
+        const id = ++fetchSeq
+        try {
+          const list = await listConversationTags()
+          // Newest request wins: an older snapshot is a strictly earlier view
+          // of the same list, never extra information.
+          if (id < lastAppliedFetch) return
+          lastAppliedFetch = id
+          // Merge rather than replace. The snapshot was read at some point after
+          // `seqAtRequest`; anything applied here since then may be newer than
+          // it, and replacing wholesale would quietly roll that back with no
+          // later event to repair it.
+          const current = get().tagsById
+          const merged = new Map<number, ConversationTagDetail>()
+          for (const tag of list) {
+            const deletedAt = deletedTagSeq.get(tag.id)
+            if (deletedAt !== undefined && deletedAt > seqAtRequest) continue
+            const upsertedAt = upsertedTagSeq.get(tag.id)
+            const local = current.get(tag.id)
+            merged.set(
+              tag.id,
+              upsertedAt !== undefined && upsertedAt > seqAtRequest && local
+                ? local
+                : tag
+            )
+          }
+          // Created (or first seen) while the request was out, so not in it.
+          for (const [tagId, upsertedAt] of upsertedTagSeq) {
+            if (upsertedAt <= seqAtRequest || merged.has(tagId)) continue
+            const local = current.get(tagId)
+            if (local && !deletedTagSeq.has(tagId)) merged.set(tagId, local)
+          }
+          set({
+            ...withTags([...merged.values()]),
+            loadError: null,
+            hydrated: true,
+          })
+        } catch (err) {
+          if (isStaleStoreRequest(err)) return
+          console.error("[ConversationTags] fetch failed:", err)
+          // `hydrated` stays as it was: it means "the list is known". A failed
+          // first load must not read as "there are no tags" — the sidebar would
+          // prune a persisted filter down to nothing on the strength of it.
+          set({ loadError: toErrorMessage(err) })
         }
-      } catch (err) {
-        // Put the old value back unless something newer replaced ours in the
-        // meantime, then re-read: the write may have landed before its reply
-        // was lost.
-        if (branchTagSeq === seqOfWrite) {
-          branchTagSeq += 1
-          set({ branchTag: previous })
-        }
-        void get().fetchBranchTag()
-        throw err
-      }
-    },
+      },
 
-    applyChange: (change) => {
-      if (change.kind === "branch_tag") {
+      fetchBranchTag: async () => {
+        const seqAtRequest = branchTagSeq
+        const id = ++branchFetchSeq
+        try {
+          const setting = await getConversationBranchTag()
+          if (id < lastAppliedBranchFetch) return
+          lastAppliedBranchFetch = id
+          const next: Partial<ConversationTagsState> = {
+            branchTagLoaded: true,
+            branchTagLoadError: null,
+          }
+          // A value applied while the read was out is newer than it.
+          if (
+            branchTagSeq === seqAtRequest &&
+            !sameBranchTag(get().branchTag, setting)
+          ) {
+            next.branchTag = setting
+          }
+          set(next)
+        } catch (err) {
+          if (isStaleStoreRequest(err)) return
+          console.error("[ConversationTags] branch tag fetch failed:", err)
+          set({ branchTagLoadError: toErrorMessage(err) })
+        }
+      },
+
+      setBranchTag: async (setting) => {
+        const previous = get().branchTag
         branchTagSeq += 1
-        const { branchTag, branchTagLoaded } = get()
-        if (branchTagLoaded && sameBranchTag(branchTag, change.setting)) return
-        set({
-          branchTag: change.setting,
-          branchTagLoaded: true,
-          branchTagLoadError: null,
-        })
-        return
-      }
-      if (change.kind === "upsert") {
-        // Never resurrect: see `deletedTagSeq`.
-        if (deletedTagSeq.has(change.tag.id)) return
-        stamp(upsertedTagSeq, change.tag.id)
-        const next = upsertInto(get().tags, change.tag)
-        if (next) set(withTags(next))
-        return
-      }
-      if (change.kind === "deleted") {
-        stamp(deletedTagSeq, change.id)
-        upsertedTagSeq.delete(change.id)
+        const seqOfWrite = branchTagSeq
+        set({ branchTag: setting })
+        try {
+          const saved = await apiUpdateBranchTag(setting)
+          // Only if nothing arrived while the write was out — its own broadcast
+          // usually has, carrying this very value.
+          if (branchTagSeq === seqOfWrite) {
+            branchTagSeq += 1
+            if (!sameBranchTag(get().branchTag, saved))
+              set({ branchTag: saved })
+            // Reconciled with a read requested after it, for the same reason
+            // as a tag's create or update reply.
+            void get().fetchBranchTag()
+          }
+        } catch (err) {
+          if (isStaleStoreRequest(err)) throw err
+          // Put the old value back unless something newer replaced ours in the
+          // meantime, then re-read: the write may have landed before its reply
+          // was lost.
+          if (branchTagSeq === seqOfWrite) {
+            branchTagSeq += 1
+            set({ branchTag: previous })
+          }
+          void get().fetchBranchTag()
+          throw err
+        }
+      },
+
+      applyChange: (change) => {
+        if (change.kind === "branch_tag") {
+          branchTagSeq += 1
+          const { branchTag, branchTagLoaded } = get()
+          if (branchTagLoaded && sameBranchTag(branchTag, change.setting))
+            return
+          set({
+            branchTag: change.setting,
+            branchTagLoaded: true,
+            branchTagLoadError: null,
+          })
+          return
+        }
+        if (change.kind === "upsert") {
+          // Never resurrect: see `deletedTagSeq`.
+          if (deletedTagSeq.has(change.tag.id)) return
+          stamp(upsertedTagSeq, change.tag.id)
+          const next = upsertInto(get().tags, change.tag)
+          if (next) set(withTags(next))
+          return
+        }
+        if (change.kind === "deleted") {
+          stamp(deletedTagSeq, change.id)
+          upsertedTagSeq.delete(change.id)
+          const { tags } = get()
+          if (!tags.some((t) => t.id === change.id)) return
+          set(withTags(tags.filter((t) => t.id !== change.id)))
+          return
+        }
+        // `reordered` carries no payload by design: re-read the list.
+        void get().fetchTags()
+      },
+
+      createTag: async (args) => {
+        const tag = await apiCreateTag(args)
+        // The create's own broadcast usually lands first, and anything for this
+        // id that has arrived since — a rename from another window — is newer
+        // than this reply. So the reply only ever INSERTS: callers need the tag
+        // in the store right away (to draw it on the conversation they are
+        // tagging) even when the broadcast is slow or the socket is down.
+        if (!get().tagsById.has(tag.id) && !deletedTagSeq.has(tag.id)) {
+          get().applyChange({ kind: "upsert", tag })
+          // A reply is not ordered against other windows' writes the way a
+          // broadcast is, so what it put here is reconciled with a list read
+          // requested AFTER it — otherwise a snapshot already in flight would
+          // see it as "newer than me" and keep it even if the tag has since
+          // been deleted elsewhere. Only on this path: when the broadcast came
+          // first (the usual case) there is nothing to reconcile.
+          void get().fetchTags()
+        }
+        return get().tagsById.get(tag.id) ?? tag
+      },
+
+      updateTag: async (tagId, patch) => {
+        const seqAtRequest = mutationSeq
+        const tag = await apiUpdateTag(tagId, patch)
+        // Applied only if nothing for this tag arrived while the request was
+        // out. If something did, it is either our own broadcast (already
+        // applied) or a later write from elsewhere, which this reply must not
+        // overwrite.
+        const upsertedAt = upsertedTagSeq.get(tagId)
+        if (upsertedAt === undefined || upsertedAt <= seqAtRequest) {
+          get().applyChange({ kind: "upsert", tag })
+          // Reconciled the same way, and for the same reason, as a create reply.
+          void get().fetchTags()
+        }
+        return tag
+      },
+
+      deleteTag: async (tagId) => {
+        await apiDeleteTag(tagId)
+        get().applyChange({ kind: "deleted", id: tagId })
+      },
+
+      reorderScope: async (orderedIds) => {
+        const position = new Map(orderedIds.map((id, idx) => [id, idx + 1]))
         const { tags } = get()
-        if (!tags.some((t) => t.id === change.id)) return
-        set(withTags(tags.filter((t) => t.id !== change.id)))
-        return
-      }
-      // `reordered` carries no payload by design: re-read the list.
-      void get().fetchTags()
-    },
-
-    createTag: async (args) => {
-      const tag = await apiCreateTag(args)
-      // The create's own broadcast usually lands first, and anything for this
-      // id that has arrived since — a rename from another window — is newer
-      // than this reply. So the reply only ever INSERTS: callers need the tag
-      // in the store right away (to draw it on the conversation they are
-      // tagging) even when the broadcast is slow or the socket is down.
-      if (!get().tagsById.has(tag.id) && !deletedTagSeq.has(tag.id)) {
-        get().applyChange({ kind: "upsert", tag })
-        // A reply is not ordered against other windows' writes the way a
-        // broadcast is, so what it put here is reconciled with a list read
-        // requested AFTER it — otherwise a snapshot already in flight would
-        // see it as "newer than me" and keep it even if the tag has since
-        // been deleted elsewhere. Only on this path: when the broadcast came
-        // first (the usual case) there is nothing to reconcile.
-        void get().fetchTags()
-      }
-      return get().tagsById.get(tag.id) ?? tag
-    },
-
-    updateTag: async (tagId, patch) => {
-      const seqAtRequest = mutationSeq
-      const tag = await apiUpdateTag(tagId, patch)
-      // Applied only if nothing for this tag arrived while the request was
-      // out. If something did, it is either our own broadcast (already
-      // applied) or a later write from elsewhere, which this reply must not
-      // overwrite.
-      const upsertedAt = upsertedTagSeq.get(tagId)
-      if (upsertedAt === undefined || upsertedAt <= seqAtRequest) {
-        get().applyChange({ kind: "upsert", tag })
-        // Reconciled the same way, and for the same reason, as a create reply.
-        void get().fetchTags()
-      }
-      return tag
-    },
-
-    deleteTag: async (tagId) => {
-      await apiDeleteTag(tagId)
-      get().applyChange({ kind: "deleted", id: tagId })
-    },
-
-    reorderScope: async (orderedIds) => {
-      const position = new Map(orderedIds.map((id, idx) => [id, idx + 1]))
-      const { tags } = get()
-      set(
-        withTags(
-          tags.map((t) =>
-            position.has(t.id) ? { ...t, sort_order: position.get(t.id)! } : t
+        set(
+          withTags(
+            tags.map((t) =>
+              position.has(t.id) ? { ...t, sort_order: position.get(t.id)! } : t
+            )
           )
         )
-      )
-      // One write at a time, in the order asked: two in flight together could
-      // commit the other way round, and the later move would be lost. Every
-      // one is sent — two can be for different scopes.
-      const ids = [...orderedIds]
-      const write = reorderTail.then(() => apiReorderTags(ids))
-      reorderTail = write.catch(() => {})
-      try {
-        await write
-      } catch (err) {
-        // Re-read rather than restore a snapshot: anything that landed while
-        // the request was out would be erased along with our failed write.
-        void get().fetchTags()
-        throw err
-      }
-    },
-  })
-)
+        // One write at a time, in the order asked: two in flight together could
+        // commit the other way round, and the later move would be lost. Every
+        // one is sent — two can be for different scopes.
+        const ids = [...orderedIds]
+        const write = reorderTail.then(() => apiReorderTags(ids))
+        reorderTail = write.catch(() => {})
+        try {
+          await write
+        } catch (err) {
+          if (isStaleStoreRequest(err)) throw err
+          // Re-read rather than restore a snapshot: anything that landed while
+          // the request was out would be erased along with our failed write.
+          void get().fetchTags()
+          throw err
+        }
+      },
+    })
+  )
 
-/** Restore the pristine state, tombstones included. Tests and the
- *  backend-scoped reset registry only. */
-export function resetConversationTagsStore(): void {
-  deletedTagSeq.clear()
-  upsertedTagSeq.clear()
-  mutationSeq = 0
-  fetchSeq = 0
-  lastAppliedFetch = 0
-  branchTagSeq = 0
-  branchFetchSeq = 0
-  lastAppliedBranchFetch = 0
-  reorderTail = Promise.resolve()
-  useConversationTagsStore.setState(
-    useConversationTagsStore.getInitialState(),
-    true
+  /** Restore the pristine state, tombstones included. Tests and the
+   *  backend-scoped reset registry only. */
+  function resetConversationTagsStore(): void {
+    scope.invalidate()
+    deletedTagSeq.clear()
+    upsertedTagSeq.clear()
+    mutationSeq = 0
+    fetchSeq = 0
+    lastAppliedFetch = 0
+    branchTagSeq = 0
+    branchFetchSeq = 0
+    lastAppliedBranchFetch = 0
+    reorderTail = Promise.resolve()
+    useConversationTagsStore.setState(
+      useConversationTagsStore.getInitialState(),
+      true
+    )
+  }
+
+  // Multiple consumers can mount the bridge, but one runtime owns one channel.
+  let syncUsers = 0
+  let stopSync: (() => void) | undefined
+  function startSync(): () => void {
+    if (retiring || scope.disposed) return () => {}
+    syncUsers += 1
+    if (syncUsers === 1) {
+      let stopped = false
+      let unlisten: (() => void) | undefined
+      const active = () => !stopped && !retiring && !scope.disposed
+      // Read only once broadcasts reach this window (on a WebSocket transport,
+      // once the server confirms its receiver): a write landing between an
+      // earlier read and the subscription would reach neither, for good.
+      const initialRead = () => {
+        if (!active()) return
+        const current = useConversationTagsStore.getState()
+        void current.fetchTags()
+        void current.fetchBranchTag()
+      }
+      void platform
+        .subscribe<ConversationTagChange>(
+          CONVERSATION_TAG_CHANGED_EVENT,
+          (change) => {
+            if (active())
+              useConversationTagsStore.getState().applyChange(change)
+          }
+        )
+        .then(
+          (dispose) => {
+            if (!active()) {
+              dispose()
+              return
+            }
+            unlisten = dispose
+            initialRead()
+          },
+          (error: unknown) => {
+            if (!active()) return
+            // Not live, but still worth a read: a reconnect re-reads again.
+            console.error("[ConversationTags] subscribe failed:", error)
+            initialRead()
+          }
+        )
+      const refresh = () => {
+        if (!active()) return
+        const current = useConversationTagsStore.getState()
+        void current.fetchTags()
+        void current.fetchBranchTag()
+      }
+      // Retained hosts can mount offline: first readiness also needs a refetch.
+      const offReconnect =
+        platform.onTransportReady?.(refresh) ??
+        platform.onTransportReconnect(refresh)
+      stopSync = () => {
+        stopped = true
+        unlisten?.()
+        offReconnect?.()
+      }
+    }
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      syncUsers -= 1
+      if (syncUsers === 0) {
+        stopSync?.()
+        stopSync = undefined
+      }
+    }
+  }
+
+  scope.onDispose(() => {
+    retiring = true
+    stopSync?.()
+    stopSync = undefined
+    resetConversationTagsStore()
+  })
+  return Object.assign(useConversationTagsStore, {
+    resetConversationTagsStore,
+    startSync,
+    dispose: scope.dispose,
+    isDisposed: () => retiring || scope.disposed,
+    onDispose: scope.onDispose,
+  })
+}
+
+export type ConversationTagsStore = ReturnType<
+  typeof createConversationTagsStore
+>
+
+/** Standalone entry points retain the original singleton and reset API. */
+export const useConversationTagsStore = createConversationTagsStore(defaultApi)
+export const { resetConversationTagsStore } = useConversationTagsStore
+registerBackendScopedStoreReset(resetConversationTagsStore)
+
+/** Select the resource instance, also for callbacks retained across renders. */
+export function useConversationTagsStoreApi(): ConversationTagsStore {
+  return (
+    useBackendStoreSelection()?.conversationTags ?? useConversationTagsStore
   )
 }
 
-registerBackendScopedStoreReset(resetConversationTagsStore)
-
-/**
- * Keep this window's tag definitions and branch tag setting live: every
- * `conversation-tag://changed` broadcast applied in place, one fetch of each
- * once broadcasts reach this window, and a re-read after a WebSocket reconnect
- * (the broadcaster drops what fires while nobody is listening). Mount once per
- * window — the workspace layout does.
- *
- * The fetches wait for the subscription — on a WebSocket transport that is the
- * server confirming its receiver — because a write landing between a read
- * taken earlier and the subscription would reach neither, for good.
- */
-export function useConversationTagsSync(): void {
-  useEffect(() => {
-    let disposed = false
-    let unlisten: (() => void) | undefined
-
-    void (async () => {
-      try {
-        const dispose = await subscribe<ConversationTagChange>(
-          CONVERSATION_TAG_CHANGED_EVENT,
-          (change) => {
-            useConversationTagsStore.getState().applyChange(change)
-          }
-        )
-        if (disposed) {
-          dispose()
-          return
-        }
-        unlisten = dispose
-      } catch (err) {
-        // Not live, but still worth a read: a reconnect re-reads again.
-        console.error("[ConversationTags] subscribe failed:", err)
-      }
-      if (disposed) return
-      const store = useConversationTagsStore.getState()
-      void store.fetchTags()
-      void store.fetchBranchTag()
-    })()
-
-    const offReconnect = onTransportReconnect(() => {
-      const current = useConversationTagsStore.getState()
-      void current.fetchTags()
-      void current.fetchBranchTag()
-    })
-
-    return () => {
-      disposed = true
-      unlisten?.()
-      offReconnect?.()
-    }
-  }, [])
+export function useRuntimeConversationTagsStore<T>(
+  selector: (state: ConversationTagsState) => T
+): T {
+  return useConversationTagsStoreApi()(selector)
 }
 
-/** The bridge component for layouts: mounts {@link useConversationTagsSync}. */
+/** Mount per runtime; subscriptions and late callbacks follow its lifetime. */
+export function useConversationTagsSync(): void {
+  const store = useConversationTagsStoreApi()
+  useEffect(() => store.startSync(), [store])
+}
+
 export function ConversationTagsSync(): null {
   useConversationTagsSync()
   return null

@@ -13,6 +13,10 @@
  * that is visibly disabled with a reason.
  */
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
 import { PanelBottomClose } from "lucide-react"
@@ -26,12 +30,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import {
-  getSystemCloseBehaviorSettings,
-  updateSystemCloseBehaviorSettings,
-} from "@/lib/api"
+
 import { isDesktop } from "@/lib/platform"
-import { getActiveRemoteConnectionId } from "@/lib/transport"
+
 import { toErrorMessage } from "@/lib/app-error"
 import type { CloseWindowBehavior } from "@/lib/types"
 
@@ -44,8 +45,12 @@ const BEHAVIOR_LABEL_KEYS = {
 const BEHAVIOR_IDS = ["ask", "minimize", "exit"] as const
 
 export function CloseBehaviorSettingsSection() {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("CloseBehaviorSettings")
-  const supported = isDesktop() && getActiveRemoteConnectionId() === null
+  const supported =
+    isDesktop() && backendPlatform.getActiveRemoteConnectionId() === null
 
   const [behavior, setBehavior] = useState<CloseWindowBehavior | null>(null)
   const [trayAvailable, setTrayAvailable] = useState(true)
@@ -55,7 +60,8 @@ export function CloseBehaviorSettingsSection() {
     if (!supported) return
     let cancelled = false
 
-    getSystemCloseBehaviorSettings()
+    backendApi
+      .getSystemCloseBehaviorSettings()
       .then((settings) => {
         if (cancelled) return
         setBehavior(settings.behavior)
@@ -68,13 +74,13 @@ export function CloseBehaviorSettingsSection() {
     return () => {
       cancelled = true
     }
-  }, [supported])
+  }, [supported, backendApi])
 
   const save = useCallback(
     async (next: CloseWindowBehavior, prev: CloseWindowBehavior) => {
       setSaving(true)
       try {
-        const result = await updateSystemCloseBehaviorSettings(next)
+        const result = await backendApi.updateSystemCloseBehaviorSettings(next)
         setBehavior(result.behavior)
         setTrayAvailable(result.tray_available)
       } catch (err) {
@@ -84,7 +90,7 @@ export function CloseBehaviorSettingsSection() {
         setSaving(false)
       }
     },
-    [t]
+    [t, backendApi]
   )
 
   // Hidden rather than disabled until the row is known: the picker replaces the

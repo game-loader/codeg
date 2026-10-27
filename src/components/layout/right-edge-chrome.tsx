@@ -1,9 +1,10 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback } from "react"
 import { PanelRight, Settings, SquareTerminal } from "lucide-react"
 import { useTranslations } from "next-intl"
-import { openSettingsWindow } from "@/lib/api"
+
 import { Button } from "@/components/ui/button"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
@@ -29,6 +30,8 @@ import { rightChromeClusterWidth } from "@/lib/window-chrome"
  * matches the right-edge column's reservation (see `rightChromeReserve`).
  */
 export function RightEdgeChrome() {
+  const backendApi = useBackendApi()
+
   const tTitleBar = useTranslations("Folder.folderTitleBar")
   const { activeFolder } = useActiveFolder()
   const isChatMode = useIsActiveChatMode()
@@ -46,10 +49,10 @@ export function RightEdgeChrome() {
   const { zoomLevel } = useZoomLevel()
 
   const handleOpenSettings = useCallback(() => {
-    openSettingsWindow().catch((err) => {
+    backendApi.openSettingsWindow().catch((err) => {
       console.error("[RightEdgeChrome] failed to open settings:", err)
     })
-  }, [])
+  }, [backendApi])
 
   return (
     <div

@@ -1,3 +1,6 @@
+import { useBackendPlatform } from "@/contexts/backend-client-context"
+import type { BackendPlatform } from "@/lib/backend/types"
+import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
 import { useEffect, useState } from "react"
 import { fetchMarketplaceAsset } from "./api"
 import {
@@ -15,11 +18,14 @@ import type { PetSpriteAsset } from "./types"
 // a still-mounted consumer, and closing the dialog can't strand a live image.
 const assetCache = new Map<string, Promise<PetSpriteAsset>>()
 
-function loadAsset(url: string): Promise<PetSpriteAsset> {
+function loadAsset(
+  url: string,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<PetSpriteAsset> {
   const existing = assetCache.get(url)
   if (existing) return existing
 
-  const promise = fetchMarketplaceAsset(url)
+  const promise = fetchMarketplaceAsset(url, backendPlatform)
   assetCache.set(url, promise)
   // Don't cache a rejection — a transient network blip should be retryable when
   // a component next mounts. Attached separately (not via the cached promise's
@@ -58,6 +64,8 @@ interface Outcome {
 export function useProxiedMarketplaceAsset(
   url: string | null | undefined
 ): ProxiedAsset {
+  const backendPlatform = useBackendPlatform()
+
   const [state, setState] = useState<{ url: string | null; outcome: Outcome }>(
     () => ({ url: null, outcome: { src: null, failed: false } })
   )
@@ -67,7 +75,7 @@ export function useProxiedMarketplaceAsset(
 
     let cancelled = false
     let objectUrl: string | null = null
-    loadAsset(url)
+    loadAsset(url, backendPlatform)
       .then((asset) => {
         if (cancelled) return
         objectUrl = createPetSpriteObjectUrl(asset)
@@ -86,7 +94,7 @@ export function useProxiedMarketplaceAsset(
       // circuits the `.then` so no orphan blob is ever created.
       if (objectUrl) revokePetSpriteObjectUrl(objectUrl)
     }
-  }, [url])
+  }, [url, backendPlatform])
 
   if (!url) return { src: null, loading: false, failed: false }
   if (state.url === url) {

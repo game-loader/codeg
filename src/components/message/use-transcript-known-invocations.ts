@@ -6,8 +6,10 @@ import {
   buildKnownInvocations,
   diskSkillTrigger,
 } from "@/components/chat/composer/invocation-reference"
+import { useOptionalBackendClient } from "@/contexts/backend-client-context"
 import { useAgentSkills } from "@/hooks/use-agent-skills"
 import {
+  advertisedCommandsScope,
   getLastAdvertisedCommands,
   subscribeLastAdvertisedCommands,
 } from "@/lib/advertised-commands-store"
@@ -40,6 +42,7 @@ export function useTranscriptKnownInvocations(
   availableCommands: readonly AvailableCommandInfo[] | null | undefined,
   workspacePath: string | null
 ): KnownInvocations {
+  const scope = advertisedCommandsScope(useOptionalBackendClient())
   const skillTrigger = diskSkillTrigger(agentType)
   const skills = useAgentSkills(skillTrigger ? agentType : null, workspacePath)
   // Looked up only while the live list is unknown, so a newer record for this
@@ -47,8 +50,10 @@ export function useTranscriptKnownInvocations(
   const advertised = availableCommands != null
   const getRemembered = useCallback(
     () =>
-      advertised ? null : getLastAdvertisedCommands(agentType, workspacePath),
-    [advertised, agentType, workspacePath]
+      advertised
+        ? null
+        : getLastAdvertisedCommands(agentType, workspacePath, scope),
+    [advertised, agentType, workspacePath, scope]
   )
   const remembered = useSyncExternalStore(
     subscribeLastAdvertisedCommands,

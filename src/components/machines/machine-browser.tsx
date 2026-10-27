@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Plus, RefreshCw, Server } from "lucide-react"
@@ -22,6 +23,8 @@ export function MachineBrowser({
 }: {
   onInsert?: (context: string) => void
 }) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Machines")
   const [machines, setMachines] = useState<Machine[]>([])
   const [loading, setLoading] = useState(true)
@@ -50,7 +53,7 @@ export function MachineBrowser({
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true)
     setError(null)
-    listMachines()
+    listMachines(backendPlatform)
       .then((items) => {
         if (active) {
           setMachines(items.machines)
@@ -69,7 +72,7 @@ export function MachineBrowser({
     return () => {
       active = false
     }
-  }, [refresh])
+  }, [refresh, backendPlatform])
 
   useEffect(() => {
     if (!autoRefresh) return

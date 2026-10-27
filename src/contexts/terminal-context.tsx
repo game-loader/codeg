@@ -1,6 +1,13 @@
 "use client"
 
 import {
+  useBackendApi,
+  useBackendPlatform,
+  useOptionalBackendClient,
+} from "@/contexts/backend-client-context"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import type { BackendClient } from "@/lib/backend/types"
+import {
   createContext,
   useCallback,
   useContext,
@@ -11,20 +18,15 @@ import {
   useState,
   type ReactNode,
 } from "react"
-import {
-  getSystemTerminalSettings,
-  terminalKill,
-  terminalSnapshot,
-} from "@/lib/api"
-import { getActiveRemoteConnectionId, getTransport } from "@/lib/transport"
 import { randomUUID } from "@/lib/utils"
 import { getCurrentWindowLabel } from "@/lib/browser/window-label"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
+import { useRuntimeEventScope } from "@/hooks/use-runtime-event-scope"
 import {
   commandLinkKey,
-  useCommandTerminalLinkStore,
+  useCommandTerminalLinkStore as legacyCommandTerminalLinks,
 } from "@/stores/command-terminal-link-store"
 
 export interface TerminalTab {
@@ -116,10 +118,20 @@ function restoredTabCounter(tabs: TerminalTab[]): bigint {
   return counter
 }
 
-function terminalScope(): string {
+function terminalScope(
+  client: BackendClient | null,
+  remoteConnectionId: number | null
+): string {
+  if (!client)
+    return JSON.stringify([getCurrentWindowLabel(), remoteConnectionId])
+  const connection = client.remoteConnection
+  // The same connection id can later point at another server. Persist only
+  // its endpoint and revision, never credentials or a transient generation.
   return JSON.stringify([
     getCurrentWindowLabel(),
-    getActiveRemoteConnectionId(),
+    client.key,
+    connection?.base_url ?? null,
+    connection?.config_revision ?? connection?.updated_at ?? null,
   ])
 }
 
@@ -138,19 +150,21 @@ function currentPageId(): string | null {
   return UUID_V4.test(id) ? id : null
 }
 
-function readTerminalSession(): {
+function readTerminalSession(
+  scope: string,
+  storageKey: string
+): {
   pageId: string | null
   scope: string
   isOpen: boolean
   activeTabId: string | null
   tabs: TerminalTab[]
 } {
-  const scope = terminalScope()
   const pageId = currentPageId()
   const empty = { pageId, scope, isOpen: false, activeTabId: null, tabs: [] }
   if (!pageId || typeof window === "undefined") return empty
   try {
-    const raw = window.sessionStorage.getItem(TERMINAL_SESSION_KEY)
+    const raw = window.sessionStorage.getItem(storageKey)
     if (!raw) return empty
     const saved: StoredTerminalSession = JSON.parse(raw)
     if (
@@ -202,7 +216,8 @@ interface TerminalContextValue {
   createTerminalInDirectory: (
     workingDir: string,
     title?: string,
-    shell?: string
+    shell?: string,
+    folderId?: number
   ) => Promise<string | null>
   createTerminalWithCommand: (
     title: string,
@@ -227,9 +242,29 @@ export function useTerminalContext() {
 }
 
 export function TerminalProvider({ children }: { children: ReactNode }) {
+  const ownsEvent = useRuntimeEventScope()
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+  const client = useOptionalBackendClient()
+  const backendStores = useBackendStores({
+    commandTerminalLinks: legacyCommandTerminalLinks,
+  })
+  const useCommandTerminalLinkStore = backendStores.commandTerminalLinks
+  const scope = terminalScope(
+    client,
+    backendPlatform.getActiveRemoteConnectionId()
+  )
+  // All machine panes share sessionStorage. A separate slot per owner keeps
+  // their tabs from overwriting one another as hidden panes stay mounted.
+  const storageKey = client
+    ? `${TERMINAL_SESSION_KEY}:${encodeURIComponent(scope)}`
+    : TERMINAL_SESSION_KEY
+
   const { activeFolder, activeFolderId } = useActiveFolder()
   const { shortcuts } = useShortcutSettings()
-  const [restoredSession] = useState(readTerminalSession)
+  const [restoredSession] = useState(() =>
+    readTerminalSession(scope, storageKey)
+  )
   const [isOpen, setIsOpen] = useState(restoredSession.isOpen)
   const [height, setHeightState] = useState(DEFAULT_HEIGHT)
   const [tabs, setTabs] = useState<TerminalTab[]>(restoredSession.tabs)
@@ -270,11 +305,11 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       ),
     }
     try {
-      window.sessionStorage.setItem(TERMINAL_SESSION_KEY, JSON.stringify(state))
+      window.sessionStorage.setItem(storageKey, JSON.stringify(state))
     } catch {
       // Private mode or quota failure: terminal remains usable in this page.
     }
-  }, [restoredSession, isOpen, activeTabId, tabs])
+  }, [restoredSession, storageKey, isOpen, activeTabId, tabs])
 
   const folderPath = activeFolder?.path ?? ""
   const currentFolderId = activeFolderId ?? 0
@@ -287,7 +322,8 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     let cancelled = false
     let unlisten: (() => void) | undefined
 
-    getSystemTerminalSettings()
+    backendApi
+      .getSystemTerminalSettings()
       .then((settings) => {
         if (!cancelled) setDefaultTerminalShell(settings.default_shell)
       })
@@ -295,7 +331,8 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
         console.error("[terminal] load terminal settings failed:", err)
       })
 
-    getTransport()
+    backendPlatform
+      .getTransport()
       .subscribe<{ default_shell: string | null }>(
         TERMINAL_SETTINGS_UPDATED_EVENT,
         (settings) => {
@@ -317,7 +354,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       cancelled = true
       unlisten?.()
     }
-  }, [])
+  }, [backendApi, backendPlatform])
 
   const markTerminalRunning = useCallback((id: string) => {
     setExitedTerminals((prev) => {
@@ -355,7 +392,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
         setLink(commandLinkKey(tab.folderId, tab.commandId), tab.id)
       }
     }
-  }, [restoredSession])
+  }, [restoredSession, useCommandTerminalLinkStore])
 
   // A tab's view reports its exit, but views unmount (a closed mobile drawer)
   // and a reload never hears an exit from before it. The launcher tells a
@@ -384,7 +421,8 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     // overtaken.
     const check = (id: string) => {
       if (!unchecked.has(id)) return
-      terminalSnapshot(id)
+      backendApi
+        .terminalSnapshot(id)
         .then((snapshot) => {
           if (disposed) return
           unchecked.delete(id)
@@ -393,7 +431,8 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
         .catch(() => {})
     }
     for (const id of commandTabIds.split(" ")) {
-      getTransport()
+      backendPlatform
+        .getTransport()
         .subscribe(`terminal://exit/${id}`, () => {
           if (!disposed) markTerminalExited(id)
         })
@@ -405,7 +444,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
         })
         .catch(() => {})
     }
-    const unlistenReady = getTransport().onReady?.(() => {
+    const unlistenReady = backendPlatform.getTransport().onReady?.(() => {
       for (const id of listening) check(id)
     })
     return () => {
@@ -413,7 +452,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       unlistenReady?.()
       for (const unlisten of unlisteners) unlisten()
     }
-  }, [commandTabIds, markTerminalExited])
+  }, [commandTabIds, markTerminalExited, backendApi, backendPlatform])
 
   const removeExitedTerminals = useCallback((ids: string[]) => {
     setExitedTerminals((prev) => {
@@ -427,11 +466,14 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  const killTerminalTabs = useCallback((targetTabs: TerminalTab[]) => {
-    targetTabs.forEach((tab) => {
-      terminalKill(tab.id).catch(() => {})
-    })
-  }, [])
+  const killTerminalTabs = useCallback(
+    (targetTabs: TerminalTab[]) => {
+      targetTabs.forEach((tab) => {
+        backendApi.terminalKill(tab.id).catch(() => {})
+      })
+    },
+    [backendApi]
+  )
 
   const toggle = useCallback(() => {
     const autoId = randomUUID()
@@ -489,7 +531,12 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   )
 
   const createTerminalInDirectory = useCallback(
-    async (workingDir: string, title?: string, shell?: string) => {
+    async (
+      workingDir: string,
+      title?: string,
+      shell?: string,
+      folderId?: number
+    ) => {
       if (!workingDir) return null
 
       setIsOpen(true)
@@ -501,7 +548,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
         ...prev,
         {
           id,
-          folderId: currentFolderId,
+          folderId: folderId ?? currentFolderId,
           title: title ?? defaultTitle,
           workingDir,
           shell: resolveTerminalShell(shell),
@@ -527,7 +574,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     (id: string) => {
       markTerminalExited(id)
       removeExitedTerminals([id])
-      terminalKill(id).catch(() => {})
+      backendApi.terminalKill(id).catch(() => {})
       setTabs((prev) => {
         const next = prev.filter((t) => t.id !== id)
         if (next.length === 0) {
@@ -542,7 +589,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
         return next
       })
     },
-    [markTerminalExited, removeExitedTerminals]
+    [markTerminalExited, removeExitedTerminals, backendApi]
   )
 
   const closeOtherTerminals = useCallback(
@@ -577,10 +624,16 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     setActiveTabId(id)
   }, [])
 
-  const isInTerminalRegion = useCallback((target: EventTarget | null) => {
-    if (!(target instanceof Element)) return false
-    return Boolean(target.closest('[data-terminal-panel-region="true"]'))
-  }, [])
+  const isInTerminalRegion = useCallback(
+    (target: EventTarget | null) => {
+      if (!(target instanceof Element)) return false
+      return (
+        ownsEvent(target) &&
+        Boolean(target.closest('[data-terminal-panel-region="true"]'))
+      )
+    },
+    [ownsEvent]
+  )
 
   const updateLastMouseActivity = useCallback(
     (target: EventTarget | null) => {
@@ -617,7 +670,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const handleTerminalHotkeys = (event: KeyboardEvent) => {
-      if (!isOpen) return
+      if (!isOpen || !ownsEvent(event.target)) return
 
       const targetInTerminal = isInTerminalRegion(event.target)
       const activeElementInTerminal = isInTerminalRegion(document.activeElement)
@@ -654,6 +707,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     createTerminal,
     isInTerminalRegion,
     isOpen,
+    ownsEvent,
     shortcuts.close_current_terminal_tab,
     shortcuts.new_terminal_tab,
   ])

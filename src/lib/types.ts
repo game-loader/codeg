@@ -90,6 +90,8 @@ export interface RemoteWorkspaceConnection {
   sort_order: number
   created_at: string
   updated_at: string
+  /** Optional for compatibility with saved connections from older clients. */
+  config_revision?: string
 }
 
 export interface RemoteWorkspaceConnectionInput {
@@ -403,6 +405,22 @@ export interface FolderHistoryEntry {
   path: string
   name: string
   last_opened_at: string
+}
+
+/** Safe display metadata from the owning backend; never a raw remote URL. */
+export interface RepositoryProjectIdentity {
+  project_key: string
+  provider: string
+  host: string
+  repository_path: string
+  remote_name: string
+}
+
+export interface RepositoryProjectIdentityEntry {
+  folder_id: number
+  path: string | null
+  status: "resolved" | "unavailable"
+  identity: RepositoryProjectIdentity | null
 }
 
 export interface FolderDetail {

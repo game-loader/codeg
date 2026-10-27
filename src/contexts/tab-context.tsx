@@ -1,21 +1,22 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { runCorrectionOnce as standaloneRunCorrectionOnce } from "@/stores/tab-store"
+import { pruneOrphanDraftsOnce as standalonePruneOrphanDraftsOnce } from "@/stores/tab-store"
+import { runRecoveryOnce as standaloneRunRecoveryOnce } from "@/stores/tab-store"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useTabStore as legacyTabs } from "@/stores/tab-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, type ReactNode } from "react"
 import { useTranslations } from "next-intl"
 import { useShallow } from "zustand/react/shallow"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import { useAcpActions } from "@/contexts/acp-connections-context"
 import { useWorkspaceActions } from "@/contexts/workspace-context"
 import { useSortedAvailableAgents } from "@/hooks/use-sorted-available-agents"
-import { onTransportReconnect, subscribe } from "@/lib/platform"
-import {
-  pruneOrphanDraftsOnce,
-  runCorrectionOnce,
-  runRecoveryOnce,
-  useTabStore,
-  type OpenedDraftTarget,
-  type TabItem,
-} from "@/stores/tab-store"
+
+import { type OpenedDraftTarget, type TabItem } from "@/stores/tab-store"
 import {
   CONVERSATION_CHANGED_EVENT,
   TABS_CHANGED_EVENT,
@@ -40,6 +41,26 @@ interface TabProviderProps {
  * store; this component renders nothing but `children`.
  */
 export function TabProvider({ children }: TabProviderProps) {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({
+    workspace: legacyWorkspace,
+    tabs: legacyTabs,
+  })
+  const useAppWorkspaceStore = backendStores.workspace
+  const useTabStore = backendStores.tabs
+  const runCorrectionOnce = backendStoreSelection
+    ? backendStores.tabs.runCorrectionOnce
+    : standaloneRunCorrectionOnce
+  const pruneOrphanDraftsOnce = backendStoreSelection
+    ? backendStores.tabs.pruneOrphanDraftsOnce
+    : standalonePruneOrphanDraftsOnce
+  const runRecoveryOnce = backendStoreSelection
+    ? backendStores.tabs.runRecoveryOnce
+    : standaloneRunRecoveryOnce
+
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Folder.tabContext")
   const { activateConversationPane } = useWorkspaceActions()
   const { disconnect } = useAcpActions()
@@ -81,65 +102,65 @@ export function TabProvider({ children }: TabProviderProps) {
       newConversation: t("newConversation"),
       untitledConversation: t("untitledConversation"),
     })
-  }, [t])
+  }, [t, useTabStore])
 
   useEffect(() => {
     useTabStore
       .getState()
       .setSideEffects({ activateConversationPane, acpDisconnect })
-  }, [activateConversationPane, acpDisconnect])
+  }, [activateConversationPane, acpDisconnect, useTabStore])
 
   useEffect(() => {
     useTabStore
       .getState()
       .setAgentAvailability(sortedAvailableAgents, agentsFresh)
-  }, [sortedAvailableAgents, agentsFresh])
+  }, [sortedAvailableAgents, agentsFresh, useTabStore])
 
   // Sync the active tab's folderId up to the app-workspace store so derived
   // consumers (useActiveFolder, branch polling) reflect the focused folder.
   useEffect(() => {
     useTabStore.getState().syncActiveFolderId()
-  }, [rawTabs, activeTabId])
+  }, [rawTabs, activeTabId, useTabStore])
 
   // Fire the preview-replacement callbacks and trim the consumed queue.
   useEffect(() => {
     useTabStore.getState().consumePreviewReplaced()
-  }, [previewReplacedTabIds])
+  }, [previewReplacedTabIds, useTabStore])
 
   // Disconnect + retarget each queued draft-retarget request.
   useEffect(() => {
     useTabStore.getState().consumeDraftRetargets()
-  }, [draftRetargetRequests])
+  }, [draftRetargetRequests, useTabStore])
 
   // Hydrate from persisted opened_tabs on mount.
-  useEffect(() => useTabStore.getState().hydrate(), [])
+  useEffect(() => useTabStore.getState().hydrate(), [useTabStore])
 
   // Debounced compare-and-set save + broadcast.
   useEffect(() => {
     useTabStore.getState().runSaveEffect()
-  }, [rawTabs, activeTabId, tabsHydrated, saveReconcileTick])
+  }, [rawTabs, activeTabId, tabsHydrated, saveReconcileTick, useTabStore])
 
   // Clear a pending save only on unmount — NOT on every effect re-run.
-  useEffect(() => () => useTabStore.getState().clearSaveTimer(), [])
+  useEffect(() => () => useTabStore.getState().clearSaveTimer(), [useTabStore])
 
   // Reconcile the sub-session summary cache to the open child tabs.
   useEffect(() => {
     useTabStore.getState().reconcileChildSummaries()
-  }, [rawTabs, conversations, conversationsLoading, reseedTick])
+  }, [rawTabs, conversations, conversationsLoading, reseedTick, useTabStore])
 
   // Keep seeded sub-session summaries live off the global conversation channel.
   useEffect(() => {
     let disposed = false
     let unlisten: (() => void) | undefined
     void (async () => {
-      const dispose = await subscribe<ConversationChange>(
+      const dispose = await backendPlatform.subscribe<ConversationChange>(
         CONVERSATION_CHANGED_EVENT,
         (change) => useTabStore.getState().handleChildConversationChange(change)
       )
       if (disposed) dispose()
       else unlisten = dispose
     })()
-    const offReconnect = onTransportReconnect(() =>
+    const offReconnect = backendPlatform.onTransportReconnect(() =>
       useTabStore.getState().handleChildReconnect()
     )
     return () => {
@@ -147,14 +168,14 @@ export function TabProvider({ children }: TabProviderProps) {
       unlisten?.()
       offReconnect?.()
     }
-  }, [])
+  }, [backendPlatform, useTabStore])
 
   // Subscribe to the global `tabs://changed` side-channel.
   useEffect(() => {
     let disposed = false
     let unlisten: (() => void) | undefined
     void (async () => {
-      const dispose = await subscribe<TabsChanged>(
+      const dispose = await backendPlatform.subscribe<TabsChanged>(
         TABS_CHANGED_EVENT,
         (change) => useTabStore.getState().handleTabsChanged(change)
       )
@@ -168,7 +189,7 @@ export function TabProvider({ children }: TabProviderProps) {
       // broadcaster). One reconcile after subscribe is ready catches it.
       void useTabStore.getState().refetchTabs()
     })()
-    const offReconnect = onTransportReconnect(() =>
+    const offReconnect = backendPlatform.onTransportReconnect(() =>
       useTabStore.getState().refetchTabs()
     )
     return () => {
@@ -176,7 +197,7 @@ export function TabProvider({ children }: TabProviderProps) {
       unlisten?.()
       offReconnect?.()
     }
-  }, [])
+  }, [backendPlatform, useTabStore])
 
   // Correction must wait for the fresh agent list, hydrated tabs, and hydrated
   // folders (so folder defaults resolve). One-shot per session via the store.
@@ -185,7 +206,7 @@ export function TabProvider({ children }: TabProviderProps) {
     if (!tabsHydrated) return
     if (!foldersHydrated) return
     runCorrectionOnce()
-  }, [agentsFresh, tabsHydrated, foldersHydrated])
+  }, [agentsFresh, tabsHydrated, foldersHydrated, runCorrectionOnce])
 
   // Once tabs AND folders are in: drop restored drafts whose folder is gone
   // (hydration is deliberately folder-blind), then — only if that leaves nothing
@@ -197,12 +218,19 @@ export function TabProvider({ children }: TabProviderProps) {
     pruneOrphanDraftsOnce()
     if (useTabStore.getState().rawTabs.length > 0) return
     runRecoveryOnce()
-  }, [tabsHydrated, foldersHydrated, rawTabs])
+  }, [
+    tabsHydrated,
+    foldersHydrated,
+    rawTabs,
+    pruneOrphanDraftsOnce,
+    useTabStore,
+    runRecoveryOnce,
+  ])
 
   // Persist the active draft's context for the next cold start.
   useEffect(() => {
     useTabStore.getState().persistLastActiveContext()
-  }, [rawTabs, activeTabId, tabsHydrated])
+  }, [rawTabs, activeTabId, tabsHydrated, useTabStore])
 
   return <>{children}</>
 }
@@ -283,6 +311,12 @@ export interface TabContextValue {
  * tabsHydrated/tileByGroup) changes — matching the former context's behavior.
  */
 export function useTabContext(): TabContextValue {
+  const backendStores = useBackendStores({
+    workspace: legacyWorkspace,
+    tabs: legacyTabs,
+  })
+  const useTabStore = backendStores.tabs
+
   return useTabStore(
     useShallow((s) => ({
       tabs: s.tabs,

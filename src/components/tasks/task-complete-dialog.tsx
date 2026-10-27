@@ -1,9 +1,10 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import { workTaskComplete, workTaskSettingsEffective } from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -40,6 +41,8 @@ export function TaskCompleteDialog({
   onOpenChange,
   task,
 }: TaskCompleteDialogProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Tasks")
   const [deleteWorktree, setDeleteWorktree] = useState(true)
   const [submitting, setSubmitting] = useState(false)
@@ -52,7 +55,8 @@ export function TaskCompleteDialog({
     /* eslint-disable react-hooks/set-state-in-effect */
     setSubmitting(false)
     let cancelled = false
-    workTaskSettingsEffective(task.folder_id)
+    backendApi
+      .workTaskSettingsEffective(task.folder_id)
       .then((s) => {
         if (cancelled) return
         setDeleteWorktree(s.delete_worktree_default)
@@ -65,13 +69,13 @@ export function TaskCompleteDialog({
       cancelled = true
     }
     /* eslint-enable react-hooks/set-state-in-effect */
-  }, [open, task])
+  }, [open, task, backendApi])
 
   const submit = async () => {
     if (!task) return
     setSubmitting(true)
     try {
-      await workTaskComplete(task.id, hasWorktree && deleteWorktree)
+      await backendApi.workTaskComplete(task.id, hasWorktree && deleteWorktree)
       onOpenChange(false)
     } catch (e) {
       toast.error(toErrorMessage(e))

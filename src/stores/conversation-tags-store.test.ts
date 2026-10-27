@@ -11,6 +11,7 @@ vi.mock("@/lib/platform", () => ({
     new Promise<() => void>((resolve) => {
       platform.live = () => resolve(() => {})
     }),
+  onTransportReady: () => () => {},
   onTransportReconnect: () => () => {},
 }))
 
@@ -26,6 +27,7 @@ vi.mock("@/lib/api", () => ({
 
 const api = await import("@/lib/api")
 const {
+  createConversationTagsStore,
   resetConversationTagsStore,
   useConversationTagsStore,
   useConversationTagsSync,
@@ -483,5 +485,137 @@ describe("conversation tags store — branch tag", () => {
     reply.reject(new Error("offline"))
     await expect(saving).rejects.toThrow("offline")
     expect(branchTag()).toEqual(branch(true, "#cf222e"))
+  })
+})
+
+describe("conversation tags store — runtime lifecycle", () => {
+  it("keeps tombstones and mutation sequencing local to the runtime", () => {
+    const a = createConversationTagsStore(api)
+    const b = createConversationTagsStore(api)
+    a.getState().applyChange({ kind: "deleted", id: 1 })
+    a.getState().applyChange({ kind: "upsert", tag: tag(1) })
+    b.getState().applyChange({ kind: "upsert", tag: tag(1, { name: "B" }) })
+    expect(a.getState().tags).toEqual([])
+    expect(b.getState().tagsById.get(1)?.name).toBe("B")
+    a.dispose()
+    b.dispose()
+  })
+
+  it("fences reads from before a reset, including failures", async () => {
+    const store = createConversationTagsStore(api)
+    const tags = deferred<ConversationTagDetail[]>()
+    const setting = deferred<ConversationBranchTag>()
+    vi.mocked(api.listConversationTags).mockReturnValueOnce(tags.promise)
+    vi.mocked(api.getConversationBranchTag).mockReturnValueOnce(setting.promise)
+    const readingTags = store.getState().fetchTags()
+    const readingBranch = store.getState().fetchBranchTag()
+    store.resetConversationTagsStore()
+    store
+      .getState()
+      .applyChange({ kind: "upsert", tag: tag(1, { name: "new" }) })
+    tags.resolve([tag(1, { name: "old" })])
+    setting.reject(new Error("old error"))
+    await Promise.all([readingTags, readingBranch])
+    expect(store.getState().tagsById.get(1)?.name).toBe("new")
+    expect(store.getState().branchTagLoadError).toBeNull()
+    expect(store.getState().branchTagLoaded).toBe(false)
+    store.dispose()
+  })
+
+  it("does not reconcile or roll back late mutations into a retired runtime", async () => {
+    const store = createConversationTagsStore(api)
+    store.getState().applyChange({ kind: "upsert", tag: tag(1) })
+    const create = deferred<ConversationTagDetail>()
+    const update = deferred<ConversationTagDetail>()
+    const deletion = deferred<void>()
+    const reorder = deferred<void>()
+    const setting = deferred<ConversationBranchTag>()
+    vi.mocked(api.createConversationTag).mockReturnValueOnce(create.promise)
+    vi.mocked(api.updateConversationTag).mockReturnValueOnce(update.promise)
+    vi.mocked(api.deleteConversationTag).mockReturnValueOnce(deletion.promise)
+    vi.mocked(api.reorderConversationTags).mockReturnValueOnce(reorder.promise)
+    vi.mocked(api.updateConversationBranchTag).mockReturnValueOnce(
+      setting.promise
+    )
+    const writes = [
+      store
+        .getState()
+        .createTag({ folderId: null, name: "new", color: "#0969da" }),
+      store.getState().updateTag(1, { name: "renamed" }),
+      store.getState().deleteTag(1),
+      store.getState().reorderScope([1]),
+      store.getState().setBranchTag(branch(true)),
+    ]
+    const settled = Promise.allSettled(writes)
+    store.dispose()
+    create.resolve(tag(2))
+    update.resolve(tag(1, { name: "old reply" }))
+    deletion.resolve()
+    // Reorders queue behind the one in flight, so this one never went out:
+    // the retired scope refused it. Nobody is left to observe its reply.
+    reorder.promise.catch(() => {})
+    reorder.reject(new Error("old failure"))
+    setting.reject(new Error("old failure"))
+    expect(
+      (await settled).every((result) => result.status === "rejected")
+    ).toBe(true)
+    expect(store.getState().tags).toEqual([])
+    expect(store.getState().branchTag).toEqual(OFF)
+    expect(api.listConversationTags).not.toHaveBeenCalled()
+    expect(api.getConversationBranchTag).not.toHaveBeenCalled()
+  })
+
+  it("refetches on first readiness after an offline mount without duplicate reconnect listeners", async () => {
+    let ready!: () => void
+    const platform = {
+      subscribe: vi.fn(async () => () => {}),
+      onTransportReady: vi.fn((callback: () => void) => {
+        ready = callback
+        return () => {}
+      }),
+      onTransportReconnect: vi.fn(),
+    }
+    const store = createConversationTagsStore(api, platform)
+    const stop = store.startSync()
+    await Promise.resolve()
+    await Promise.resolve()
+    ready()
+    expect(api.listConversationTags).toHaveBeenCalledTimes(2)
+    expect(api.getConversationBranchTag).toHaveBeenCalledTimes(2)
+    expect(platform.onTransportReconnect).not.toHaveBeenCalled()
+    stop()
+    store.dispose()
+  })
+
+  it("releases a late subscription and ignores its events after disposal", async () => {
+    const subscribing = deferred<() => void>()
+    let handler!: (change: import("@/lib/types").ConversationTagChange) => void
+    let reconnect!: () => void
+    const unsubscribe = vi.fn()
+    const offReconnect = vi.fn()
+    const platform = {
+      subscribe: vi.fn((_event: string, callback: unknown) => {
+        handler = callback as typeof handler
+        return subscribing.promise
+      }),
+      onTransportReconnect: vi.fn((callback: () => void) => {
+        reconnect = callback
+        return offReconnect
+      }),
+    } as unknown as Parameters<typeof createConversationTagsStore>[1]
+    const store = createConversationTagsStore(api, platform)
+    const stop = store.startSync()
+    store.dispose()
+    subscribing.resolve(unsubscribe)
+    await Promise.resolve()
+    await Promise.resolve()
+    handler({ kind: "upsert", tag: tag(1) })
+    reconnect()
+    stop()
+    expect(unsubscribe).toHaveBeenCalledTimes(1)
+    expect(offReconnect).toHaveBeenCalledTimes(1)
+    expect(store.getState().tags).toEqual([])
+    // The first read waits for the subscription, which landed too late.
+    expect(api.listConversationTags).not.toHaveBeenCalled()
   })
 })

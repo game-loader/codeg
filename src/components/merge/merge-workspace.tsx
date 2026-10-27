@@ -1,5 +1,9 @@
 "use client"
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 async function emitEvent(event: string, payload?: unknown) {
   try {
@@ -19,14 +23,7 @@ import {
 } from "@/components/ui/resizable"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Button } from "@/components/ui/button"
-import {
-  gitListConflicts,
-  gitConflictFileVersions,
-  gitResolveConflict,
-  gitAbortOperation,
-  gitContinueOperation,
-  gitStartPullMerge,
-} from "@/lib/api"
+
 import { petCelebrate } from "@/lib/pet/api"
 import { languageFromPath } from "@/lib/language-detect"
 import { toErrorMessage } from "@/lib/app-error"
@@ -50,6 +47,9 @@ export function MergeWorkspace({
   onCompleted,
   onAborted,
 }: MergeWorkspaceProps) {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("MergePage")
   const [files, setFiles] = useState<string[]>([])
   const [resolvedFiles, setResolvedFiles] = useState<Set<string>>(new Set())
@@ -75,12 +75,12 @@ export function MergeWorkspace({
       if (operation === "pull") {
         setPreparing(true)
         try {
-          await gitStartPullMerge(folderPath, upstreamCommit)
+          await backendApi.gitStartPullMerge(folderPath, upstreamCommit)
         } finally {
           setPreparing(false)
         }
       }
-      const conflictFiles = await gitListConflicts(folderPath)
+      const conflictFiles = await backendApi.gitListConflicts(folderPath)
       setFiles(conflictFiles)
       if (conflictFiles.length > 0 && !selectedFile) {
         selectFile(conflictFiles[0])
@@ -94,7 +94,7 @@ export function MergeWorkspace({
     setSelectedFile(file)
     setLoadingVersions(true)
     try {
-      const v = await gitConflictFileVersions(folderPath, file)
+      const v = await backendApi.gitConflictFileVersions(folderPath, file)
       setVersions(v)
       currentContentRef.current = v.base
       setHasUnresolvedConflicts(true)
@@ -125,7 +125,7 @@ export function MergeWorkspace({
 
     setResolving(true)
     try {
-      await gitResolveConflict(folderPath, selectedFile, content)
+      await backendApi.gitResolveConflict(folderPath, selectedFile, content)
       setResolvedFiles((prev) => new Set([...prev, selectedFile]))
 
       // Notify parent window
@@ -151,10 +151,10 @@ export function MergeWorkspace({
   async function handleAbort() {
     setAborting(true)
     try {
-      await gitAbortOperation(folderPath, operation)
+      await backendApi.gitAbortOperation(folderPath, operation)
       toast.success(t("abortSuccess"))
       await emitEvent("folder://merge-aborted", { folder_id: folderId })
-      void petCelebrate("failed").catch((err) => {
+      void petCelebrate("failed", backendPlatform).catch((err) => {
         console.warn("[Merge] pet celebrate (failed) failed:", err)
       })
       onAborted()
@@ -168,10 +168,10 @@ export function MergeWorkspace({
   async function handleComplete() {
     setCompleting(true)
     try {
-      await gitContinueOperation(folderPath, operation)
+      await backendApi.gitContinueOperation(folderPath, operation)
       toast.success(t("allResolved"))
       await emitEvent("folder://merge-completed", { folder_id: folderId })
-      void petCelebrate("jumping").catch((err) => {
+      void petCelebrate("jumping", backendPlatform).catch((err) => {
         console.warn("[Merge] pet celebrate (jumping) failed:", err)
       })
       onCompleted()

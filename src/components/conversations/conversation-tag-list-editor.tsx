@@ -18,7 +18,7 @@ import {
 import { pickNextTagColor } from "@/lib/conversation-tags"
 import type { ConversationTagDetail } from "@/lib/types"
 import { cn } from "@/lib/utils"
-import { useConversationTagsStore } from "@/stores/conversation-tags-store"
+import { useConversationTagsStoreApi } from "@/stores/conversation-tags-store"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -123,6 +123,7 @@ export function ConversationTagListEditor({
   className?: string
 }) {
   const t = useTranslations("ConversationTags")
+  const useConversationTagsStore = useConversationTagsStoreApi()
   const allTags = useConversationTagsStore((s) => s.tags)
   const hydrated = useConversationTagsStore((s) => s.hydrated)
   const loadError = useConversationTagsStore((s) => s.loadError)
@@ -182,7 +183,7 @@ export function ConversationTagListEditor({
       .reorderScope(ids)
       .catch((err) => reportError("toasts.reorderFailed", err))
       .finally(() => setReordering(false))
-  }, [scopeTags, reportError])
+  }, [scopeTags, reportError, useConversationTagsStore])
 
   const openCreate = () => {
     setForm({

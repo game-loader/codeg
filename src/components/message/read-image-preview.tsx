@@ -5,8 +5,9 @@ import { AlertCircle, Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useTranscriptRoot } from "@/components/ai-elements/markdown-local-image"
 import { ImagePreviewDialog } from "@/components/ui/image-preview-dialog"
-import { readFileBase64 } from "@/lib/api"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { toErrorMessage } from "@/lib/app-error"
+import type { BackendApi } from "@/lib/backend/types"
 import {
   expandHomePath,
   isHomeRelativePath,
@@ -22,9 +23,10 @@ function isRelativePath(path: string): boolean {
 /** `~/…` against the home directory, a relative path against `baseDir`. */
 async function resolveReadPath(
   path: string,
-  baseDir: string | null
+  baseDir: string | null,
+  backendApi: BackendApi
 ): Promise<string | null> {
-  if (isHomeRelativePath(path)) return expandHomePath(path)
+  if (isHomeRelativePath(path)) return expandHomePath(path, backendApi)
   if (isAbsoluteFilePath(path)) return path
   return baseDir ? joinRootRel(baseDir, path) : null
 }
@@ -61,6 +63,7 @@ export const ReadImagePreview = memo(function ReadImagePreview({
   const t = useTranslations("Folder.chat.contentParts")
   const tList = useTranslations("Folder.chat.messageList")
   const transcriptRoot = useTranscriptRoot()
+  const backendApi = useBackendApi()
   // Only a relative path depends on the root (and reloads when it changes).
   const relative = isRelativePath(path)
   const baseDir = relative ? transcriptRoot : null
@@ -74,11 +77,11 @@ export const ReadImagePreview = memo(function ReadImagePreview({
     if (!resolvable) return
     let cancelled = false
     void (async () => {
-      const absPath = await resolveReadPath(path, baseDir)
+      const absPath = await resolveReadPath(path, baseDir, backendApi)
       // `resolvable` already ruled out a relative path with no root.
       if (absPath === null) return null
       // The file panel's own read, and its default size limit.
-      return readFileBase64(absPath)
+      return backendApi.readFileBase64(absPath)
     })().then(
       (data) => {
         if (!cancelled) setResult({ key, data, error: null })
@@ -91,7 +94,7 @@ export const ReadImagePreview = memo(function ReadImagePreview({
     return () => {
       cancelled = true
     }
-  }, [resolvable, path, baseDir, key])
+  }, [resolvable, path, baseDir, key, backendApi])
 
   if (!resolvable) return null
 

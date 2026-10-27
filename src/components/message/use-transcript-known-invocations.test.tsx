@@ -49,6 +49,7 @@ const remembered = vi.hoisted(() => ({
 const pairKey = (agentType: string, folder: string | null | undefined) =>
   `${agentType}|${folder}`
 vi.mock("@/lib/advertised-commands-store", () => ({
+  advertisedCommandsScope: () => undefined,
   getLastAdvertisedCommands: (
     agentType: string,
     folder: string | null | undefined

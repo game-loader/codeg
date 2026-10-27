@@ -1,13 +1,18 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import { gitCheckout, resolveWorktreeFolder } from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import { planBranchSwitch } from "@/lib/branch-switch"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabActions } from "@/contexts/tab-context"
+
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useTaskContext } from "@/contexts/task-context"
 import type { FolderDetail, WorktreeResolution } from "@/lib/types"
@@ -49,6 +54,16 @@ export interface SwitchToBranchArgs {
 export function useSwitchToBranch(): (
   args: SwitchToBranchArgs
 ) => Promise<void> {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.branchDropdown")
   const { openNewConversationTab } = useTabActions()
   const { openConversations } = useWorkbenchRoute()
@@ -72,7 +87,7 @@ export function useSwitchToBranch(): (
       let resolution: WorktreeResolution | null = null
       if (!isRemote) {
         try {
-          resolution = await resolveWorktreeFolder(
+          resolution = await backendApi.resolveWorktreeFolder(
             activeFolder.path,
             branchName
           )
@@ -173,7 +188,7 @@ export function useSwitchToBranch(): (
           addTask(taskId, label)
           updateTask(taskId, { status: "running" })
           try {
-            await gitCheckout(root.path, branchName)
+            await backendApi.gitCheckout(root.path, branchName)
             updateTask(taskId, { status: "completed" })
             setBranch(root.id, branchName)
             await refreshFolder(root.id)
@@ -190,6 +205,14 @@ export function useSwitchToBranch(): (
         }
       }
     },
-    [openConversations, openNewConversationTab, addTask, updateTask, t]
+    [
+      openConversations,
+      openNewConversationTab,
+      addTask,
+      updateTask,
+      t,
+      backendApi,
+      useAppWorkspaceStore,
+    ]
   )
 }

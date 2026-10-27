@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import {
   useCallback,
   useEffect,
@@ -85,16 +86,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
-import {
-  forgeChangeDetail,
-  forgeChangeFiles,
-  forgeCreateComment,
-  forgeIdentity,
-  forgeListComments,
-  forgeMergeChange,
-  forgeMergeOptions,
-  forgeSetItemState,
-} from "@/lib/api"
+
 import {
   type AppErrorTranslator,
   toLocalizedErrorMessage,
@@ -300,6 +292,8 @@ function CommentThread({
   viewportRef: RefObject<HTMLElement | null>
   viewportEl: HTMLElement | null
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Forge")
   /** The pages the FORGE has served, in the order it served them. */
   const [fetched, setFetched] = useState<ForgeComment[]>([])
@@ -350,7 +344,11 @@ function CommentThread({
       setLoading(true)
       setFailure(null)
       try {
-        const list = await forgeListComments(folderId, { kind, number, page })
+        const list = await backendApi.forgeListComments(folderId, {
+          kind,
+          number,
+          page,
+        })
         if (id !== reqRef.current) return
         // Page 1 REPLACES: it is both the first load and what the refresh
         // button asks for, and a refresh that appended would double the thread.
@@ -370,7 +368,7 @@ function CommentThread({
     },
     // Primitives only, so this identity — and the effect below that depends on
     // it — changes exactly when the ITEM does.
-    [folderId, kind, number]
+    [folderId, kind, number, backendApi]
   )
 
   useEffect(() => {
@@ -684,6 +682,8 @@ function CommentComposer({
   identity: ForgeIdentity | null
   onPosted: (comment: ForgeComment) => void
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Forge")
   const tRoot = useTranslations()
   const [body, setBody] = useState("")
@@ -698,7 +698,7 @@ function CommentComposer({
     setPosting(true)
     setFailure(null)
     try {
-      const comment = await forgeCreateComment(folderId, {
+      const comment = await backendApi.forgeCreateComment(folderId, {
         kind,
         number,
         body: trimmed,
@@ -712,7 +712,7 @@ function CommentComposer({
     } finally {
       setPosting(false)
     }
-  }, [folderId, kind, number, onPosted, posting, trimmed])
+  }, [folderId, kind, number, onPosted, posting, trimmed, backendApi])
 
   return (
     <div className={RAIL}>
@@ -1032,6 +1032,8 @@ function useChangeDetail(
   folderId: number | null,
   number: number | null
 ): ChangeDetailState {
+  const backendApi = useBackendApi()
+
   /** The item this state describes. Identity, not a fetch key: the panel is
    *  non-modal, so clicking another row swaps the item underneath without ever
    *  closing, and there is no `key` here to remount through. */
@@ -1061,7 +1063,7 @@ function useChangeDetail(
     setLoading(true)
     setFailure(null)
     try {
-      const next = await forgeChangeDetail(folderId, number)
+      const next = await backendApi.forgeChangeDetail(folderId, number)
       if (id !== reqRef.current) return
       setDetail(next)
     } catch (error) {
@@ -1072,7 +1074,7 @@ function useChangeDetail(
     } finally {
       if (id === reqRef.current) setLoading(false)
     }
-  }, [folderId, number])
+  }, [folderId, number, backendApi])
 
   useEffect(() => {
     void load()
@@ -1390,6 +1392,8 @@ function ChangedFiles({
    *  own either way. */
   detail: ForgeChangeDetail | null
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Forge")
   const [view, switchView] = useDiffViewMode()
   const [files, setFiles] = useState<ForgeChangedFile[]>([])
@@ -1411,7 +1415,10 @@ function ChangedFiles({
       setLoading(true)
       setFailure(null)
       try {
-        const list = await forgeChangeFiles(folderId, { number, page })
+        const list = await backendApi.forgeChangeFiles(folderId, {
+          number,
+          page,
+        })
         if (id !== reqRef.current) return
         // Page 1 replaces; later pages append. Same rule as the thread, and
         // for the same reason — page 1 is also what a re-open re-asks for.
@@ -1425,7 +1432,7 @@ function ChangedFiles({
         if (id === reqRef.current) setLoading(false)
       }
     },
-    [folderId, number]
+    [folderId, number, backendApi]
   )
 
   useEffect(() => {
@@ -1869,6 +1876,8 @@ function useForgeIdentity(
   folderId: number | null,
   enabled: boolean
 ): ForgeIdentity | null {
+  const backendApi = useBackendApi()
+
   const [identity, setIdentity] = useState<ForgeIdentity | null>(null)
   /** The folder the answer above describes. */
   const [shown, setShown] = useState<number | null>(null)
@@ -1892,14 +1901,15 @@ function useForgeIdentity(
     // and the next open names an account from the repository before this one.
     const id = ++reqRef.current
     if (folderId == null || !enabled) return
-    void forgeIdentity(folderId)
+    void backendApi
+      .forgeIdentity(folderId)
       .then((next) => {
         if (id === reqRef.current) setIdentity(next)
       })
       .catch(() => {
         if (id === reqRef.current) setIdentity(null)
       })
-  }, [folderId, enabled])
+  }, [folderId, enabled, backendApi])
 
   return identity
 }
@@ -1926,6 +1936,8 @@ function useMergeOptions(
   folderId: number | null,
   enabled: boolean
 ): ForgeMergeOptions | null {
+  const backendApi = useBackendApi()
+
   const [options, setOptions] = useState<ForgeMergeOptions | null>(null)
   /** The folder the answer above describes, so a folder switch cannot leave
    *  one repository's permitted methods on another's button. */
@@ -1942,7 +1954,8 @@ function useMergeOptions(
   useEffect(() => {
     if (folderId == null || !enabled) return
     const id = ++reqRef.current
-    void forgeMergeOptions(folderId)
+    void backendApi
+      .forgeMergeOptions(folderId)
       .then((next) => {
         if (id === reqRef.current) setOptions(next)
       })
@@ -1955,7 +1968,7 @@ function useMergeOptions(
           })
         }
       })
-  }, [folderId, enabled])
+  }, [folderId, enabled, backendApi])
 
   return options
 }
@@ -2367,6 +2380,8 @@ export function ForgeIssueDetailSheet({
    */
   onCommentPosted: (item: { isPr: boolean; number: number }) => void
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Forge")
   const tTasks = useTranslations("Tasks")
   // Root-scoped, like the page's: a forge failure carries a FULL dotted i18n
@@ -2497,7 +2512,7 @@ export function ForgeIssueDetailSheet({
       if (row == null || folderId == null) return
       setChanging(true)
       try {
-        const updated = await forgeSetItemState(folderId, {
+        const updated = await backendApi.forgeSetItemState(folderId, {
           kind: row.is_pr ? "pr" : "issue",
           number: row.number,
           action,
@@ -2514,7 +2529,7 @@ export function ForgeIssueDetailSheet({
         setChanging(false)
       }
     },
-    [folderId, onRowUpdated, row, tRoot]
+    [folderId, onRowUpdated, row, tRoot, backendApi]
   )
 
   const reloadDetail = detail.reload
@@ -2523,7 +2538,7 @@ export function ForgeIssueDetailSheet({
       if (row == null || folderId == null) return
       setMerging(true)
       try {
-        const updated = await forgeMergeChange(folderId, {
+        const updated = await backendApi.forgeMergeChange(folderId, {
           number: row.number,
           method: pending.method,
           // The commit the DIALOG was armed with, not whatever the panel holds
@@ -2575,7 +2590,7 @@ export function ForgeIssueDetailSheet({
         setMerging(false)
       }
     },
-    [folderId, onRowUpdated, reloadDetail, row, t, tRoot]
+    [folderId, onRowUpdated, reloadDetail, row, t, tRoot, backendApi]
   )
 
   if (row == null) return null

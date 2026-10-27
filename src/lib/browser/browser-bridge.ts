@@ -6,7 +6,9 @@
 // in an iframe; the entry sets the cookie and redirects to the page. No
 // React, no DOM beyond `fetch` for the reachability probe.
 
-import { getTransport, isDesktop } from "@/lib/transport"
+import type { BackendPlatform } from "@/lib/backend/types"
+import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
+import { isDesktop } from "@/lib/transport"
 
 import { isLoopbackHost } from "./browser-url"
 
@@ -48,22 +50,43 @@ const OFF: BridgeStatus = {
  *  asks again. */
 export const STATUS_RETRY_DELAYS_MS = [1000, 3000]
 
-let statusPromise: Promise<BridgeStatus> | null = null
-let resolvedStatus: BridgeStatus | null = null
+interface StatusCache {
+  promise: Promise<BridgeStatus> | null
+  resolved: BridgeStatus | null
+}
+let statusCaches = new WeakMap<BackendPlatform, StatusCache>()
+function cacheFor(platform: BackendPlatform): StatusCache {
+  let cache = statusCaches.get(platform)
+  if (!cache) {
+    cache = { promise: null, resolved: null }
+    statusCaches.set(platform, cache)
+  }
+  return cache
+}
 
-async function askStatus(): Promise<BridgeStatus> {
+async function askStatus(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<BridgeStatus> {
+  const cache = cacheFor(backendPlatform)
+  let transport: ReturnType<BackendPlatform["getTransport"]>
+  try {
+    transport = backendPlatform.getTransport()
+  } catch {
+    cache.promise = null
+    return OFF
+  }
   for (let attempt = 0; ; attempt++) {
     try {
-      const status = await getTransport().call<BridgeStatus>(
+      const status = await transport.call<BridgeStatus>(
         "browser_bridge_status",
         {}
       )
-      resolvedStatus = status
+      cache.resolved = status
       return status
     } catch {
       const delay = STATUS_RETRY_DELAYS_MS[attempt]
       if (delay === undefined) {
-        statusPromise = null
+        cache.promise = null
         return OFF
       }
       await new Promise((resolve) => setTimeout(resolve, delay))
@@ -76,32 +99,46 @@ async function askStatus(): Promise<BridgeStatus> {
  * desktop never needs it (its browser tabs reach the host directly). A call
  * that fails after its retries is not cached, so the next caller asks again.
  */
-export function bridgeStatus(): Promise<BridgeStatus> {
+export function bridgeStatus(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<BridgeStatus> {
+  const cache = cacheFor(backendPlatform)
   if (isDesktop()) {
-    resolvedStatus = OFF
+    cache.resolved = OFF
     return Promise.resolve(OFF)
   }
-  if (!statusPromise) statusPromise = askStatus()
-  return statusPromise
+  if (!cache.promise) cache.promise = askStatus(backendPlatform)
+  return cache.promise
 }
 
 /** Synchronous view for decisions inside a click; null until asked once. */
-export function bridgeStatusSnapshot(): BridgeStatus | null {
-  return resolvedStatus
+export function bridgeStatusSnapshot(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): BridgeStatus | null {
+  return cacheFor(backendPlatform).resolved
 }
 
 /** Tests only. */
 export function resetBridgeStatusForTests(): void {
-  statusPromise = null
-  resolvedStatus = null
+  statusCaches = new WeakMap()
 }
 
-export function bridgeOpen(url: string, tabId: string): Promise<BridgeGrant> {
-  return getTransport().call<BridgeGrant>("browser_bridge_open", { url, tabId })
+export function bridgeOpen(
+  url: string,
+  tabId: string,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<BridgeGrant> {
+  return backendPlatform
+    .getTransport()
+    .call<BridgeGrant>("browser_bridge_open", { url, tabId })
 }
 
-export function bridgeClose(tabId: string): Promise<void> {
-  return getTransport()
+export function bridgeClose(
+  tabId: string,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<void> {
+  return backendPlatform
+    .getTransport()
     .call<unknown>("browser_bridge_close", { tabId })
     .then(() => undefined)
 }

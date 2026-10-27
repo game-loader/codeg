@@ -1,5 +1,9 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendEventScope } from "@/hooks/use-runtime-event-scope"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import {
   useCallback,
   useEffect,
@@ -14,8 +18,6 @@ import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { Funnel, Play, Plus, ListTodo, Search, Tag, X } from "lucide-react"
 import { useTasksView } from "@/contexts/tasks-view-context"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { workTaskArchive, workTaskReorder, workTaskStart } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import {
   consumePendingTaskDraft,
@@ -114,6 +116,12 @@ export function TasksPageTitle() {
  * keep all clients converged.
  */
 export function TasksPage() {
+  const backendScope = useBackendEventScope()
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Tasks")
   const { tasks, loading, refetch, viewMode } = useTasksView()
   const folders = useAppWorkspaceStore((s) => s.folders)
@@ -231,7 +239,7 @@ export function TasksPage() {
   // is unmounted while other routes are active) and on the live event.
   useEffect(() => {
     const consume = () => {
-      const draft = consumePendingTaskDraft()
+      const draft = consumePendingTaskDraft(backendScope)
       if (!draft) return
       openNewTask(draft)
     }
@@ -239,17 +247,21 @@ export function TasksPage() {
     window.addEventListener(CREATE_TASK_FROM_TEXT_EVENT, consume)
     return () =>
       window.removeEventListener(CREATE_TASK_FROM_TEXT_EVENT, consume)
-  }, [openNewTask])
+  }, [openNewTask, backendScope])
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   // The settings entry lives in the chrome strip (TasksPageTitle), a separate
   // tree branch — it asks this page (which owns the dialog + folder scope) to
   // open via a window event, like the "task from message" hand-off above.
   useEffect(() => {
-    const open = () => setSettingsOpen(true)
+    const open = (event: Event) => {
+      const detail = (event as CustomEvent<{ backendScope?: string }>).detail
+      if (detail?.backendScope !== backendScope) return
+      setSettingsOpen(true)
+    }
     window.addEventListener(OPEN_TASK_SETTINGS_EVENT, open)
     return () => window.removeEventListener(OPEN_TASK_SETTINGS_EVENT, open)
-  }, [])
+  }, [backendScope])
 
   const visibleTasks = useMemo(
     () =>
@@ -410,7 +422,6 @@ export function TasksPage() {
   // handler reads.
   useEffect(() => {
     if (drag && !todoTasks.some((task) => task.id === drag.task.id)) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       abortDrag()
     }
   }, [drag, todoTasks, abortDrag])
@@ -442,14 +453,15 @@ export function TasksPage() {
         // The row may have advanced during the drag; the engine would reject
         // the stale start anyway, so don't spend a request and a toast on it.
         const live = tasksRef.current.find((row) => row.id === task.id)
-        if (live?.status === "todo") void act(() => workTaskStart(task.id))
+        if (live?.status === "todo")
+          void act(() => backendApi.workTaskStart(task.id))
         return
       }
       const order = dragOrderRef.current
       if (folderFilter != null && order != null) {
         void (async () => {
           try {
-            await workTaskReorder(folderFilter, order)
+            await backendApi.workTaskReorder(folderFilter, order)
           } catch (e) {
             toast.error(toErrorMessage(e))
           }
@@ -458,7 +470,7 @@ export function TasksPage() {
         })()
       }
     },
-    [act, clearDrag, folderFilter, refetch]
+    [act, clearDrag, folderFilter, refetch, backendApi]
   )
 
   // Archives whatever the Done column currently shows unarchived — respects
@@ -477,9 +489,11 @@ export function TasksPage() {
     const targets = archivableDone
     if (targets.length === 0) return
     void act(() =>
-      Promise.all(targets.map((task) => workTaskArchive(task.id, true)))
+      Promise.all(
+        targets.map((task) => backendApi.workTaskArchive(task.id, true))
+      )
     )
-  }, [act, archivableDone])
+  }, [act, archivableDone, backendApi])
 
   // The badge counts deviations from the DEFAULT view (canceled shown,
   // archived hidden), not checked boxes — a pristine board shows no badge.

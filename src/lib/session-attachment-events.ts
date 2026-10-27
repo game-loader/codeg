@@ -4,6 +4,7 @@ export const ATTACH_FILE_TO_SESSION_EVENT = "codeg:attach-file-to-session"
 
 export interface AttachFileToSessionDetail {
   tabId: string
+  backendKey?: string
   path: string
   /**
    * Optional 1-based, inclusive line span to attach as a ranged file badge
@@ -30,6 +31,7 @@ export const ATTACH_SESSION_TO_SESSION_EVENT = "codeg:attach-session-to-session"
 export interface AttachSessionToSessionDetail {
   /** The conversation tab whose composer receives the mention badge. */
   tabId: string
+  backendKey?: string
   /**
    * The conversation being mentioned. Carried whole (rather than by id) so the
    * consumer builds the badge through the same `sessionToSuggestion` adapter the
@@ -66,6 +68,10 @@ export const ATTACH_PAGE_TO_SESSION_EVENT = "codeg:attach-page-to-session"
 export interface AttachPageToSessionDetail {
   /** The conversation tab whose composer receives it. */
   tabId: string
+  backendKey?: string
+  /** Captured before native work starts; belongs to one BackendClient
+   *  generation. Undefined only for standalone, provider-free handoffs. */
+  backendScope?: string
   label: string
   text: string
   /** Names the block for the agent: the page's address, with anything
@@ -100,6 +106,7 @@ export const APPEND_TEXT_TO_SESSION_EVENT = "codeg:append-text-to-session"
 
 export interface AppendTextToSessionDetail {
   tabId: string
+  backendKey?: string
   text: string
 }
 

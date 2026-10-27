@@ -1,5 +1,10 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback } from "react"
 import {
   Menu,
@@ -10,7 +15,7 @@ import {
   SquareTerminal,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
-import { openSettingsWindow } from "@/lib/api"
+
 import { isDesktop } from "@/lib/platform"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useIsActiveChatMode } from "@/hooks/use-is-active-chat-mode"
@@ -20,7 +25,7 @@ import { useSearchDialog } from "@/contexts/search-dialog-context"
 import { useSidebarContext } from "@/contexts/sidebar-context"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
-import { useTabActions } from "@/contexts/tab-context"
+
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { WorkbenchRouteChromeActions } from "@/components/workbench/workbench-content"
 import { MAC_TRAFFIC_LIGHT_INSET } from "@/lib/window-chrome"
@@ -45,6 +50,15 @@ import { WindowControls } from "./window-controls"
  * self-nulls elsewhere), exactly like the desktop edges.
  */
 export function FolderTitleBar() {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({})
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+
+  const backendApi = useBackendApi()
+
   const tTitleBar = useTranslations("Folder.folderTitleBar")
   const tCard = useTranslations("Folder.conversationCard")
   const { isOpen: sidebarOpen, toggle } = useSidebarContext()
@@ -59,10 +73,10 @@ export function FolderTitleBar() {
   const showMacInset = isMac && isDesktop()
 
   const handleOpenSettings = useCallback(() => {
-    openSettingsWindow().catch((err) => {
+    backendApi.openSettingsWindow().catch((err) => {
       console.error("[FolderTitleBar] failed to open settings:", err)
     })
-  }, [])
+  }, [backendApi])
 
   // Mirror the sidebar's "New chat": return to the conversation workspace, then
   // start a new conversation in the active folder — or folderless chat mode when

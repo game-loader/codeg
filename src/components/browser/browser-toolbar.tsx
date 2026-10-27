@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useEffect, useRef, useState, type KeyboardEvent } from "react"
 import {
   ArrowLeft,
@@ -183,6 +184,8 @@ export function BrowserToolbar({
   tab: BrowserWorkspaceTab
   state: BrowserTabState | null
 }) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Browser.toolbar")
   // Root translator alongside it, for the keys the BACKEND stamps on its
   // errors (`browser.inspector.error.*`); unknown keys fall back to the
@@ -258,7 +261,10 @@ export function BrowserToolbar({
     // remote host beside this one, the way a link to it does; with nowhere to
     // open one, it goes nowhere rather than here. A tab of the remote host
     // goes there itself: everything it loads comes from that host.
-    if (tab.browser.remote !== true && isRemoteHostAddress(url)) {
+    if (
+      tab.browser.remote !== true &&
+      isRemoteHostAddress(url, backendPlatform)
+    ) {
       setDraft(address)
       openBrowserTab?.(url, { remote: true, openerTabId: tab.id })
       return

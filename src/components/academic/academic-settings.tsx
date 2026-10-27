@@ -1,19 +1,29 @@
 "use client"
 
+import { useAcademicStore as legacyAcademic } from "@/stores/academic-store"
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import {
+  useBackendAcademicApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
-import { getAgentLabel } from "@/lib/custom-agents"
-import {
-  academicSettingsSet,
-  type AcademicSettings as Settings,
-} from "@/lib/academic"
-import { getTransport } from "@/lib/transport"
-import { useAcademicStore } from "@/stores/academic-store"
+
+import { type AcademicSettings as Settings } from "@/lib/academic"
 
 export function AcademicSettings({ settings }: { settings: Settings }) {
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendStores = useBackendStores({ academic: legacyAcademic })
+  const useAcademicStore = backendStores.academic
+
+  const backendAcademic = useBackendAcademicApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Academic")
   const { agents } = useAcpAgents()
   const [agentType, setAgentType] = useState(settings.agent_type)
@@ -45,12 +55,13 @@ export function AcademicSettings({ settings }: { settings: Settings }) {
           setError(t("invalidPort"))
           return
         }
-        const transport = getTransport()
-        const isCurrent = () => mounted.current && transport === getTransport()
+        const transport = backendPlatform.getTransport()
+        const isCurrent = () =>
+          mounted.current && transport === backendPlatform.getTransport()
         setSaving(true)
         setError(null)
         try {
-          const updated = await academicSettingsSet({
+          const updated = await backendAcademic.academicSettingsSet({
             agentType,
             bridgePort,
             mcpEnabled,

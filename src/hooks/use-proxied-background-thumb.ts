@@ -1,3 +1,6 @@
+import { useBackendPlatform } from "@/contexts/backend-client-context"
+import type { BackendPlatform } from "@/lib/backend/types"
+import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
 import { useEffect, useState } from "react"
 
 import { fetchWorkspaceBgMarketAsset } from "@/lib/workspace-background-market"
@@ -33,14 +36,17 @@ function rememberAsset(url: string, asset: Promise<BackgroundAsset>): void {
   }
 }
 
-function loadAsset(url: string): Promise<BackgroundAsset> {
+function loadAsset(
+  url: string,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<BackgroundAsset> {
   const existing = assetCache.get(url)
   if (existing) {
     rememberAsset(url, existing)
     return existing
   }
 
-  const promise = fetchWorkspaceBgMarketAsset(url)
+  const promise = fetchWorkspaceBgMarketAsset(url, backendPlatform)
   rememberAsset(url, promise)
   // Don't cache a rejection — a transient network blip stays retryable. The
   // eviction is identity-guarded so a superseded request's late failure
@@ -71,6 +77,8 @@ interface Outcome {
  * from async callbacks, never synchronously in the effect body.
  */
 export function useProxiedBackgroundThumb(url: string): ProxiedThumb {
+  const backendPlatform = useBackendPlatform()
+
   const [state, setState] = useState<{ url: string | null; outcome: Outcome }>(
     () => ({ url: null, outcome: { src: null, failed: false } })
   )
@@ -80,7 +88,7 @@ export function useProxiedBackgroundThumb(url: string): ProxiedThumb {
 
     let cancelled = false
     let objectUrl: string | null = null
-    loadAsset(url)
+    loadAsset(url, backendPlatform)
       .then((asset) => {
         if (cancelled) return
         objectUrl = createBackgroundObjectUrl(asset)
@@ -95,7 +103,7 @@ export function useProxiedBackgroundThumb(url: string): ProxiedThumb {
       cancelled = true
       if (objectUrl) revokeBackgroundObjectUrl(objectUrl)
     }
-  }, [url])
+  }, [url, backendPlatform])
 
   if (state.url === url) {
     return {

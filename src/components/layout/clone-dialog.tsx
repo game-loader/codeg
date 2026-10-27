@@ -1,14 +1,16 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useState, useMemo } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { Loader2 } from "lucide-react"
-import { cloneRepository } from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import { joinFsPath } from "@/lib/path-utils"
 import type { FolderDetail } from "@/lib/types"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useGitCredential } from "@/contexts/git-credential-context"
 import {
   Dialog,
@@ -41,6 +43,11 @@ export function CloneDialog({
   onOpenChange,
   onFolderOpened,
 }: CloneDialogProps) {
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.cloneDialog")
   const tToasts = useTranslations("Folder.toasts")
   const openFolder = useAppWorkspaceStore((s) => s.openFolder)
@@ -85,7 +92,7 @@ export function CloneDialog({
     setError(null)
     try {
       await withCredentialRetry(
-        (creds) => cloneRepository(url, fullPath, creds),
+        (creds) => backendApi.cloneRepository(url, fullPath, creds),
         { remoteUrl: url }
       )
       const detail = await openFolder(fullPath)

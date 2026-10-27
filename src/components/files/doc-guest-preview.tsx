@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -88,6 +89,8 @@ export function DocGuestPreview({
   /** The user prefers the inline preview for this file. */
   onUseInline: () => void
 }) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Browser.doc")
   const path = tab.path ?? ""
   // One backend id per MOUNT. The guest is torn down when its preview
@@ -340,7 +343,7 @@ export function DocGuestPreview({
             <NoticeAction
               label={t("openWithSystem")}
               onClick={() => {
-                void openWithOsHandler(notice.url)
+                void openWithOsHandler(notice.url, backendPlatform)
                 setBrowserTabNotice(storeKey, null)
               }}
             />

@@ -3,10 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import {
-  gitGenerateCommitMessage,
-  gitGenerateCommitMessageCancel,
-} from "@/lib/api"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import {
   toLocalizedErrorMessage,
   type AppErrorTranslator,
@@ -66,6 +63,7 @@ export function useCommitMessageGeneration(target: {
   folderId: number | null
 }): CommitMessageGeneration {
   const t = useTranslations("CommitMessageGeneration")
+  const backendApi = useBackendApi()
   const [generating, setGenerating] = useState(false)
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [now, setNow] = useState(() => Date.now())
@@ -80,8 +78,8 @@ export function useCommitMessageGeneration(target: {
     activeRef.current = null
     setGenerating(false)
     setStartedAt(null)
-    void gitGenerateCommitMessageCancel(requestId).catch(() => {})
-  }, [])
+    void backendApi.gitGenerateCommitMessageCancel(requestId).catch(() => {})
+  }, [backendApi])
 
   // A folder switch or unmount ends the run: its answer would describe the
   // other folder's changes.
@@ -112,7 +110,7 @@ export function useCommitMessageGeneration(target: {
         return true
       }
       try {
-        const result = await gitGenerateCommitMessage({
+        const result = await backendApi.gitGenerateCommitMessage({
           requestId,
           path: target.path,
           folderId: target.folderId,
@@ -139,7 +137,7 @@ export function useCommitMessageGeneration(target: {
         return null
       }
     },
-    [t, target.folderId, target.path]
+    [t, target.folderId, target.path, backendApi]
   )
 
   const elapsedSeconds =

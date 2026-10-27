@@ -95,3 +95,33 @@ export function WorkbenchRouteProvider({ children }: { children: ReactNode }) {
     </WorkbenchRouteContext.Provider>
   )
 }
+
+/** Render existing navigation under the fixed runtime's route controller. */
+export function WorkbenchRouteActionsProvider({
+  routeId,
+  navigate,
+  children,
+}: {
+  routeId: WorkbenchRouteId
+  navigate: (route: WorkbenchRouteId) => void
+  children: ReactNode
+}) {
+  const openConversations = useCallback(
+    () => navigate("conversations"),
+    [navigate]
+  )
+  const value = useMemo(
+    () => ({
+      routeId,
+      isConversations: routeId === "conversations",
+      setRoute: navigate,
+      openConversations,
+    }),
+    [routeId, navigate, openConversations]
+  )
+  return (
+    <WorkbenchRouteContext.Provider value={value}>
+      {children}
+    </WorkbenchRouteContext.Provider>
+  )
+}

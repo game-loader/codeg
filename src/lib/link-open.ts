@@ -1,7 +1,9 @@
 // The primitive ways of opening an external address from the app, shared by
 // the transcript link flow and the built-in browser's link decision. No React.
 
-import { getActiveRemoteConnectionId, isDesktop } from "@/lib/transport"
+import type { BackendPlatform } from "@/lib/backend/types"
+import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
+import { isDesktop } from "@/lib/transport"
 import { openUrl } from "@/lib/platform"
 
 /**
@@ -28,8 +30,10 @@ export function windowOpenReachesABrowser(): boolean {
  * DOES reach the OS handler from inside a webview, and it sidesteps the
  * question of whether the opener capability covers non-http(s) schemes.
  */
-export function isWebOpenerEnvironment(): boolean {
-  return !isDesktop() || getActiveRemoteConnectionId() !== null
+export function isWebOpenerEnvironment(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): boolean {
+  return !isDesktop() || backendPlatform.getActiveRemoteConnectionId() !== null
 }
 
 /**
@@ -77,8 +81,11 @@ export function openInSystemBrowser(url: string): Promise<void> {
 }
 
 /** `mailto:` / `tel:` — the OS handler route. */
-export function openWithOsHandler(url: string): Promise<void> {
-  if (isWebOpenerEnvironment()) {
+export function openWithOsHandler(
+  url: string,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<void> {
+  if (isWebOpenerEnvironment(backendPlatform)) {
     dispatchOsHandlerUrl(url)
     return Promise.resolve()
   }

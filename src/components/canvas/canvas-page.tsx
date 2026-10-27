@@ -1,5 +1,8 @@
 "use client"
 
+import { useCanvasBoardsStore as legacyCanvasBoards } from "@/stores/canvas-boards-store"
+import { useCanvasStore as legacyCanvas } from "@/stores/canvas-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useEffect, useState } from "react"
 import dynamic from "next/dynamic"
 import {
@@ -20,8 +23,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { WorkbenchPageTitle } from "@/components/workbench/workbench-page-title"
 import type { CanvasBoardSummary } from "@/lib/types"
-import { useCanvasBoardsStore } from "@/stores/canvas-boards-store"
-import { useCanvasStore } from "@/stores/canvas-store"
+
 import {
   useCanvasBoardActions,
   useCanvasBoardsData,
@@ -59,6 +61,13 @@ const UNSAFE_FILE_CHARS = /[\\/:*?"<>|\u0000-\u001f]+/g
  * know it too.
  */
 export function CanvasPage() {
+  const backendStores = useBackendStores({
+    canvasBoards: legacyCanvasBoards,
+    canvas: legacyCanvas,
+  })
+  const useCanvasBoardsStore = backendStores.canvasBoards
+  const useCanvasStore = backendStores.canvas
+
   useCanvasBoardsData()
   const t = useTranslations("Canvas")
   const activeBoardId = useCanvasBoardsStore((s) => s.activeBoardId)
@@ -111,6 +120,12 @@ export function CanvasPage() {
 }
 
 export function CanvasPageTitle() {
+  const backendStores = useBackendStores({
+    canvasBoards: legacyCanvasBoards,
+    canvas: legacyCanvas,
+  })
+  const useCanvasBoardsStore = backendStores.canvasBoards
+
   const t = useTranslations("Canvas")
   const activeBoardId = useCanvasBoardsStore((s) => s.activeBoardId)
   const closeBoard = useCanvasBoardsStore((s) => s.closeBoard)

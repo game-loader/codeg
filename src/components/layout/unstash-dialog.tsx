@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Archive,
@@ -45,13 +46,7 @@ import {
 } from "@/components/ai-elements/file-tree"
 import { DiffViewer } from "@/components/diff/diff-viewer"
 import { ImageDiffView } from "@/components/diff/image-diff-view"
-import {
-  gitStashList,
-  gitStashShow,
-  gitStashApply,
-  gitStashDrop,
-  gitShowFile,
-} from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import { loadImageDiffSides, type ImageDiffSides } from "@/lib/image-diff"
 import { isBinaryImageFile, languageFromPath } from "@/lib/language-detect"
@@ -182,6 +177,8 @@ interface StashWorkspaceProps {
 }
 
 export function StashWorkspace({ folderPath }: StashWorkspaceProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.branchDropdown.unstashDialog")
 
   const [stashes, setStashes] = useState<GitStashEntry[]>([])
@@ -212,14 +209,14 @@ export function StashWorkspace({ folderPath }: StashWorkspaceProps) {
   const loadStashes = useCallback(async () => {
     setListLoading(true)
     try {
-      const list = await gitStashList(folderPath)
+      const list = await backendApi.gitStashList(folderPath)
       setStashes(list)
     } catch (err) {
       toast.error(toErrorMessage(err))
     } finally {
       setListLoading(false)
     }
-  }, [folderPath])
+  }, [folderPath, backendApi])
 
   useEffect(() => {
     loadStashes()
@@ -235,7 +232,7 @@ export function StashWorkspace({ folderPath }: StashWorkspaceProps) {
     if (!stashFiles[stashRef]) {
       setFilesLoading(stashRef)
       try {
-        const fileList = await gitStashShow(folderPath, stashRef)
+        const fileList = await backendApi.gitStashShow(folderPath, stashRef)
         setStashFiles((prev) => ({ ...prev, [stashRef]: fileList }))
       } catch (err) {
         toast.error(toErrorMessage(err))
@@ -260,15 +257,18 @@ export function StashWorkspace({ folderPath }: StashWorkspaceProps) {
           folderPath,
           file,
           { kind: "ref", ref: `${stashRef}^` },
-          { kind: "ref", ref: stashRef }
+          { kind: "ref", ref: stashRef },
+          backendApi
         )
         if (requestId !== diffRequestRef.current) return
         setImageSides({ stashRef, file, sides })
         return
       }
       const [orig, mod] = await Promise.all([
-        gitShowFile(folderPath, file, stashRef + "^").catch(() => ""),
-        gitShowFile(folderPath, file, stashRef).catch(() => ""),
+        backendApi
+          .gitShowFile(folderPath, file, stashRef + "^")
+          .catch(() => ""),
+        backendApi.gitShowFile(folderPath, file, stashRef).catch(() => ""),
       ])
       if (requestId !== diffRequestRef.current) return
       setOriginalContent(orig)
@@ -285,7 +285,7 @@ export function StashWorkspace({ folderPath }: StashWorkspaceProps) {
   async function handleApply(stashRef: string) {
     setActionLoading(true)
     try {
-      await gitStashApply(folderPath, stashRef)
+      await backendApi.gitStashApply(folderPath, stashRef)
       toast.success(t("applySuccess"))
     } catch (err) {
       toast.error(toErrorMessage(err))
@@ -297,7 +297,7 @@ export function StashWorkspace({ folderPath }: StashWorkspaceProps) {
   async function handleDrop(stashRef: string) {
     setActionLoading(true)
     try {
-      await gitStashDrop(folderPath, stashRef)
+      await backendApi.gitStashDrop(folderPath, stashRef)
       toast.success(t("dropSuccess"))
       if (expandedStash === stashRef) {
         setExpandedStash(null)

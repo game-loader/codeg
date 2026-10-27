@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useEffect, useState } from "react"
 import { Copy, ExternalLink, Loader2, RotateCw } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -57,6 +58,8 @@ function messageOf(error: unknown): string {
  * show, a top-level tab on the same bridge origin can.
  */
 export function BrowserBridgeView({ tab }: { tab: BrowserWorkspaceTab }) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Browser.bridge")
   const url = tab.browser.initialUrl
   const tabId = browserTabBackendId(tab.id) ?? tab.id
@@ -83,7 +86,7 @@ export function BrowserBridgeView({ tab }: { tab: BrowserWorkspaceTab }) {
     // `randomUUID` from utils: `crypto.randomUUID` is missing in a
     // non-secure context, which is where web mode over a LAN address runs.
     const holdId = `${tabId}:${randomUUID()}`
-    const opening = bridgeOpen(url, holdId)
+    const opening = bridgeOpen(url, holdId, backendPlatform)
     void (async () => {
       let grant: BridgeGrant
       try {
@@ -109,10 +112,10 @@ export function BrowserBridgeView({ tab }: { tab: BrowserWorkspaceTab }) {
       // the server recorded the hold, and releasing an unknown id is a
       // no-op there. The listener closes a minute later unless another
       // tab uses it; coming back mints a new grant and reloads.
-      const release = () => bridgeClose(holdId).catch(() => {})
+      const release = () => bridgeClose(holdId, backendPlatform).catch(() => {})
       void opening.then(release, release)
     }
-  }, [url, tabId, attempt])
+  }, [url, tabId, attempt, backendPlatform])
 
   const src =
     phase.kind === "ready" || phase.kind === "unreachable" ? phase.src : null

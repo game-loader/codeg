@@ -21,14 +21,8 @@ import {
 } from "@/components/settings/skill-agent-matrix"
 import { invalidateAgentSkillsCache } from "@/hooks/use-agent-skills"
 import { useLatestCall } from "@/hooks/use-latest-call"
-import {
-  acpListAgents,
-  generativeUiApplyLinks,
-  generativeUiListAllInstallStatuses,
-  generativeUiReadContent,
-  generativeUiSkillInfo,
-  type GenerativeUiSkillInfo,
-} from "@/lib/api"
+import { useBackendApi } from "@/contexts/backend-client-context"
+import type { GenerativeUiSkillInfo } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import { piUsesCustomAgentDir } from "@/lib/pi-config"
 import type { AcpAgentInfo, AgentType, ExpertLinkState } from "@/lib/types"
@@ -42,6 +36,7 @@ export function GenerativeUiBody({
 }: {
   onRegisterRefresh?: (refresh: () => void) => void
 }) {
+  const backendApi = useBackendApi()
   const t = useTranslations("GenerativeUiSettings")
 
   const [skill, setSkill] = useState<GenerativeUiSkillInfo | null>(null)
@@ -59,8 +54,8 @@ export function GenerativeUiBody({
     setLoadError(null)
     try {
       const [info, agentList] = await Promise.all([
-        generativeUiSkillInfo(),
-        acpListAgents(),
+        backendApi.generativeUiSkillInfo(),
+        backendApi.acpListAgents(),
       ])
       if (!current()) return
       setSkill(info)
@@ -80,7 +75,7 @@ export function GenerativeUiBody({
     } finally {
       if (current()) setLoading(false)
     }
-  }, [beginLoad])
+  }, [beginLoad, backendApi])
 
   useEffect(() => {
     refresh().catch((err) => {
@@ -120,9 +115,12 @@ export function GenerativeUiBody({
     [t]
   )
 
-  const onApplied = useCallback((touched: AgentType[]) => {
-    touched.forEach((agent) => invalidateAgentSkillsCache(agent))
-  }, [])
+  const onApplied = useCallback(
+    (touched: AgentType[]) => {
+      touched.forEach((agent) => invalidateAgentSkillsCache(agent, backendApi))
+    },
+    [backendApi]
+  )
 
   const matrixSkills = useMemo<MatrixSkill[]>(
     () =>
@@ -187,9 +185,9 @@ export function GenerativeUiBody({
               categoryOrder={CATEGORY_SORT}
               translateCategory={translateCategory}
               translateState={translateState}
-              loadAllStatuses={generativeUiListAllInstallStatuses}
-              applyLinks={generativeUiApplyLinks}
-              loadContent={generativeUiReadContent}
+              loadAllStatuses={backendApi.generativeUiListAllInstallStatuses}
+              applyLinks={backendApi.generativeUiApplyLinks}
+              loadContent={backendApi.generativeUiReadContent}
               onApplied={onApplied}
               searchable={false}
               notReadyHint={t("notReadyHint")}

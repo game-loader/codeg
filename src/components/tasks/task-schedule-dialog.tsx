@@ -1,10 +1,11 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useEffect, useState } from "react"
 import { useLocale, useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { CalendarClock, ChevronDown, TriangleAlert } from "lucide-react"
-import { workTaskSchedule } from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import { dateFnsLocale } from "@/lib/date-fns-locale"
 import {
@@ -79,6 +80,8 @@ export function TaskScheduleDialog({
   onOpenChange,
   task,
 }: TaskScheduleDialogProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Tasks")
   const locale = useLocale()
   const [date, setDate] = useState("")
@@ -135,7 +138,7 @@ export function TaskScheduleDialog({
     if (!task) return
     setSubmitting(true)
     try {
-      await workTaskSchedule(task.id, next)
+      await backendApi.workTaskSchedule(task.id, next)
       toast.success(
         next
           ? t("toastScheduled", { time: formatScheduleFull(next) })

@@ -25,8 +25,14 @@
 //   • Our own saves echo back as change events. A one-shot etag record
 //     per save suppresses the immediate re-mark so switching tabs after
 //     an autosave doesn't flash a pointless reload.
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
+import type { BackendApi } from "@/lib/backend/types"
+import * as legacyBackendApi from "@/lib/api"
 import { useEffect, useMemo, useRef, type RefObject } from "react"
-import { readFileForEdit } from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import {
   findOwningFolder,
@@ -87,7 +93,8 @@ interface FileIoTarget {
 async function resolveFileChangeDecision(
   tabSnapshot: FileWorkspaceTab,
   io: FileIoTarget,
-  fileTabsRef: RefObject<FileWorkspaceTab[]>
+  fileTabsRef: RefObject<FileWorkspaceTab[]>,
+  backendApi: BackendApi = legacyBackendApi
 ): Promise<FileChangeDecision> {
   if (tabSnapshot.kind !== "file") return { kind: "none" }
   const path = tabSnapshot.path
@@ -106,7 +113,7 @@ async function resolveFileChangeDecision(
 
   let latest: FileEditContent | undefined
   try {
-    latest = await readFileForEdit(io.rootPath, io.ioPath)
+    latest = await backendApi.readFileForEdit(io.rootPath, io.ioPath)
   } catch (error) {
     // Disk read failed — most commonly an external delete, but also
     // permission revocation, an exclusive lock, or a transient FS error.
@@ -198,6 +205,9 @@ export function useOpenFileTabsWatch({
   enqueueExternalConflict,
   consumeSelfWriteEcho,
 }: UseOpenFileTabsWatchParams): void {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   // Collision-safe, stable-by-value signature of the roots to watch: the
   // deduped owning folders of the open file tabs. JSON encoding (not join)
   // so no path content can forge a separator. Recomputed per render (cheap
@@ -221,7 +231,11 @@ export function useOpenFileTabsWatch({
     if (targets.length === 0) return
 
     const subscriptions = targets.map(([, rootPath]) => {
-      const store = getWorkspaceStateStore(rootPath)
+      const store = getWorkspaceStateStore(
+        rootPath,
+        backendApi,
+        backendPlatform
+      )
       // Paths-only: tab watching consumes changed_paths exclusively. The
       // backend runs tree/git scans on this root only while an aux
       // tree/git panel holds a full-mode token.
@@ -309,7 +323,12 @@ export function useOpenFileTabsWatch({
 
           const io = splitAbsPath(path)
           if (!io) continue
-          const decision = await resolveFileChangeDecision(tab, io, fileTabsRef)
+          const decision = await resolveFileChangeDecision(
+            tab,
+            io,
+            fileTabsRef,
+            backendApi
+          )
           if (disposed) return
 
           if (decision.kind === "none") continue
@@ -414,6 +433,8 @@ export function useOpenFileTabsWatch({
     rejectFileTab,
     enqueueExternalConflict,
     consumeSelfWriteEcho,
+    backendApi,
+    backendPlatform,
   ])
 
   // Activation pass — one effect, three exclusive branches, no double
@@ -443,7 +464,12 @@ export function useOpenFileTabsWatch({
       const io = splitAbsPath(tab.path)
       if (!io) return
       void (async () => {
-        const decision = await resolveFileChangeDecision(tab, io, fileTabsRef)
+        const decision = await resolveFileChangeDecision(
+          tab,
+          io,
+          fileTabsRef,
+          backendApi
+        )
         if (decision.kind === "conflict") {
           enqueueExternalConflict({
             path: decision.path,
@@ -483,7 +509,12 @@ export function useOpenFileTabsWatch({
     const io = splitAbsPath(tab.path)
     if (!io) return
     void (async () => {
-      const decision = await resolveFileChangeDecision(tab, io, fileTabsRef)
+      const decision = await resolveFileChangeDecision(
+        tab,
+        io,
+        fileTabsRef,
+        backendApi
+      )
       if (decision.kind === "conflict") {
         enqueueExternalConflict({
           path: decision.path,
@@ -511,5 +542,7 @@ export function useOpenFileTabsWatch({
     enqueueExternalConflict,
     markTabsStale,
     rejectFileTab,
+    backendApi,
+    backendPlatform,
   ])
 }

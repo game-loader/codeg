@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Globe,
@@ -40,15 +41,7 @@ import {
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
-import {
-  mcpGetMarketplaceServerDetail,
-  mcpInstallFromMarketplace,
-  mcpListMarketplaces,
-  mcpRemoveServer,
-  mcpScanLocal,
-  mcpSearchMarketplace,
-  mcpUpsertLocalServer,
-} from "@/lib/api"
+
 import { toLocalizedErrorMessage } from "@/lib/app-error"
 import { normalizeMcpType } from "@/lib/mcp-types"
 import { cn } from "@/lib/utils"
@@ -384,6 +377,8 @@ function parseJsonObject(
 }
 
 export function McpSettings() {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("McpSettings")
   const ime = useImeGuard()
   const mcpT = useMemo(() => t as unknown as McpTranslator, [t])
@@ -486,11 +481,11 @@ export function McpSettings() {
   }, [installedServers, localFilter, mcpT])
 
   const refreshLocalServers = useCallback(async () => {
-    const scan = await mcpScanLocal()
+    const scan = await backendApi.mcpScanLocal()
     setInstalledServers(scan.servers)
     setSourceWarnings(scan.warnings)
     return scan.servers
-  }, [])
+  }, [backendApi])
 
   const loadInitial = useCallback(async () => {
     setLoading(true)
@@ -498,8 +493,8 @@ export function McpSettings() {
 
     try {
       const [scan, marketProviders] = await Promise.all([
-        mcpScanLocal(),
-        mcpListMarketplaces(),
+        backendApi.mcpScanLocal(),
+        backendApi.mcpListMarketplaces(),
       ])
       setInstalledServers(scan.servers)
       setSourceWarnings(scan.warnings)
@@ -517,7 +512,7 @@ export function McpSettings() {
     } finally {
       setLoading(false)
     }
-  }, [mcpT])
+  }, [mcpT, backendApi])
 
   useEffect(() => {
     loadInitial().catch((err) => {
@@ -546,10 +541,11 @@ export function McpSettings() {
     setMarketDetailLoading(true)
     setMarketDetailError(null)
 
-    mcpGetMarketplaceServerDetail({
-      providerId: selectedMarketItem.provider_id,
-      serverId: selectedMarketItem.server_id,
-    })
+    backendApi
+      .mcpGetMarketplaceServerDetail({
+        providerId: selectedMarketItem.provider_id,
+        serverId: selectedMarketItem.server_id,
+      })
       .then((detail) => {
         setMarketDetail(detail)
         const defaultOption =
@@ -577,7 +573,7 @@ export function McpSettings() {
       .finally(() => {
         setMarketDetailLoading(false)
       })
-  }, [selection, selectedMarketItem, mcpT])
+  }, [selection, selectedMarketItem, mcpT, backendApi])
 
   const executeSearch = useCallback(
     async ({
@@ -593,7 +589,7 @@ export function McpSettings() {
       setSearchError(null)
 
       try {
-        const results = await mcpSearchMarketplace({
+        const results = await backendApi.mcpSearchMarketplace({
           providerId,
           query: query?.trim() || null,
           limit: 30,
@@ -616,7 +612,7 @@ export function McpSettings() {
         setSearching(false)
       }
     },
-    [mcpT]
+    [mcpT, backendApi]
   )
 
   useEffect(() => {
@@ -639,7 +635,7 @@ export function McpSettings() {
       setRunningAction(action)
 
       try {
-        await mcpRemoveServer(serverId)
+        await backendApi.mcpRemoveServer(serverId)
         const next = await refreshLocalServers()
         toast.success(t("toasts.uninstalled"))
 
@@ -656,7 +652,7 @@ export function McpSettings() {
         setRunningAction(null)
       }
     },
-    [refreshLocalServers, t, mcpT]
+    [refreshLocalServers, t, mcpT, backendApi]
   )
 
   const saveLocalServer = useCallback(async () => {
@@ -697,7 +693,7 @@ export function McpSettings() {
     setRunningAction(action)
 
     try {
-      await mcpUpsertLocalServer({
+      await backendApi.mcpUpsertLocalServer({
         serverId: selectedLocal.id,
         spec: parsedSpec,
         apps,
@@ -728,6 +724,7 @@ export function McpSettings() {
     refreshLocalServers,
     selectedLocal,
     t,
+    backendApi,
   ])
 
   const handleCreateDraft = useCallback(() => {
@@ -773,7 +770,7 @@ export function McpSettings() {
     setRunningAction(action)
 
     try {
-      await mcpUpsertLocalServer({
+      await backendApi.mcpUpsertLocalServer({
         serverId: trimmedId,
         spec: parsedSpec,
         apps,
@@ -801,6 +798,7 @@ export function McpSettings() {
     mcpT,
     refreshLocalServers,
     t,
+    backendApi,
   ])
 
   const switchInstallOption = useCallback(
@@ -878,7 +876,7 @@ export function McpSettings() {
     setRunningAction(action)
 
     try {
-      await mcpInstallFromMarketplace({
+      await backendApi.mcpInstallFromMarketplace({
         providerId: marketDetail.provider_id,
         serverId: marketDetail.server_id,
         apps,
@@ -914,6 +912,7 @@ export function McpSettings() {
     refreshLocalServers,
     selectedInstallOption,
     t,
+    backendApi,
   ])
 
   if (loading) {

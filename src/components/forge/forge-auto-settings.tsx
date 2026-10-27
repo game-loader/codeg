@@ -20,7 +20,7 @@ import {
   Webhook,
 } from "lucide-react"
 
-import { forgeAutoScanNow, forgeAutoStatus, forgeListLabels } from "@/lib/api"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { toErrorMessage } from "@/lib/app-error"
 import {
   forgeWebhookUrls,
@@ -124,6 +124,7 @@ export function ForgeAutoSettingsSection({
 }) {
   const t = useTranslations("Forge")
   const formatTime = useFormatTime()
+  const backendApi = useBackendApi()
   const set = <K extends keyof ForgeAutoSettings>(
     key: K,
     next: ForgeAutoSettings[K]
@@ -135,7 +136,8 @@ export function ForgeAutoSettingsSection({
   useEffect(() => {
     if (folderId == null) return
     let cancelled = false
-    forgeListLabels(folderId)
+    backendApi
+      .forgeListLabels(folderId)
       .then((result) => {
         if (!cancelled) setLabelNames(result.labels.map((label) => label.name))
       })
@@ -145,7 +147,7 @@ export function ForgeAutoSettingsSection({
     return () => {
       cancelled = true
     }
-  }, [folderId])
+  }, [folderId, backendApi])
 
   const removeLabel = (pattern: string) => t("autoRemovePattern", { pattern })
   const windowHint = value.include_existing
@@ -601,17 +603,19 @@ export function ForgeAutoActivity({
 }) {
   const t = useTranslations("Forge")
   const formatTime = useFormatTime()
+  const backendApi = useBackendApi()
   const [status, setStatus] = useState<ForgeAutoStatus | null>(null)
   const [requesting, setRequesting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(() => {
-    forgeAutoStatus(folderId)
+    backendApi
+      .forgeAutoStatus(folderId)
       .then(setStatus)
       .catch(() => {
         /* the next poll tries again */
       })
-  }, [folderId])
+  }, [folderId, backendApi])
 
   useEffect(() => {
     refresh()
@@ -623,7 +627,7 @@ export function ForgeAutoActivity({
     setRequesting(true)
     setError(null)
     try {
-      const report = await forgeAutoScanNow(folderId)
+      const report = await backendApi.forgeAutoScanNow(folderId)
       setStatus((prev) => (prev ? { ...prev, last_scan: report } : prev))
       refresh()
     } catch (e) {

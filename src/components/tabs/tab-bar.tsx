@@ -1,14 +1,19 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+import { useTabStore as legacyTabs } from "@/contexts/tab-context"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Reorder } from "motion/react"
 import type { PanInfo } from "motion/react"
 import { Maximize2, Minimize2, SquarePen } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { cn } from "@/lib/utils"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import { useActiveFolder } from "@/contexts/active-folder-context"
-import { useTabActions, useTabStore } from "@/contexts/tab-context"
+
 import type { TabItem as TabItemData } from "@/contexts/tab-context"
 import {
   useWorkspaceActions,
@@ -46,6 +51,18 @@ interface TabBarProps {
 // mobile variant is gone — mobile shows the conversation detail header instead
 // and navigates tabs from the sidebar.
 export function TabBar({ groupId, maximizeControl = false }: TabBarProps) {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({
+    tabs: legacyTabs,
+    workspace: legacyWorkspace,
+  })
+  const useTabStore = backendStores.tabs
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+  const useAppWorkspaceStore = backendStores.workspace
+
   const t = useTranslations("Folder.conversationCard")
   const { mode, conversationMaximized } = useWorkspaceView()
   const { toggleConversationMaximized } = useWorkspaceActions()

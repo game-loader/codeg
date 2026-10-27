@@ -1,13 +1,11 @@
 "use client"
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react"
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+
+import { useCanvasBoardsStore as legacyCanvasBoards } from "@/stores/canvas-boards-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Crosshair,
   Eye,
@@ -26,7 +24,7 @@ import {
 import { useTranslations } from "next-intl"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useSidebarContext } from "@/contexts/sidebar-context"
-import { useTabActions } from "@/contexts/tab-context"
+
 import { useAutomationsView } from "@/contexts/automations-view-context"
 import { useTasksView } from "@/contexts/tasks-view-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
@@ -82,8 +80,8 @@ import {
   type SidebarSectionOrder,
 } from "@/lib/sidebar-view-mode-storage"
 import { AcademicSidebar } from "@/components/academic/academic-sidebar"
-import { useCanvasBoardsStore } from "@/stores/canvas-boards-store"
-import { useConversationTagsStore } from "@/stores/conversation-tags-store"
+import { SidebarNavButton } from "./sidebar-nav-button"
+import { useRuntimeConversationTagsStore } from "@/stores/conversation-tags-store"
 import {
   EMPTY_TAG_FILTER,
   pruneTagFilter,
@@ -129,48 +127,15 @@ const NAV_ITEM_ICONS: Record<SidebarNavItemId, LucideIcon> = {
   machines: Server,
 }
 
-/**
- * A fixed top-of-sidebar action / route row. `active` marks the row as the
- * current workbench route (selected styling); `trailing` carries a shortcut hint
- * or a count badge. Extracting this keeps every fixed nav item — and any future
- * route — on one geometry instead of copy-pasting the className. Each row is a
- * `group` so a `group-hover`-revealed trailing element works.
- */
-function SidebarNavButton({
-  icon: Icon,
-  label,
-  onClick,
-  active,
-  trailing,
-}: {
-  icon: LucideIcon
-  label: string
-  onClick: () => void
-  active?: boolean
-  trailing?: ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={label}
-      aria-current={active ? "page" : undefined}
-      className={cn(
-        "group flex h-8 w-full items-center gap-[0.4375rem] rounded-full pl-[0.4375rem] pr-1.5",
-        "text-[0.875rem] text-sidebar-foreground outline-none",
-        "transition-colors duration-150 hover:bg-sidebar-accent",
-        "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-        active && "bg-sidebar-primary/8"
-      )}
-    >
-      <Icon className="h-[0.875rem] w-[0.875rem] shrink-0 text-muted-foreground" />
-      <span className="truncate">{label}</span>
-      {trailing}
-    </button>
-  )
-}
-
 export function Sidebar() {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({ canvasBoards: legacyCanvasBoards })
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+  const useCanvasBoardsStore = backendStores.canvasBoards
+
   const t = useTranslations("Folder.sidebar")
   const { isOpen, toggle } = useSidebarContext()
   const { activeFolder } = useActiveFolder()
@@ -214,8 +179,8 @@ export function Sidebar() {
   // needs nothing but ids, so a persisted filter applies from the first paint
   // instead of flashing the whole list and then narrowing it.
   const [rawTagFilter, setRawTagFilter] = useState<TagFilter>(EMPTY_TAG_FILTER)
-  const tagsById = useConversationTagsStore((s) => s.tagsById)
-  const tagsHydrated = useConversationTagsStore((s) => s.hydrated)
+  const tagsById = useRuntimeConversationTagsStore((s) => s.tagsById)
+  const tagsHydrated = useRuntimeConversationTagsStore((s) => s.hydrated)
   const tagFilter = useMemo(
     () =>
       tagsHydrated ? pruneTagFilter(rawTagFilter, tagsById) : rawTagFilter,
@@ -236,7 +201,7 @@ export function Sidebar() {
 
   useEffect(() => {
     // Hydrate from localStorage after mount to keep SSR/CSR markup consistent.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+
     setShowCompleted(loadShowCompleted())
     setShowWorktrees(loadShowWorktrees())
     setShowRecent(loadShowRecent())

@@ -13,6 +13,7 @@ import {
 import { Eraser, MoveUpRight, Square, Undo2 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
+import { useBackendEventScope } from "@/hooks/use-runtime-event-scope"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -404,6 +405,8 @@ export interface ScreenshotMarkupRequest {
   /** The conversation it was taken for — not whichever is active by the
    *  time the person has finished drawing. */
   conversationTabId: string
+  /** The initiating client generation, captured before taking the picture. */
+  backendScope?: string
 }
 
 interface PendingMarkup {
@@ -414,6 +417,9 @@ interface PendingMarkup {
 let pending: PendingMarkup | null = null
 let lastId = 0
 const listeners = new Set<() => void>()
+// Each runtime has one host. A late capture from a retired generation must
+// not occupy the global slot when no host can render or clear its request.
+const hostScopes = new Set<string | undefined>()
 
 function notify(): void {
   for (const listener of [...listeners]) listener()
@@ -433,6 +439,11 @@ function subscribe(listener: () => void): () => void {
  *  entry again while the first capture was still on its way — and replacing
  *  the sheet then would throw away whatever had been drawn on it. */
 export function openScreenshotMarkup(request: ScreenshotMarkupRequest): void {
+  if (
+    request.backendScope !== undefined &&
+    !hostScopes.has(request.backendScope)
+  )
+    return
   if (pending) return
   lastId += 1
   pending = { id: lastId, request }
@@ -464,12 +475,22 @@ function markedFile(image: Blob): File {
  *  screenshot waiting for one. */
 export function BrowserScreenshotMarkupHost() {
   const t = useTranslations("Browser.handoff")
+  const backendScope = useBackendEventScope()
+  useEffect(() => {
+    hostScopes.add(backendScope)
+    return () => {
+      hostScopes.delete(backendScope)
+      if (pending && pending.request.backendScope === backendScope) {
+        closeScreenshotMarkup(pending.id)
+      }
+    }
+  }, [backendScope])
   const current = useSyncExternalStore(
     subscribe,
     () => pending,
     () => null
   )
-  if (!current) return null
+  if (!current || current.request.backendScope !== backendScope) return null
   const { id, request } = current
   return (
     <ScreenshotMarkupDialog
@@ -483,12 +504,14 @@ export function BrowserScreenshotMarkupHost() {
         toast.error(t("failed"), { description: String(error) })
       }}
       onSend={(result) => {
+        if (pending?.id !== id) return
         closeScreenshotMarkup(id)
         // A composer that is gone hears nothing, and the event says whether
         // one took it — so "added to the chat" is never said about a picture
         // that went nowhere.
         const accepted = emitAttachPageToSession({
           tabId: request.conversationTabId,
+          backendScope: request.backendScope,
           label: result.image ? t("chipMarkedScreenshot") : t("chipScreenshot"),
           text: result.text,
           uri: request.uri,

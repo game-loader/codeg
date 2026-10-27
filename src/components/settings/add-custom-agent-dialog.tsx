@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -23,11 +24,6 @@ import {
 import { toast } from "sonner"
 
 import {
-  acpAddRegistryAgent,
-  acpCurrentPlatform,
-  acpFetchRegistryCatalog,
-  acpListCustomAgents,
-  acpSaveCustomAgent,
   type CustomAgentSpec,
   type CustomDistributionKind,
   type RegistryCatalogAgent,
@@ -230,6 +226,8 @@ export function AddCustomAgentDialog({
   onAdded,
   editRegistryId,
 }: AddCustomAgentDialogProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("AcpAgentSettings")
   const editing = Boolean(editRegistryId)
 
@@ -269,13 +267,13 @@ export function AddCustomAgentDialog({
     setLoadingCatalog(true)
     setCatalogError(null)
     try {
-      setCatalog(await acpFetchRegistryCatalog())
+      setCatalog(await backendApi.acpFetchRegistryCatalog())
     } catch (err) {
       setCatalogError(err instanceof Error ? err.message : String(err))
     } finally {
       setLoadingCatalog(false)
     }
-  }, [])
+  }, [backendApi])
 
   useEffect(() => {
     // Edit mode never shows the registry tab, so don't fetch the catalog.
@@ -287,7 +285,8 @@ export function AddCustomAgentDialog({
   useEffect(() => {
     if (!open || !editRegistryId) return
     let cancelled = false
-    acpListCustomAgents()
+    backendApi
+      .acpListCustomAgents()
       .then((list) => {
         if (cancelled) return
         const found = list.find((a) => a.registryId === editRegistryId)
@@ -322,16 +321,17 @@ export function AddCustomAgentDialog({
     return () => {
       cancelled = true
     }
-  }, [open, editRegistryId, onOpenChange, t])
+  }, [open, editRegistryId, onOpenChange, t, backendApi])
 
   useEffect(() => {
     if (!open || platform !== null) return
-    acpCurrentPlatform()
+    backendApi
+      .acpCurrentPlatform()
       .then(setPlatform)
       // On failure the binary template stays gated and the hint shows no
       // platform; reopening the dialog retries. Not worth an error surface.
       .catch(() => {})
-  }, [open, platform])
+  }, [open, platform, backendApi])
 
   // Reset the form each time the dialog opens so a previous attempt never
   // leaks into the next one.
@@ -399,7 +399,7 @@ export function AddCustomAgentDialog({
     async (entry: RegistryCatalogAgent) => {
       setAddingId(entry.registryId)
       try {
-        await acpAddRegistryAgent(entry.registryId)
+        await backendApi.acpAddRegistryAgent(entry.registryId)
         toast.success(t("customAgentAdded", { name: entry.name }))
         onAdded()
         onOpenChange(false)
@@ -409,7 +409,7 @@ export function AddCustomAgentDialog({
         setAddingId(null)
       }
     },
-    [onAdded, onOpenChange, t]
+    [onAdded, onOpenChange, t, backendApi]
   )
 
   const manualParsed = useMemo(
@@ -439,7 +439,7 @@ export function AddCustomAgentDialog({
     if (!manualParsed?.spec || !effectiveKind || !effectiveId) return
     setSavingManual(true)
     try {
-      await acpSaveCustomAgent({
+      await backendApi.acpSaveCustomAgent({
         registryId: effectiveId,
         name: effectiveName || effectiveId,
         description: manualParsed.description ?? "",
@@ -484,6 +484,7 @@ export function AddCustomAgentDialog({
     onAdded,
     onOpenChange,
     t,
+    backendApi,
   ])
 
   return (

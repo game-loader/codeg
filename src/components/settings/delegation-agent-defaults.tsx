@@ -35,7 +35,8 @@ import {
   type AgentOptionsSnapshot,
   type AgentType,
 } from "@/lib/types"
-import { describeAgentOptions } from "@/lib/api"
+import { useBackendApi } from "@/contexts/backend-client-context"
+import type { BackendApi } from "@/lib/backend/types"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { toErrorMessage } from "@/lib/app-error"
 import {
@@ -61,10 +62,18 @@ interface CachedSnapshot {
   ts: number
 }
 const SNAPSHOT_TTL_MS = 30_000
-// Keyed by (agent, model): an agent that derives one option's choices from
-// another's value (opencode lists `effort` per model) answers differently per
-// model, so a cached snapshot for one model must not serve another.
-const snapshotCache = new Map<string, CachedSnapshot>()
+// Keyed by backend client and (agent, model): derived option lists such as
+// opencode's per-model `effort` must use that client's selected model.
+const snapshotCaches = new WeakMap<BackendApi, Map<string, CachedSnapshot>>()
+
+function snapshotCacheFor(backendApi: BackendApi) {
+  let cache = snapshotCaches.get(backendApi)
+  if (!cache) {
+    cache = new Map()
+    snapshotCaches.set(backendApi, cache)
+  }
+  return cache
+}
 
 function snapshotKey(agent: AgentType, model: string | null): string {
   return JSON.stringify([agent, model])
@@ -72,8 +81,10 @@ function snapshotKey(agent: AgentType, model: string | null): string {
 
 function readCache(
   agent: AgentType,
-  model: string | null
+  model: string | null,
+  backendApi: BackendApi
 ): AgentOptionsSnapshot | null {
+  const snapshotCache = snapshotCacheFor(backendApi)
   const key = snapshotKey(agent, model)
   const entry = snapshotCache.get(key)
   if (!entry) return null
@@ -87,9 +98,13 @@ function readCache(
 function writeCache(
   agent: AgentType,
   model: string | null,
-  snapshot: AgentOptionsSnapshot
+  snapshot: AgentOptionsSnapshot,
+  backendApi: BackendApi
 ): void {
-  snapshotCache.set(snapshotKey(agent, model), { snapshot, ts: Date.now() })
+  snapshotCacheFor(backendApi).set(snapshotKey(agent, model), {
+    snapshot,
+    ts: Date.now(),
+  })
 }
 
 /** How many values an agent's defaults override. */
@@ -119,6 +134,7 @@ export function DelegationAgentDefaultsPanel({
   delegationEnabled = null,
   onShowGeneral,
 }: DelegationAgentDefaultsPanelProps) {
+  const backendApi = useBackendApi()
   const t = useTranslations("AcpAgentSettings.multiAgent")
   // Custom ACP agents are delegation targets too (codeg-mcp advertises them
   // in `delegate_to_agent`'s enum), so the registry's list — in the user's
@@ -134,6 +150,7 @@ export function DelegationAgentDefaultsPanel({
   // not depend on the model picked, so its model row stays offered while the
   // rest is probed again for a newly picked model.
   const [loaded, setLoaded] = useState<{
+    backendApi: BackendApi
     agent: AgentType
     model: string | null
     snapshot: AgentOptionsSnapshot
@@ -154,30 +171,30 @@ export function DelegationAgentDefaultsPanel({
       // replace the snapshot just shown for the current one.
       const reqId = ++reqIdRef.current
       if (!force) {
-        const cached = readCache(agent, model)
+        const cached = readCache(agent, model, backendApi)
         if (cached) {
-          setLoaded({ agent, model, snapshot: cached })
+          setLoaded({ backendApi, agent, model, snapshot: cached })
           setProbe({ agent, model, loading: false, error: null })
           return
         }
       }
       setProbe({ agent, model, loading: true, error: null })
       try {
-        const fresh = await describeAgentOptions(
+        const fresh = await backendApi.describeAgentOptions(
           agent,
           null,
           model ? { model } : null
         )
         if (reqIdRef.current !== reqId) return
-        writeCache(agent, model, fresh)
-        setLoaded({ agent, model, snapshot: fresh })
+        writeCache(agent, model, fresh, backendApi)
+        setLoaded({ backendApi, agent, model, snapshot: fresh })
         setProbe({ agent, model, loading: false, error: null })
       } catch (err: unknown) {
         if (reqIdRef.current !== reqId) return
         setProbe({ agent, model, loading: false, error: toErrorMessage(err) })
       }
     },
-    []
+    [backendApi]
   )
 
   // The model currently selected for this agent (its saved override). The
@@ -188,6 +205,9 @@ export function DelegationAgentDefaultsPanel({
     : null
 
   useEffect(() => {
+    // Invalidate a pending probe as soon as the target changes, including the
+    // debounce window before the replacement starts.
+    reqIdRef.current += 1
     if (!selectedAgent) return
     // Debounce so rapid agent picks / model changes (each would fire a real
     // probe — even with backend serialization, each one still spawns the
@@ -196,12 +216,18 @@ export function DelegationAgentDefaultsPanel({
     const handle = window.setTimeout(() => {
       void loadSnapshot(selectedAgent, probeModel, false)
     }, PROBE_DEBOUNCE_MS)
-    return () => window.clearTimeout(handle)
+    return () => {
+      window.clearTimeout(handle)
+      reqIdRef.current += 1
+    }
   }, [selectedAgent, probeModel, loadSnapshot])
 
   // Rows of the selected agent's latest snapshot, in its producer's
   // vocabulary — whichever model that snapshot was probed for.
-  const agentLoaded = loaded && loaded.agent === selectedAgent ? loaded : null
+  const agentLoaded =
+    loaded && loaded.backendApi === backendApi && loaded.agent === selectedAgent
+      ? loaded
+      : null
   const rows = useOptionRows(
     agentLoaded?.agent ?? null,
     agentLoaded?.snapshot ?? null

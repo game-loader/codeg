@@ -148,11 +148,13 @@ describe("StatusBarComputer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Grant…" }))
     await waitFor(() =>
       expect(api.computerOpenPermissionSettings).toHaveBeenCalledWith(
-        "screenRecording"
+        "screenRecording",
+        expect.objectContaining({ getTransport: expect.any(Function) })
       )
     )
     expect(api.computerRequestPermission).toHaveBeenCalledWith(
-      "screenRecording"
+      "screenRecording",
+      expect.objectContaining({ getTransport: expect.any(Function) })
     )
     // Not listed there, it can be dragged in from the Finder.
     fireEvent.click(screen.getByRole("button", { name: "Show in Finder" }))
@@ -171,7 +173,8 @@ describe("StatusBarComputer", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Grant…" }))
     await waitFor(() =>
       expect(api.computerRequestPermission).toHaveBeenCalledWith(
-        "screenRecording"
+        "screenRecording",
+        expect.objectContaining({ getTransport: expect.any(Function) })
       )
     )
     await waitFor(() => expect(api.computerStatus).toHaveBeenCalledTimes(2))
@@ -334,7 +337,11 @@ describe("StatusBarComputer", () => {
     await screen.findByText("notes.txt")
     fireEvent.click(screen.getByRole("button", { name: "Stop" }))
     await waitFor(() =>
-      expect(api.computerShareWindow).toHaveBeenCalledWith("w4", "none")
+      expect(api.computerShareWindow).toHaveBeenCalledWith(
+        "w4",
+        "none",
+        expect.objectContaining({ getTransport: expect.any(Function) })
+      )
     )
   })
 
@@ -367,7 +374,11 @@ describe("StatusBarComputer", () => {
     expect(screen.queryByText("notes.txt")).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "Stop" }))
     await waitFor(() =>
-      expect(api.computerShareApp).toHaveBeenCalledWith({ appId: "a1" }, "none")
+      expect(api.computerShareApp).toHaveBeenCalledWith(
+        { appId: "a1" },
+        "none",
+        expect.objectContaining({ getTransport: expect.any(Function) })
+      )
     )
   })
 
@@ -401,7 +412,10 @@ describe("StatusBarComputer", () => {
     expect(screen.getByText(/Click · Entire screen/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Stop" }))
     await waitFor(() =>
-      expect(api.computerShareScreen).toHaveBeenCalledWith("none")
+      expect(api.computerShareScreen).toHaveBeenCalledWith(
+        "none",
+        expect.objectContaining({ getTransport: expect.any(Function) })
+      )
     )
   })
 

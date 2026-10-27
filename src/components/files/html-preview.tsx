@@ -1,6 +1,10 @@
 "use client"
 
 import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
+import {
   useCallback,
   useEffect,
   useMemo,
@@ -9,7 +13,7 @@ import {
 } from "react"
 import { useTranslations } from "next-intl"
 import { AppWindow, ShieldCheck, ShieldOff } from "lucide-react"
-import { readWorkspaceFileBase64 } from "@/lib/api"
+
 import {
   extractHtmlTitle,
   inlineHtmlResources,
@@ -26,7 +30,7 @@ import {
   type HtmlPreviewEngine,
 } from "@/lib/browser/browser-prefs"
 import { useBrowserCapabilities } from "@/lib/browser/use-browser-capabilities"
-import { isRemoteDesktopMode } from "@/lib/transport"
+
 import { cn } from "@/lib/utils"
 
 // Trusted sandbox: scripts run, popups/forms/modals work, but the frame still
@@ -93,6 +97,8 @@ export function HtmlPreview({
    *  chrome. */
   chrome?: HtmlPreviewChrome
 }) {
+  const backendPlatform = useBackendPlatform()
+
   const prefs = useBrowserPrefs()
   const capabilities = useBrowserCapabilities()
   const override = useEngineOverride(tab.id)
@@ -103,7 +109,7 @@ export function HtmlPreview({
   const guestAvailable =
     capabilities?.docGuest === true &&
     Boolean(tab.path) &&
-    !isRemoteDesktopMode()
+    !backendPlatform.isRemoteDesktopMode()
   const engine: HtmlPreviewEngine = !guestAvailable
     ? "inline"
     : (override ?? prefs.htmlPreviewEngine)
@@ -150,6 +156,8 @@ export function InlineHtmlPreview({
    *  inline renderer for this file. */
   onUseGuest: (() => void) | null
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.fileWorkspacePanel")
   const tDoc = useTranslations("Browser.doc")
   const [inlined, setInlined] = useState<string | null>(null)
@@ -218,7 +226,7 @@ export function InlineHtmlPreview({
         const a = absPath.replace(/\\/g, "/")
         const rel =
           a === r ? "" : a.startsWith(r + "/") ? a.slice(r.length + 1) : a
-        return readWorkspaceFileBase64(root, rel)
+        return backendApi.readWorkspaceFileBase64(root, rel)
       },
     })
       .then((html) => {
@@ -236,7 +244,7 @@ export function InlineHtmlPreview({
     return () => {
       cancelled = true
     }
-  }, [content, path, rootPath])
+  }, [content, path, rootPath, backendApi])
 
   const srcDoc = inlined != null ? withSandboxCsp(inlined, { trusted }) : ""
   const loading = inlined == null && error == null

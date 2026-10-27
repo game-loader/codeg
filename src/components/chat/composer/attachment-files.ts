@@ -168,8 +168,8 @@ export function elementAcceptsDrop(element: HTMLElement): boolean {
 }
 
 /**
- * Whether an OS drag position (Tauri reports window coordinates, sometimes in
- * physical pixels) lands on `element` **and** `element` is what the user would
+ * Whether an OS drag position (Tauri DragDropEvent uses physical pixels)
+ * lands on `element` **and** `element` is what the user would
  * actually hit there.
  *
  * Two guards, both needed because a Tauri drag-drop event is delivered to every
@@ -188,26 +188,24 @@ export function pointWithinElement(
   if (!elementAcceptsDrop(element)) return false
   const doc = element.ownerDocument
   const rect = element.getBoundingClientRect()
-  const dpr = window.devicePixelRatio || 1
-  const candidates = [
-    { x: position.x, y: position.y },
-    { x: position.x / dpr, y: position.y / dpr },
-  ]
-  return candidates.some((point) => {
-    if (
-      point.x < rect.left ||
-      point.x > rect.right ||
-      point.y < rect.top ||
-      point.y > rect.bottom
-    ) {
-      return false
-    }
-    // `elementFromPoint` is unavailable in some test DOMs — fall back to the
-    // rect result there rather than dropping the event on the floor.
-    if (typeof doc?.elementFromPoint !== "function") return true
-    const top = doc.elementFromPoint(point.x, point.y)
-    return top !== null && element.contains(top)
-  })
+  const dpr = doc.defaultView?.devicePixelRatio || 1
+  // Test one CSS point, not both physical and logical candidates: with two
+  // visible panes, those two points can hit different machines and upload a
+  // single OS drop to both of them.
+  const point = { x: position.x / dpr, y: position.y / dpr }
+  if (
+    point.x < rect.left ||
+    point.x > rect.right ||
+    point.y < rect.top ||
+    point.y > rect.bottom
+  ) {
+    return false
+  }
+  // `elementFromPoint` is unavailable in some test DOMs — fall back to the
+  // rect result there rather than dropping the event on the floor.
+  if (typeof doc?.elementFromPoint !== "function") return true
+  const top = doc.elementFromPoint(point.x, point.y)
+  return top !== null && element.contains(top)
 }
 
 export function blobToBase64(blob: Blob): Promise<string> {

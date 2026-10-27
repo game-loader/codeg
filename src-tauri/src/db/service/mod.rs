@@ -17,6 +17,7 @@ pub mod model_provider_service;
 pub mod quick_message_service;
 pub mod remote_workspace_connection_service;
 pub mod sender_context_service;
+pub mod session_selector_service;
 pub mod tab_service;
 pub mod thread_binding_service;
 pub mod token_usage_service;

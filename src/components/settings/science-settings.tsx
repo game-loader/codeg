@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Loader2 } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
@@ -8,13 +9,7 @@ import {
   SkillAgentMatrix,
   type MatrixSkill,
 } from "@/components/settings/skill-agent-matrix"
-import {
-  acpListAgents,
-  scienceApplyLinks,
-  scienceList,
-  scienceListAllInstallStatuses,
-  scienceReadContent,
-} from "@/lib/api"
+
 import { invalidateAgentSkillsCache } from "@/hooks/use-agent-skills"
 import { useLatestCall } from "@/hooks/use-latest-call"
 import { piUsesCustomAgentDir } from "@/lib/pi-config"
@@ -41,6 +36,8 @@ export function ScienceBody({
 }: {
   onRegisterRefresh?: (refresh: () => void) => void
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("ScienceSettings")
   const locale = useLocale()
 
@@ -59,8 +56,8 @@ export function ScienceBody({
     setLoadError(null)
     try {
       const [skillList, agentList] = await Promise.all([
-        scienceList(),
-        acpListAgents(),
+        backendApi.scienceList(),
+        backendApi.acpListAgents(),
       ])
       if (!current()) return
       setSkills(skillList)
@@ -80,7 +77,7 @@ export function ScienceBody({
     } finally {
       if (current()) setLoading(false)
     }
-  }, [beginLoad])
+  }, [beginLoad, backendApi])
 
   useEffect(() => {
     refresh().catch((err) => {
@@ -196,11 +193,11 @@ export function ScienceBody({
             categoryOrder={CATEGORY_SORT}
             translateCategory={translatedCategory}
             translateState={translatedState}
-            loadAllStatuses={scienceListAllInstallStatuses}
-            applyLinks={scienceApplyLinks}
-            loadContent={scienceReadContent}
+            loadAllStatuses={backendApi.scienceListAllInstallStatuses}
+            applyLinks={backendApi.scienceApplyLinks}
+            loadContent={backendApi.scienceReadContent}
             onApplied={(touched) =>
-              touched.forEach((a) => invalidateAgentSkillsCache(a))
+              touched.forEach((a) => invalidateAgentSkillsCache(a, backendApi))
             }
             searchPlaceholder={t("searchPlaceholder")}
           />

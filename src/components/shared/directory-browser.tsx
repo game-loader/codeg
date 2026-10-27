@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import {
   useState,
   useEffect,
@@ -39,11 +40,6 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useImeGuard } from "@/hooks/use-ime-guard"
 import { cn } from "@/lib/utils"
-import {
-  createDirectory,
-  getHomeDirectory,
-  listDirectoryEntries,
-} from "@/lib/api"
 import {
   toLocalizedErrorMessage,
   type AppErrorTranslator,
@@ -152,6 +148,8 @@ export const DirectoryBrowser = forwardRef<
   },
   ref
 ) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("DirectoryBrowser")
   const ime = useImeGuard()
 
@@ -175,12 +173,18 @@ export const DirectoryBrowser = forwardRef<
   // would otherwise bump again and strand the first init's in-flight writes).
   const sessionGen = useRef(0)
   const prevActive = useRef(active)
+  const prevBackendApi = useRef(backendApi)
   useIsomorphicLayoutEffect(() => {
-    if (prevActive.current !== active) {
+    if (
+      prevActive.current !== active ||
+      prevBackendApi.current !== backendApi
+    ) {
+      if (prevBackendApi.current !== backendApi) initialized.current = false
       prevActive.current = active
+      prevBackendApi.current = backendApi
       sessionGen.current += 1
     }
-  }, [active])
+  }, [active, backendApi])
   // A host can also unmount the panel without ever flipping `active`: the
   // workspace dialog moves on to its next step when a row is double-clicked.
   // `sessionGen` never hears of that, yet a folder created or a listing loaded
@@ -228,7 +232,7 @@ export const DirectoryBrowser = forwardRef<
       setLoading((prev) => new Set(prev).add(path))
       setError(null)
       try {
-        const result = await listDirectoryEntries(path)
+        const result = await backendApi.listDirectoryEntries(path)
         // Skip writes if a hide/show happened mid-flight — they belong to a
         // session that no longer exists and would surface stale data.
         if (gen === sessionGen.current) {
@@ -248,7 +252,7 @@ export const DirectoryBrowser = forwardRef<
         }
       }
     },
-    [entries, t]
+    [entries, t, backendApi]
   )
 
   const navigateTo = useCallback(
@@ -301,7 +305,7 @@ export const DirectoryBrowser = forwardRef<
 
     const init = async () => {
       try {
-        const startPath = initialPath || (await getHomeDirectory())
+        const startPath = initialPath || (await backendApi.getHomeDirectory())
         // Drop these writes if a hide/show superseded this init, or the user
         // already navigated somewhere else while the start dir was loading.
         if (gen !== sessionGen.current || seq !== navSeq.current) return
@@ -309,7 +313,7 @@ export const DirectoryBrowser = forwardRef<
         onValueChange(startPath)
         setLoading(new Set([startPath]))
 
-        const result = await listDirectoryEntries(startPath)
+        const result = await backendApi.listDirectoryEntries(startPath)
         if (gen !== sessionGen.current || seq !== navSeq.current) return
         setEntries(new Map([[startPath, result]]))
         setLoading(new Set())
@@ -323,7 +327,7 @@ export const DirectoryBrowser = forwardRef<
     // `onValueChange` is intentionally omitted: it changes identity on every
     // host render and re-running init would restart browsing mid-session.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, initialPath, t])
+  }, [active, initialPath, t, backendApi])
 
   const handleToggleExpand = useCallback(
     async (path: string) => {
@@ -380,14 +384,14 @@ export const DirectoryBrowser = forwardRef<
   const handleGoHome = useCallback(async () => {
     const gen = sessionGen.current
     try {
-      const home = await getHomeDirectory()
+      const home = await backendApi.getHomeDirectory()
       if (gen !== sessionGen.current) return
       navigateTo(home)
     } catch {
       if (gen !== sessionGen.current) return
       setError(t("errorLoadingDir"))
     }
-  }, [navigateTo, t])
+  }, [navigateTo, t, backendApi])
 
   const openNewFolder = useCallback(() => {
     setNewFolder((prev) => prev ?? { name: "", error: null, busy: false })
@@ -404,7 +408,7 @@ export const DirectoryBrowser = forwardRef<
     setNewFolder({ ...newFolder, error: null, busy: true })
     let created: string
     try {
-      created = await createDirectory(parent, name)
+      created = await backendApi.createDirectory(parent, name)
     } catch (err) {
       if (gen !== sessionGen.current) return
       const message = toLocalizedErrorMessage(
@@ -424,7 +428,7 @@ export const DirectoryBrowser = forwardRef<
     // even if listing it fails below.
     onValueChange(created)
     await navigateTo(created)
-  }, [newFolder, rootPath, onValueChange, navigateTo, t])
+  }, [newFolder, rootPath, onValueChange, navigateTo, t, backendApi])
 
   // Stable, so the row's Escape listener is not re-registered on every render.
   const closeNewFolder = useCallback(() => setNewFolder(null), [])

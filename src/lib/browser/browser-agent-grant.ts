@@ -5,7 +5,8 @@
 // The backend remains the only party that grants — this reads a preference and
 // asks, exactly as the share menu does.
 
-import { isRemoteDesktopMode } from "@/lib/transport"
+import type { BackendPlatform } from "@/lib/backend/types"
+import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
 
 import { browserAgentGrant } from "./browser-api"
 import { getBrowserPrefs } from "./browser-prefs"
@@ -126,14 +127,17 @@ function evict(
  * link, an agent's own `browser_open`, a redirect the page performed on its
  * own.
  */
-export function applyDefaultAgentGrant(state: BrowserTabState): void {
+export function applyDefaultAgentGrant(
+  state: BrowserTabState,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): void {
   // Every window hears every tab's state; only the one the tab lives in acts,
   // so a second workspace window does not ask for the same grant again.
   if (state.ownerWindow !== getCurrentWindowLabel()) return
   // A remote workspace's agents run on its host and cannot reach a browser of
   // this computer: a standing share here would only ever reach the agents of
   // some other window.
-  if (isRemoteDesktopMode()) return
+  if (backendPlatform.isRemoteDesktopMode()) return
   const origin = shareableOrigin(state)
   if (!origin) {
     // A tab between documents, or on an address no grant can bind to. Its

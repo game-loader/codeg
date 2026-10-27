@@ -1,5 +1,13 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import type { BackendStores } from "@/lib/backend/stores"
+
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import {
   createContext,
   useCallback,
@@ -11,16 +19,14 @@ import {
   type ReactNode,
 } from "react"
 import { useTranslations } from "next-intl"
-import { workTaskList } from "@/lib/api"
+
 import { notifyDesktop } from "@/lib/desktop-notification"
 import { requestWindowAttention } from "@/lib/window-attention"
-import { onTransportReconnect, subscribe } from "@/lib/platform"
 import {
   loadTasksViewMode,
   saveTasksViewMode,
   type TasksViewMode,
 } from "@/lib/tasks-board-filter-storage"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { isDeferred } from "@/components/tasks/task-acceptance"
 import type { WorkTask } from "@/lib/types"
 
@@ -67,6 +73,12 @@ export function useTasksView() {
 }
 
 export function TasksViewProvider({ children }: { children: ReactNode }) {
+  const workspaceStore = useBackendStores({
+    workspace: legacyWorkspace,
+  }).workspace
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Tasks")
   // Latest-ref so `refetch` stays referentially stable across locale changes
   // (its identity re-subscribes the event channel). Synced in an effect —
@@ -92,11 +104,11 @@ export function TasksViewProvider({ children }: { children: ReactNode }) {
   const refetch = useCallback(async () => {
     const id = ++reqRef.current
     try {
-      const list = await workTaskList(null)
+      const list = await backendApi.workTaskList(null)
       // Drop stale responses; keep the previous list on transient error rather
       // than blanking the board (same idiom as automations-view-context).
       if (id !== reqRef.current) return
-      notifyFlips(prevStatusRef.current, list, tRef.current)
+      notifyFlips(prevStatusRef.current, list, tRef.current, workspaceStore)
       prevStatusRef.current = new Map(
         list.map((task) => [task.id, task.status])
       )
@@ -108,25 +120,27 @@ export function TasksViewProvider({ children }: { children: ReactNode }) {
       // board falls back to its empty state rather than pulsing forever.
       if (id === reqRef.current) setLoading(false)
     }
-  }, [])
+  }, [backendApi, workspaceStore])
 
   useEffect(() => {
     // Initial fetch + subscribe for backend-pushed nudges. Same
     // subscribe-then-setState idiom as automations-view-context.
-    /* eslint-disable react-hooks/set-state-in-effect */
+
     void refetch()
     let unsub: (() => void) | undefined
     let cancelled = false
-    void subscribe(WORK_TASK_CHANGED_EVENT, () => {
-      void refetch()
-    }).then((u: () => void) => {
-      if (cancelled) u()
-      else unsub = u
-    })
+    void backendPlatform
+      .subscribe(WORK_TASK_CHANGED_EVENT, () => {
+        void refetch()
+      })
+      .then((u: () => void) => {
+        if (cancelled) u()
+        else unsub = u
+      })
     // Events fired while the WS was disconnected are dropped by the
     // broadcaster; refetch on reconnect so a task that settled during the gap
     // doesn't leave the board stale. No-op on desktop IPC.
-    const offReconnect = onTransportReconnect(() => {
+    const offReconnect = backendPlatform.onTransportReconnect(() => {
       void refetch()
     })
     return () => {
@@ -134,8 +148,7 @@ export function TasksViewProvider({ children }: { children: ReactNode }) {
       unsub?.()
       offReconnect?.()
     }
-    /* eslint-enable react-hooks/set-state-in-effect */
-  }, [refetch])
+  }, [refetch, backendPlatform])
 
   const attentionCount = useMemo(
     () =>
@@ -177,14 +190,15 @@ function notifyFlips(
       | "notifyReviewRedacted"
       | "notifyFailedRedacted",
     values?: { title: string }
-  ) => string
+  ) => string,
+  workspaceStore: BackendStores["workspace"]
 ) {
   if (prev == null) return
   for (const task of list) {
     if (prev.get(task.id) === task.status) continue
     if (task.status !== "review" && task.status !== "failed") continue
     if (task.archived_at != null) continue
-    const folder = useAppWorkspaceStore
+    const folder = workspaceStore
       .getState()
       .folders.find((f) => f.id === task.folder_id)
     const folderName = folder ? (folder.alias ?? folder.name) : null

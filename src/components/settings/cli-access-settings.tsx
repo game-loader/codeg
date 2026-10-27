@@ -8,12 +8,7 @@ import { toast } from "sonner"
 import { SettingsSection } from "@/components/shared/settings-section"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
-import {
-  getCliAccessStatus,
-  getCliToolStatus,
-  installCliTool,
-  setCliAccessEnabled,
-} from "@/lib/api"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { toErrorMessage } from "@/lib/app-error"
 import { isDesktop, isRemoteDesktopMode } from "@/lib/transport"
 import type { CliAccessStatus, CliToolStatus } from "@/lib/types"
@@ -29,12 +24,14 @@ export const CLI_ACCESS_EXAMPLE =
  */
 export function CliAccessSettings() {
   const t = useTranslations("SystemSettings")
+  const backendApi = useBackendApi()
   const [status, setStatus] = useState<CliAccessStatus | null>(null)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     let alive = true
-    getCliAccessStatus()
+    backendApi
+      .getCliAccessStatus()
       .then((next) => {
         if (alive) setStatus(next)
       })
@@ -45,20 +42,20 @@ export function CliAccessSettings() {
     return () => {
       alive = false
     }
-  }, [])
+  }, [backendApi])
 
   const toggle = useCallback(
     async (enabled: boolean) => {
       setSaving(true)
       try {
-        setStatus(await setCliAccessEnabled(enabled))
+        setStatus(await backendApi.setCliAccessEnabled(enabled))
       } catch (err) {
         toast.error(t("cliAccessSaveFailed", { message: toErrorMessage(err) }))
       } finally {
         setSaving(false)
       }
     },
-    [t]
+    [t, backendApi]
   )
 
   if (!status) return null
@@ -111,12 +108,14 @@ export function CliAccessSettings() {
  */
 export function CliToolInstall() {
   const t = useTranslations("SystemSettings")
+  const backendApi = useBackendApi()
   const [tool, setTool] = useState<CliToolStatus | null>(null)
   const [installing, setInstalling] = useState(false)
 
   useEffect(() => {
     let alive = true
-    getCliToolStatus()
+    backendApi
+      .getCliToolStatus()
       .then((next) => {
         if (alive) setTool(next)
       })
@@ -126,12 +125,12 @@ export function CliToolInstall() {
     return () => {
       alive = false
     }
-  }, [])
+  }, [backendApi])
 
   const install = useCallback(async () => {
     setInstalling(true)
     try {
-      const next = await installCliTool()
+      const next = await backendApi.installCliTool()
       setTool(next)
       if (next.installed) {
         toast.success(t("cliToolInstalledToast", { command: next.command }))
@@ -141,7 +140,7 @@ export function CliToolInstall() {
     } finally {
       setInstalling(false)
     }
-  }, [t])
+  }, [t, backendApi])
 
   if (!tool || tool.method === "none") return null
   const location = tool.location ?? ""

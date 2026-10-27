@@ -22,6 +22,10 @@
  * next mount starts from a fresh persisted fetch.
  */
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useConversationRuntimeActions as standaloneUseConversationRuntimeActions } from "@/stores/conversation-runtime-store"
+
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import {
   useCallback,
   useEffect,
@@ -35,7 +39,7 @@ import {
   type ResolvedMessageGroup,
 } from "@/components/message/message-list-view"
 import { useConversationDetail } from "@/hooks/use-conversation-detail"
-import { useConversationRuntimeActions } from "@/stores/conversation-runtime-store"
+
 import {
   extractPermissionToolCallId,
   useConnectionStore,
@@ -101,6 +105,13 @@ export function useLiveTranscriptBridge(
   conversationId: number,
   connState: ConnectionState | undefined
 ) {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({})
+  const useConversationRuntimeActions = backendStoreSelection
+    ? backendStores.conversationRuntime.useConversationRuntimeActions
+    : standaloneUseConversationRuntimeActions
+
   const { setLiveMessage, completeTurn, syncTurnMetadata, removeConversation } =
     useConversationRuntimeActions()
 
@@ -225,6 +236,13 @@ export function LiveTranscriptView({
   kickoffText,
   userTurnHeader = null,
 }: LiveTranscriptViewProps) {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({})
+  const useConversationRuntimeActions = backendStoreSelection
+    ? backendStores.conversationRuntime.useConversationRuntimeActions
+    : standaloneUseConversationRuntimeActions
+
   const conn = useConnectionStateById(connectionId)
   const connStatus = conn?.status ?? null
   // The agent behind this transcript: the host's word for it, else the viewed

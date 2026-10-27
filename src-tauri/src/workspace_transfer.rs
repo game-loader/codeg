@@ -78,9 +78,25 @@ pub enum TransferState {
     Error,
 }
 
+/// Remote transfers are owned by the invoking webview and machine. Tokens
+/// and custom authentication headers never appear in this metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTransferOwner {
+    pub connection_id: i32,
+    #[serde(rename = "ownerWindowLabel")]
+    pub window_label: String,
+    pub window_instance_id: String,
+}
+
+struct TransferRegistration {
+    token: CancellationToken,
+    owner: Option<RemoteTransferOwner>,
+}
+
 pub struct WorkspaceTransferManager {
     tickets: Mutex<HashMap<String, DownloadTicket>>,
-    cancels: Mutex<HashMap<String, CancellationToken>>,
+    cancels: Mutex<HashMap<String, TransferRegistration>>,
     ticket_ttl: Duration,
     pub workspace_upload_semaphore: Semaphore,
     pub remote_upload_semaphore: Semaphore,
@@ -134,27 +150,87 @@ impl WorkspaceTransferManager {
     }
 
     pub async fn register_transfer(&self) -> (String, CancellationToken) {
-        let transfer_id = uuid::Uuid::new_v4().simple().to_string();
+        self.register(None).await
+    }
+
+    pub async fn register_remote_transfer(
+        &self,
+        owner: RemoteTransferOwner,
+    ) -> (String, CancellationToken) {
+        self.register(Some(owner)).await
+    }
+
+    async fn register(&self, owner: Option<RemoteTransferOwner>) -> (String, CancellationToken) {
+        let id = uuid::Uuid::new_v4().simple().to_string();
         let token = CancellationToken::new();
-        self.cancels
-            .lock()
-            .await
-            .insert(transfer_id.clone(), token.clone());
-        (transfer_id, token)
+        self.cancels.lock().await.insert(
+            id.clone(),
+            TransferRegistration {
+                token: token.clone(),
+                owner,
+            },
+        );
+        (id, token)
     }
 
     pub async fn finish_transfer(&self, transfer_id: &str) {
         self.cancels.lock().await.remove(transfer_id);
     }
 
+    /// Legacy local/backup cancellation cannot cancel an owned remote transfer.
     pub async fn cancel(&self, transfer_id: &str) -> bool {
-        let token = self.cancels.lock().await.remove(transfer_id);
-        if let Some(token) = token {
-            token.cancel();
+        let mut entries = self.cancels.lock().await;
+        if entries
+            .get(transfer_id)
+            .is_some_and(|entry| entry.owner.is_none())
+        {
+            entries.remove(transfer_id).unwrap().token.cancel();
             true
         } else {
             false
         }
+    }
+
+    pub async fn cancel_remote(
+        &self,
+        transfer_id: &str,
+        label: &str,
+        instance: &str,
+        connection_id: Option<i32>,
+    ) -> bool {
+        let mut entries = self.cancels.lock().await;
+        let matches = entries
+            .get(transfer_id)
+            .and_then(|entry| entry.owner.as_ref())
+            .is_some_and(|owner| {
+                owner.window_label == label
+                    && owner.window_instance_id == instance
+                    && connection_id.is_none_or(|id| owner.connection_id == id)
+            });
+        if matches {
+            entries.remove(transfer_id).unwrap().token.cancel();
+        }
+        matches
+    }
+
+    /// Invalidating A cancels only A's transfers, including queued transfers.
+    pub async fn cancel_connection(&self, connection_id: i32) -> usize {
+        let mut entries = self.cancels.lock().await;
+        let mut cancelled = 0;
+        entries.retain(|_, entry| {
+            if entry
+                .owner
+                .as_ref()
+                .is_some_and(|owner| owner.connection_id == connection_id)
+            {
+                entry.token.cancel();
+                cancelled += 1;
+                false
+            } else {
+                true
+            }
+        });
+        cancelled
     }
 
     pub async fn issue_download_ticket(&self, spec: DownloadTicketSpec) -> DownloadTicketIssued {
@@ -227,6 +303,49 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::time::Duration;
+
+    fn owner(connection_id: i32, instance: &str) -> RemoteTransferOwner {
+        RemoteTransferOwner {
+            connection_id,
+            window_label: "main".into(),
+            window_instance_id: instance.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_cancellation_checks_machine_window_and_instance() {
+        let manager = WorkspaceTransferManager::new_for_tests(Duration::from_secs(60));
+        let (id, token) = manager.register_remote_transfer(owner(1, "old")).await;
+        assert!(!manager.cancel(&id).await);
+        assert!(!manager.cancel_remote(&id, "sibling", "old", Some(1)).await);
+        assert!(!manager.cancel_remote(&id, "main", "new", Some(1)).await);
+        assert!(!manager.cancel_remote(&id, "main", "old", Some(2)).await);
+        assert!(!token.is_cancelled());
+        assert!(manager.cancel_remote(&id, "main", "old", Some(1)).await);
+        assert!(token.is_cancelled());
+        let (legacy, legacy_token) = manager.register_remote_transfer(owner(1, "main")).await;
+        assert!(manager.cancel_remote(&legacy, "main", "main", None).await);
+        assert!(legacy_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn connection_invalidation_only_cancels_its_own_transfers() {
+        let manager = WorkspaceTransferManager::new_for_tests(Duration::from_secs(60));
+        let (_, a1) = manager.register_remote_transfer(owner(1, "one")).await;
+        let (_, a2) = manager.register_remote_transfer(owner(1, "two")).await;
+        let (_, b) = manager.register_remote_transfer(owner(2, "one")).await;
+        let (_, local) = manager.register_transfer().await;
+        assert_eq!(manager.cancel_connection(1).await, 2);
+        assert!(a1.is_cancelled() && a2.is_cancelled());
+        assert!(!b.is_cancelled() && !local.is_cancelled());
+        assert_eq!(manager.cancel_connection(1).await, 0);
+        assert_eq!(
+            serde_json::to_value(owner(1, "one")).unwrap(),
+            serde_json::json!({
+                "connectionId": 1, "ownerWindowLabel": "main", "windowInstanceId": "one",
+            })
+        );
+    }
 
     #[test]
     fn env_usize_uses_default_for_missing_invalid_and_zero() {

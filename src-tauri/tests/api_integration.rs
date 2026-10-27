@@ -31,6 +31,287 @@ use serde_json::{json, Value};
 
 const TEST_TOKEN: &str = "integration-test-token";
 
+mod repository_project {
+    use super::*;
+    use codeg_lib::db::test_helpers::seed_folder;
+    use std::path::Path;
+
+    const ENDPOINT: &str = "/api/list_repository_project_identities";
+
+    fn git(path: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .current_dir(path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "Git fixture failed: {:?}",
+            output.status
+        );
+    }
+
+    #[tokio::test]
+    async fn authentication_and_camel_case_request_validation() {
+        let (server, _data, _static) = build_test_server().await;
+        for token in [None, Some("Bearer wrong-token")] {
+            let request = server.post(ENDPOINT).json(&json!({"folderIds": []}));
+            let response = match token {
+                Some(token) => request.add_header("authorization", token).await,
+                None => request.await,
+            };
+            assert_eq!(response.status_code(), 401);
+        }
+        let auth = format!("Bearer {TEST_TOKEN}");
+        let response = server
+            .post(ENDPOINT)
+            .add_header("authorization", auth.clone())
+            .json(&json!({"folderIds": []}))
+            .await;
+        assert_eq!(response.status_code(), 200);
+        assert_eq!(response.json::<Value>(), json!([]));
+        for body in [
+            json!({"folder_ids": []}),
+            json!({}),
+            json!({"folderIds": "invalid"}),
+        ] {
+            let response = server
+                .post(ENDPOINT)
+                .add_header("authorization", auth.clone())
+                .json(&body)
+                .await;
+            assert_eq!(response.status_code(), 422);
+        }
+        let response = server
+            .post(ENDPOINT)
+            .add_header("authorization", auth)
+            .json(&json!({"folderIds": vec![1; 129]}))
+            .await;
+        assert_eq!(response.status_code(), 400);
+        assert_eq!(response.json::<Value>()["code"], "invalid_input");
+    }
+
+    #[tokio::test]
+    async fn shared_source_safe_snake_case_metadata_and_authoritative_removal() {
+        let (server, state, _data, _static) = build_test_server_with_state().await;
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let plain = tempfile::tempdir().unwrap();
+        for (path, origin) in [
+            (first.path(), "https://github.com/a/fork"),
+            (second.path(), "https://github.com/b/fork"),
+        ] {
+            git(path, &["init", "-q"]);
+            git(path, &["remote", "add", "origin", origin]);
+        }
+        git(first.path(), &["remote", "add", "upstream", "https://USERNAME_SECRET:PASSWORD_SECRET@github.com/Team/Repo.git?access_token=QUERY_SECRET#FRAGMENT_SECRET"]);
+        git(
+            second.path(),
+            &[
+                "remote",
+                "add",
+                "upstream",
+                "ssh://git@ssh.github.com:443/team/repo.git",
+            ],
+        );
+        let mut ids = Vec::new();
+        for path in [first.path(), second.path(), plain.path()] {
+            ids.push(seed_folder(&state.db, path.to_str().unwrap()).await);
+        }
+        let auth = format!("Bearer {TEST_TOKEN}");
+        let response = server
+            .post(ENDPOINT)
+            .add_header("authorization", auth.clone())
+            .json(&json!({"folderIds": [ids[0], ids[1], ids[2], -1, ids[0]]}))
+            .await;
+        assert_eq!(response.status_code(), 200);
+        for secret in [
+            "USERNAME_SECRET",
+            "PASSWORD_SECRET",
+            "QUERY_SECRET",
+            "FRAGMENT_SECRET",
+            "https://",
+            "ssh://",
+            "access_token",
+        ] {
+            assert!(
+                !response.text().contains(secret),
+                "only safe source metadata may leave server"
+            );
+        }
+        let body: Value = response.json();
+        assert_eq!(body.as_array().unwrap().len(), 4);
+        let identity = json!({"project_key": "github:team/repo", "provider": "github", "host": "github.com", "repository_path": "team/repo", "remote_name": "upstream"});
+        assert_eq!(
+            body[0],
+            json!({"folder_id": ids[0], "path": first.path().to_str(), "status": "resolved", "identity": identity})
+        );
+        assert_eq!(body[1]["identity"], identity);
+        assert_eq!(
+            body[2],
+            json!({"folder_id": ids[2], "path": plain.path().to_str(), "status": "resolved", "identity": null})
+        );
+        assert_eq!(
+            body[3],
+            json!({"folder_id": -1, "path": null, "status": "unavailable", "identity": null})
+        );
+        git(first.path(), &["remote", "remove", "upstream"]);
+        git(first.path(), &["remote", "remove", "origin"]);
+        let response = server
+            .post(ENDPOINT)
+            .add_header("authorization", auth)
+            .json(&json!({"folderIds": [ids[0], ids[1]]}))
+            .await;
+        assert_eq!(response.status_code(), 200);
+        let body: Value = response.json();
+        assert_eq!(body[0]["status"], "resolved");
+        assert_eq!(body[0]["identity"], Value::Null);
+        assert_eq!(body[1]["identity"], identity);
+    }
+
+    #[tokio::test]
+    async fn pathless_remote_secrets_fall_back_and_absolute_scp_upstream_wins() {
+        let (server, state, _data, _static) = build_test_server_with_state().await;
+        let mut repositories = Vec::new();
+        let mut ids = Vec::new();
+        for upstream in [
+            "https://USERNAME_SECRET:PASSWORD_SECRET@git.example.com?access_token=/QUERY_SECRET/Repo.git",
+            "https://USERNAME_SECRET:PASSWORD_SECRET@git.example.com#access_token=/FRAGMENT_SECRET/Repo.git",
+            "git@git.example.com:/srv/git/Team/Repo.git",
+            "ssh://git@git.example.com/srv/git/Team/Repo.git",
+        ] {
+            let repository = tempfile::tempdir().unwrap();
+            git(repository.path(), &["init", "-q"]);
+            git(
+                repository.path(),
+                &[
+                    "remote",
+                    "add",
+                    "origin",
+                    "https://git.example.com/Fork/Repo.git",
+                ],
+            );
+            git(repository.path(), &["remote", "add", "upstream", upstream]);
+            ids.push(seed_folder(&state.db, repository.path().to_str().unwrap()).await);
+            repositories.push(repository);
+        }
+        let auth = format!("Bearer {TEST_TOKEN}");
+        let response = server
+            .post(ENDPOINT)
+            .add_header("authorization", auth.clone())
+            .json(&json!({"folderIds": ids}))
+            .await;
+        assert_eq!(response.status_code(), 200);
+        for secret in [
+            "USERNAME_SECRET",
+            "PASSWORD_SECRET",
+            "QUERY_SECRET",
+            "FRAGMENT_SECRET",
+            "access_token",
+        ] {
+            assert!(
+                !response.text().contains(secret),
+                "remote secret in response"
+            );
+        }
+        let body: Value = response.json();
+        assert_eq!(body.as_array().unwrap().len(), 4);
+        for index in 0..4 {
+            let (repository_path, remote_name) = if index < 2 {
+                ("Fork/Repo", "origin")
+            } else {
+                ("srv/git/Team/Repo", "upstream")
+            };
+            assert_eq!(
+                body[index],
+                json!({
+                    "folder_id": ids[index],
+                    "path": repositories[index].path().to_str(),
+                    "status": "resolved",
+                    "identity": {
+                        "project_key": format!("git:git.example.com/{repository_path}"),
+                        "provider": "git",
+                        "host": "git.example.com",
+                        "repository_path": repository_path,
+                        "remote_name": remote_name,
+                    },
+                })
+            );
+        }
+        for repository in &repositories[..2] {
+            git(repository.path(), &["remote", "remove", "origin"]);
+        }
+        let response = server
+            .post(ENDPOINT)
+            .add_header("authorization", auth)
+            .json(&json!({"folderIds": &ids[..2]}))
+            .await;
+        assert_eq!(response.status_code(), 200);
+        let body: Value = response.json();
+        assert_eq!(body.as_array().unwrap().len(), 2);
+        for index in 0..2 {
+            assert_eq!(
+                body[index],
+                json!({
+                    "folder_id": ids[index],
+                    "path": repositories[index].path().to_str(),
+                    "status": "resolved",
+                    "identity": null,
+                })
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_registered_roots_and_per_entry_probe_failures() {
+        let (server, state, _data, _static) = build_test_server_with_state().await;
+        let root = tempfile::tempdir().unwrap();
+        git(root.path(), &["init", "-q"]);
+        git(
+            root.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://git.example.com/Team/Repo.git",
+            ],
+        );
+        let nested = root.path().join("nested");
+        let broken = root.path().join("broken");
+        let missing = root.path().join("missing");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::create_dir(&broken).unwrap();
+        std::fs::write(broken.join(".git"), "gitdir: /missing/PRIVATE_ERROR_SECRET").unwrap();
+        let mut ids = Vec::new();
+        for path in [
+            root.path(),
+            nested.as_path(),
+            broken.as_path(),
+            missing.as_path(),
+        ] {
+            ids.push(seed_folder(&state.db, path.to_str().unwrap()).await);
+        }
+        let response = server
+            .post(ENDPOINT)
+            .add_header("authorization", format!("Bearer {TEST_TOKEN}"))
+            .json(&json!({"folderIds": ids}))
+            .await;
+        assert_eq!(response.status_code(), 200);
+        assert!(!response.text().contains("PRIVATE_ERROR_SECRET"));
+        let body: Value = response.json();
+        assert_eq!(
+            body[0]["identity"]["project_key"],
+            "git:git.example.com/Team/Repo"
+        );
+        assert_eq!(body[1]["status"], "resolved");
+        assert_eq!(body[1]["identity"], Value::Null);
+        for index in [2, 3] {
+            assert_eq!(body[index]["status"], "unavailable");
+            assert_eq!(body[index]["identity"], Value::Null);
+        }
+    }
+}
+
 async fn build_test_server() -> (TestServer, tempfile::TempDir, tempfile::TempDir) {
     let data_dir = tempfile::tempdir().expect("data dir");
     let static_dir = tempfile::tempdir().expect("static dir");

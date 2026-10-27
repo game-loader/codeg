@@ -31,9 +31,11 @@ vi.mock("@/lib/api", () => ({
 }))
 vi.mock("@/lib/conversation-tag-assignment", () => ({
   changeConversationTags: h.changeConversationTags,
+  useChangeConversationTags: () => h.changeConversationTags,
 }))
 vi.mock("./conversation-tags-manager", () => ({
   openConversationTagsManager: h.openConversationTagsManager,
+  useOpenConversationTagsManager: () => h.openConversationTagsManager,
 }))
 vi.mock("@/contexts/tab-context", () => ({
   useTabActions: () => ({ closeTab: vi.fn(), openNewConversationTab: vi.fn() }),

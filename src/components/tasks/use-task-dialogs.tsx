@@ -2,14 +2,7 @@
 
 import { useCallback, useMemo, useState, type ReactNode } from "react"
 import { toast } from "sonner"
-import {
-  workTaskArchive,
-  workTaskCreate,
-  workTaskDefer,
-  workTaskMergeUnqueue,
-  workTaskStart,
-  workTaskUpdate,
-} from "@/lib/api"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { toErrorMessage } from "@/lib/app-error"
 import type { CreateTaskFromTextDetail } from "@/lib/task-compose-events"
 import type { WorkTask, WorkTaskDraft } from "@/lib/types"
@@ -73,6 +66,7 @@ export function useTaskDialogs({
   folderNames,
   defaultFolderId,
 }: UseTaskDialogsOptions): TaskDialogs {
+  const backendApi = useBackendApi()
   const [editorOpen, setEditorOpen] = useState(false)
   const [editorTask, setEditorTask] = useState<WorkTask | null>(null)
   const [editorPrefill, setEditorPrefill] =
@@ -157,13 +151,13 @@ export function useTaskDialogs({
 
   const submitEditor = useCallback(
     async (draft: WorkTaskDraft) => {
-      if (editorTask) await workTaskUpdate(editorTask.id, draft)
-      else await workTaskCreate(draft)
+      if (editorTask) await backendApi.workTaskUpdate(editorTask.id, draft)
+      else await backendApi.workTaskCreate(draft)
       setEditorOpen(false)
       setEditorPrefill(null)
       void refetch()
     },
-    [editorTask, refetch]
+    [editorTask, refetch, backendApi]
   )
 
   const openMerge = useCallback((task: WorkTask) => {
@@ -219,24 +213,29 @@ export function useTaskDialogs({
 
   const handlersFor = useCallback(
     (task: WorkTask): TaskActionHandlers => ({
-      onStart: () => void act(() => workTaskStart(task.id)),
+      onStart: () => void act(() => backendApi.workTaskStart(task.id)),
       onCancel: () => openCancel(task),
       onRetry: () => openRestart(task, "retry"),
       onRequeue: () => openRestart(task, "requeue"),
       onViewSession: () => openSession(task),
       onMerge: () => openMerge(task),
       onDeliverPr: () => openDeliver(task),
-      onUnqueueMerge: () => void act(() => workTaskMergeUnqueue(task.id)),
+      onUnqueueMerge: () =>
+        void act(() => backendApi.workTaskMergeUnqueue(task.id)),
       onComplete: () => openComplete(task),
       onArchive: () =>
-        void act(() => workTaskArchive(task.id, task.archived_at == null)),
-      onDefer: () => void act(() => workTaskDefer(task.id, !isDeferred(task))),
+        void act(() =>
+          backendApi.workTaskArchive(task.id, task.archived_at == null)
+        ),
+      onDefer: () =>
+        void act(() => backendApi.workTaskDefer(task.id, !isDeferred(task))),
       onFollowUp: () => openFollowUp(task),
       onEdit: () => openEdit(task),
       onSchedule: () => openSchedule(task),
     }),
     [
       act,
+      backendApi,
       openCancel,
       openComplete,
       openDeliver,

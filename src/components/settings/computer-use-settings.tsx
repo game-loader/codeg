@@ -19,6 +19,7 @@
  * It used to be one section at the bottom of `/settings/collaboration`.
  */
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useState } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -71,6 +72,8 @@ import {
 } from "@/lib/computer/use-computer-status"
 
 export function ComputerUseSettings() {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("ComputerUse.settings")
   // The driver and the permissions are where computer use is served: the
   // desktop app's machine, or a server's that shares the screen it runs on.
@@ -84,7 +87,7 @@ export function ComputerUseSettings() {
     setSwitching(true)
     const since = mark()
     try {
-      applySince(await setComputerToolsEnabled(next), since)
+      applySince(await setComputerToolsEnabled(next, backendPlatform), since)
     } catch (e) {
       toast.error(t("switch.failed"), { description: toErrorMessage(e) })
     } finally {
@@ -289,8 +292,10 @@ function DriverSection() {
  *  there anything to grant. The Mac is the one whose screen this is: this
  *  machine, or the server's that shares its screen. */
 function PermissionsSection({ enabled }: { enabled: boolean }) {
+  const backendPlatform = useBackendPlatform()
+
   const isMac = useIsMac()
-  const server = computerServerPlatform()
+  const server = computerServerPlatform(backendPlatform)
   if (!(server ? server === "macos" : isMac)) return null
   return <MacPermissions enabled={enabled} />
 }

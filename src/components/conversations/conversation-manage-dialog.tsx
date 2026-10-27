@@ -1,5 +1,12 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import {
   Fragment,
   useCallback,
@@ -82,20 +89,14 @@ import {
   type FolderSelectOption,
 } from "@/components/shared/folder-select"
 import { FolderAliasLabel } from "@/components/conversations/folder-alias-label"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabActions } from "@/contexts/tab-context"
-import {
-  deleteConversation,
-  listAllConversations,
-  updateConversationStatus,
-} from "@/lib/api"
+
 import type {
   AgentType,
   ConversationStatus,
   DbConversationSummary,
 } from "@/lib/types"
 import { ALL_AGENT_TYPES, STATUS_ORDER } from "@/lib/types"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import {
   excludeChatFolders,
   filterTopLevelFolders,
@@ -512,6 +513,18 @@ export function ConversationManageDialog({
   onOpenChange,
   folderId,
 }: ConversationManageDialogProps) {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.sidebar.manageConversations")
   const tCommon = useTranslations("Folder.common")
   const tStatus = useTranslations("Folder.statusLabels")
@@ -633,7 +646,7 @@ export function ConversationManageDialog({
       }
       setLoading(true)
       try {
-        const data = await listAllConversations({
+        const data = await backendApi.listAllConversations({
           folder_ids: queryFolderIds,
           search: search.trim() || null,
           agent_type: agentFilter === "all" ? null : agentFilter,
@@ -658,7 +671,15 @@ export function ConversationManageDialog({
       cancelled = true
       clearTimeout(timer)
     }
-  }, [open, queryFolderIds, search, agentFilter, statusFilter, refreshKey])
+  }, [
+    open,
+    queryFolderIds,
+    search,
+    agentFilter,
+    statusFilter,
+    refreshKey,
+    backendApi,
+  ])
 
   // Branch options are derived from the rows the other facets already matched,
   // so every branch listed is guaranteed to yield at least one conversation —
@@ -755,7 +776,9 @@ export function ConversationManageDialog({
     setPending(true)
     try {
       await Promise.all(
-        selectedConversations.map((conv) => deleteConversation(conv.id))
+        selectedConversations.map((conv) =>
+          backendApi.deleteConversation(conv.id)
+        )
       )
       for (const conv of selectedConversations) {
         closeConversationTab(conv.folder_id, conv.id, conv.agent_type)
@@ -772,7 +795,7 @@ export function ConversationManageDialog({
       setPending(false)
       setConfirmDelete(false)
     }
-  }, [selectedConversations, closeConversationTab, t, afterBulkOp])
+  }, [selectedConversations, closeConversationTab, t, afterBulkOp, backendApi])
 
   const handleBulkStatus = useCallback(
     async (status: ConversationStatus) => {
@@ -781,7 +804,7 @@ export function ConversationManageDialog({
       try {
         await Promise.all(
           selectedConversations.map((conv) =>
-            updateConversationStatus(conv.id, status)
+            backendApi.updateConversationStatus(conv.id, status)
           )
         )
         toast.success(
@@ -798,7 +821,7 @@ export function ConversationManageDialog({
         setPending(false)
       }
     },
-    [selectedConversations, t, afterBulkOp]
+    [selectedConversations, t, afterBulkOp, backendApi]
   )
 
   const anyFacetNarrows =

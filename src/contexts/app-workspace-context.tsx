@@ -1,12 +1,18 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useTabStore as legacyTabs } from "@/stores/tab-store"
+import { useConversationRuntimeStore as legacyConversationRuntime } from "@/stores/conversation-runtime-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import type { BackendStores } from "@/lib/backend/stores"
+
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useEffect, type ReactNode } from "react"
-import { getGitHead } from "@/lib/api"
-import { onTransportReconnect, subscribe } from "@/lib/platform"
+
 import { useAcpEvent } from "@/contexts/acp-connections-context"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useConversationRuntimeStore } from "@/stores/conversation-runtime-store"
-import { useTabStore } from "@/stores/tab-store"
 import {
   CONVERSATIONS_BULK_CHANGED_EVENT,
   CONVERSATION_CHANGED_EVENT,
@@ -30,10 +36,11 @@ interface AppWorkspaceProviderProps {
  * The runtime store no-ops unless the conversation is open and this client is a
  * pure viewer of it — the owner's in-memory reply is never refetched over.
  */
-function syncOpenViewerDetail(conversationId: number): void {
-  useConversationRuntimeStore
-    .getState()
-    .actions.syncViewerDetail(conversationId)
+function syncOpenViewerDetail(
+  conversationId: number,
+  runtime: BackendStores["conversationRuntime"]
+): void {
+  runtime.getState().actions.syncViewerDetail(conversationId)
 }
 
 /**
@@ -44,12 +51,22 @@ function syncOpenViewerDetail(conversationId: number): void {
  * poll.
  */
 export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
+  const backendStores = useBackendStores({
+    workspace: legacyWorkspace,
+    tabs: legacyTabs,
+    conversationRuntime: legacyConversationRuntime,
+  })
+  const useAppWorkspaceStore = backendStores.workspace
+  const useTabStore = backendStores.tabs
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   useEffect(() => {
     const { fetchFolders, refreshConversations } =
       useAppWorkspaceStore.getState()
     void fetchFolders()
     void refreshConversations()
-  }, [])
+  }, [useAppWorkspaceStore])
 
   // Subscribe to the global `conversation://changed` side-channel so any
   // client's create/rename/delete/status reaches this client's sidebar in real
@@ -59,7 +76,7 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
     let unlisten: (() => void) | undefined
 
     void (async () => {
-      const dispose = await subscribe<ConversationChange>(
+      const dispose = await backendPlatform.subscribe<ConversationChange>(
         CONVERSATION_CHANGED_EVENT,
         (change) => {
           const store = useAppWorkspaceStore.getState()
@@ -71,14 +88,17 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
             // just completed there has no live promotion path here — so pull the
             // reply from the persisted transcript. No-op unless the conversation
             // is open and this client is a pure viewer of it.
-            syncOpenViewerDetail(change.summary.id)
+            syncOpenViewerDetail(
+              change.summary.id,
+              backendStores.conversationRuntime
+            )
           } else if (change.kind === "deleted") {
             store.applyConversationRemove(change.id)
           } else {
             store.updateConversationLocal(change.id, {
               status: change.status,
             })
-            syncOpenViewerDetail(change.id)
+            syncOpenViewerDetail(change.id, backendStores.conversationRuntime)
           }
         }
       )
@@ -89,7 +109,7 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
     // Events fired while the WS was disconnected are dropped by the broadcaster
     // (receiver_count == 0). A full re-fetch on reconnect reconciles. Returns
     // null on desktop IPC (no disconnect window) → no-op there.
-    const offReconnect = onTransportReconnect(() => {
+    const offReconnect = backendPlatform.onTransportReconnect(() => {
       void useAppWorkspaceStore.getState().refreshConversations()
     })
 
@@ -98,7 +118,7 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
       unlisten?.()
       offReconnect?.()
     }
-  }, [])
+  }, [backendPlatform, useAppWorkspaceStore, backendStores])
 
   // A batch import (the import-picker window, possibly a different window than
   // this one) announces completion with ONE `conversations://bulk-changed`
@@ -109,7 +129,7 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
     let unlisten: (() => void) | undefined
 
     void (async () => {
-      const dispose = await subscribe<ConversationsBulkChanged>(
+      const dispose = await backendPlatform.subscribe<ConversationsBulkChanged>(
         CONVERSATIONS_BULK_CHANGED_EVENT,
         () => {
           void useAppWorkspaceStore.getState().refreshConversations()
@@ -123,7 +143,7 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
       disposed = true
       unlisten?.()
     }
-  }, [])
+  }, [backendPlatform, useAppWorkspaceStore])
 
   // Subscribe to the global `folder://changed` side-channel so a folder created
   // headlessly (e.g. an automation per-run worktree) lands in this client's
@@ -138,7 +158,7 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
     let unlisten: (() => void) | undefined
 
     void (async () => {
-      const dispose = await subscribe<FolderChange>(
+      const dispose = await backendPlatform.subscribe<FolderChange>(
         FOLDER_CHANGED_EVENT,
         (change) => {
           const store = useAppWorkspaceStore.getState()
@@ -173,7 +193,7 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
     // A folder created while the WS was disconnected is dropped by the
     // broadcaster (receiver_count == 0); a full folder re-fetch on reconnect
     // reconciles. Returns null on desktop IPC (no disconnect window) → no-op.
-    const offReconnect = onTransportReconnect(() => {
+    const offReconnect = backendPlatform.onTransportReconnect(() => {
       void useAppWorkspaceStore.getState().fetchFolders()
     })
 
@@ -182,7 +202,7 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
       unlisten?.()
       offReconnect?.()
     }
-  }, [])
+  }, [backendPlatform, useAppWorkspaceStore, useTabStore])
 
   // Sidebar folder groups are edited in one window but rendered in every client,
   // so a rename / recolor / delete has to reach them all. Group CRUD carries its
@@ -198,7 +218,7 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
     let unlisten: (() => void) | undefined
 
     void (async () => {
-      const dispose = await subscribe<FolderGroupChange>(
+      const dispose = await backendPlatform.subscribe<FolderGroupChange>(
         FOLDER_GROUP_CHANGED_EVENT,
         (change) => {
           useAppWorkspaceStore.getState().applyFolderGroupChange(change)
@@ -212,7 +232,7 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
       disposed = true
       unlisten?.()
     }
-  }, [])
+  }, [backendPlatform, useAppWorkspaceStore])
 
   // Branch polling: only poll the active folder. Subscribes to the resolved
   // path (a primitive) rather than `allFolders`, so folder-list churn doesn't
@@ -232,7 +252,7 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
 
     const poll = async () => {
       try {
-        const head = await getGitHead(activeFolderPath)
+        const head = await backendApi.getGitHead(activeFolderPath)
         if (cancelled) return
         useAppWorkspaceStore.getState().applyGitHead(folderId, head)
         // Poll a repo briskly to catch branch switches; back off otherwise.
@@ -251,7 +271,7 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
       cancelled = true
       if (timer) clearTimeout(timer)
     }
-  }, [activeFolderId, activeFolderPath])
+  }, [activeFolderId, activeFolderPath, backendApi, useAppWorkspaceStore])
 
   return <>{children}</>
 }
@@ -264,6 +284,11 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
  * Must be rendered inside `AcpConnectionsProvider` (for `useAcpEvent`).
  */
 export function ConversationStatusEventBridge() {
+  const useAppWorkspaceStore = useBackendStores({
+    workspace: legacyWorkspace,
+    tabs: legacyTabs,
+    conversationRuntime: legacyConversationRuntime,
+  }).workspace
   useAcpEvent((envelope: EventEnvelope) => {
     if (envelope.type !== "conversation_status_changed") return
     useAppWorkspaceStore

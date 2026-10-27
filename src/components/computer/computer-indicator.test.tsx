@@ -270,7 +270,11 @@ describe("ComputerIndicator", () => {
     })
     mount()
     await waitFor(() =>
-      expect(api.computerIndicatorFit).toHaveBeenCalledWith(213, 42)
+      expect(api.computerIndicatorFit).toHaveBeenCalledWith(
+        213,
+        42,
+        expect.objectContaining({ getTransport: expect.any(Function) })
+      )
     )
   })
 })

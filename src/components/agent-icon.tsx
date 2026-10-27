@@ -1,14 +1,11 @@
-import { memo, useId, useState, useSyncExternalStore } from "react"
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { memo, useId, useState } from "react"
 
 import type { AgentType } from "@/lib/types"
 import {
   getAgentColor,
-  getAgentIconUrl,
-  getAgentInitial,
-  getCustomAgentDisplayVersion,
   isCustomAgentType,
   isMonochromeSvgDataUrl,
-  subscribeCustomAgentDisplay,
 } from "@/lib/custom-agents"
 import { cn } from "@/lib/utils"
 
@@ -716,13 +713,10 @@ export function MaskedMonoIcon({
 }
 
 function CustomAgentIcon({ agentType, className }: AgentIconProps) {
+  const { getAgentIconUrl, getAgentInitial } = useAgentDisplay(true)
+
   // The icon map is hydrated asynchronously from the agent list; re-render when
   // it lands so the mark replaces the placeholder initial on its own.
-  useSyncExternalStore(
-    subscribeCustomAgentDisplay,
-    getCustomAgentDisplayVersion,
-    getCustomAgentDisplayVersion
-  )
   const iconUrl = getAgentIconUrl(agentType)
   // An icon that fails to decode (a corrupt upload, or a stored URL the webview
   // cannot reach) must degrade to the initial rather than leave a broken image.

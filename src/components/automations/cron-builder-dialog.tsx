@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
@@ -19,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { automationComputeNextRun } from "@/lib/api"
+
 import { describeCron, type CronDescriptor } from "@/lib/cron-humanize"
 import { ScheduleLabel } from "./schedule-label"
 
@@ -170,6 +171,8 @@ function CronBuilderBody({
   onApply: (cron: string) => void
   onCancel: () => void
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Automations")
   const init = useMemo(() => describeCron(cron), [cron])
 
@@ -196,7 +199,8 @@ function CronBuilderBody({
     if (!built.trim()) return
     let cancelled = false
     const handle = setTimeout(() => {
-      automationComputeNextRun(built.trim(), timezone)
+      backendApi
+        .automationComputeNextRun(built.trim(), timezone)
         .then((r) => {
           if (!cancelled) setNextRun(r)
         })
@@ -208,7 +212,7 @@ function CronBuilderBody({
       cancelled = true
       clearTimeout(handle)
     }
-  }, [built, timezone])
+  }, [built, timezone, backendApi])
 
   const showTime =
     freq === "daily" ||

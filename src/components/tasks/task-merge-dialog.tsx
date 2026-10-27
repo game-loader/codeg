@@ -1,10 +1,11 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { CircleAlert, Clock } from "lucide-react"
-import { workTaskMerge, workTaskSettingsEffective } from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -59,6 +60,8 @@ export function TaskMergeDialog({
   anotherMerging = false,
   alreadyQueued = false,
 }: TaskMergeDialogProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Tasks")
   const [autoMessage, setAutoMessage] = useState(true)
   const [message, setMessage] = useState("")
@@ -97,7 +100,8 @@ export function TaskMergeDialog({
       return
     }
     let cancelled = false
-    workTaskSettingsEffective(folderId)
+    backendApi
+      .workTaskSettingsEffective(folderId)
       .then((s) => {
         if (cancelled) return
         setDeleteWorktree(s.delete_worktree_default)
@@ -118,6 +122,7 @@ export function TaskMergeDialog({
     queuedMessage,
     queuedInstructions,
     queuedDeleteWorktree,
+    backendApi,
   ])
 
   // "Will be queued" as far as the client can tell. The engine re-checks under
@@ -138,7 +143,7 @@ export function TaskMergeDialog({
     setSubmitting(true)
     setError(null)
     try {
-      const queued = await workTaskMerge(
+      const queued = await backendApi.workTaskMerge(
         task.id,
         autoMessage ? null : message.trim(),
         deleteWorktree,

@@ -263,6 +263,9 @@ export interface CaptureOutcome {
 export interface BrowserTabState {
   tabId: string
   ownerWindow: string
+  /** Workspace connection identity when supplied by the shell. When absent,
+   * use the remote profile or the frontend's native-ID ownership record. */
+  hostConnectionId?: number | null
   kind: TabKind
   surface: SurfaceKind
   channel: ChannelKind
@@ -459,6 +462,7 @@ export interface BrowserPopupPayload {
   /** The profile an adopted popup lives in (its opener's, as the backend
    *  knows it); null when denied. */
   profile: string | null
+  hostConnectionId?: number | null
 }
 
 /** `browser://telemetry`: page-side data forwarded as-is; never trust it. */
@@ -483,6 +487,7 @@ export interface BrowserOpenRequestPayload {
   /** The profile the new tab belongs in (the opener's for a modifier-click);
    *  null leaves the choice to the frontend. */
   profile: string | null
+  hostConnectionId?: number | null
   /** Set when the asker is waiting to be told which tab this became — an
    *  agent tool, which has to answer with the tab's id. Absent for the
    *  fire-and-forget askers (a deep link, a modifier-click). */

@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { getFolderConversationOutline } from "@/lib/api"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { warmTurnFileChanges } from "@/lib/session-files"
 import { extendPrefixFingerprint, FNV_SEED_HEX } from "@/lib/turn-window"
 import type { ConversationOutline, MessageTurn } from "@/lib/types"
@@ -80,6 +80,7 @@ export function useConversationOutline({
     outline: ConversationOutline
   } | null>(null)
   const [failedKey, setFailedKey] = useState<string | null>(null)
+  const backendApi = useBackendApi()
   const inFlight = useRef(false)
 
   const key =
@@ -98,7 +99,8 @@ export function useConversationOutline({
     if (turns != null || failedKey === key || inFlight.current) return
     inFlight.current = true
     const requested = { key, fetchId, offset, prefixHash }
-    getFolderConversationOutline(requested.fetchId, requested.offset)
+    backendApi
+      .getFolderConversationOutline(requested.fetchId, requested.offset)
       .then((outline) => {
         // Its edits are parsed before it is served, between frames: the
         // navigator would otherwise parse the whole history in one render.
@@ -120,7 +122,7 @@ export function useConversationOutline({
     // `fetched` and `failedKey` re-run this after every landing: an outline
     // fetched for a window that has moved on since may not cover the current
     // one, which then needs its own fetch.
-  }, [key, turns, failedKey, fetched, fetchId, offset, prefixHash])
+  }, [key, turns, failedKey, fetched, fetchId, offset, prefixHash, backendApi])
 
   const retry = useCallback(() => setFailedKey(null), [])
 

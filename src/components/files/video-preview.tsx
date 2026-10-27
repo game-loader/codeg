@@ -1,5 +1,7 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
+import { useRemoteConnection } from "@/contexts/remote-connection-context"
 import { useEffect, useRef, useState } from "react"
 import { Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -18,6 +20,9 @@ export function VideoPreview({ tab }: { tab: FileWorkspaceTab }) {
 }
 
 function VideoPlayer({ path, title }: { path: string; title: string }) {
+  const backendPlatform = useBackendPlatform()
+  const configRevision = useRemoteConnection()?.connection?.config_revision
+
   const t = useTranslations("Folder.videoPreview")
   const videoRef = useRef<HTMLVideoElement>(null)
   const [src, setSrc] = useState<string>()
@@ -29,7 +34,10 @@ function VideoPlayer({ path, title }: { path: string; title: string }) {
     let cancelled = false
     let release: (() => Promise<void>) | undefined
     const video = videoRef.current
-    openVideoPreview(path)
+    const pending = configRevision
+      ? openVideoPreview(path, backendPlatform, configRevision)
+      : openVideoPreview(path, backendPlatform)
+    pending
       .then((session) => {
         if (cancelled) {
           void session.release()
@@ -54,7 +62,7 @@ function VideoPlayer({ path, title }: { path: string; title: string }) {
       }
       void release?.()
     }
-  }, [path, attempt])
+  }, [path, attempt, backendPlatform, configRevision])
 
   return (
     <div className="flex h-full min-h-0 flex-col">

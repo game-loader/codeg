@@ -1,5 +1,7 @@
 "use client"
 
+import { useOptionalBackendClient } from "@/contexts/backend-client-context"
+import { useBackendEventScope } from "@/hooks/use-runtime-event-scope"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { isImeCompositionKey } from "@/lib/ime-composition"
@@ -373,6 +375,8 @@ export function MessageInput({
   getSentHistory,
   tall = false,
 }: MessageInputProps) {
+  const backendKey = useOptionalBackendClient()?.key
+  const backendScope = useBackendEventScope()
   const t = useTranslations("Folder.chat.messageInput")
   const tm = useTranslations("Machines")
   const tQueue = useTranslations("Folder.chat.messageQueue")
@@ -1402,6 +1406,7 @@ export function MessageInput({
       const customEvent = event as CustomEvent<AttachFileToSessionDetail>
       if (!customEvent.detail) return
       if (customEvent.detail.tabId !== attachmentTabId) return
+      if (customEvent.detail.backendKey !== backendKey) return
       const { path, range } = customEvent.detail
       // Drop the badge at the composer's current caret rather than the end, so
       // "add to chat" / "add file to chat" land where the user left off.
@@ -1416,7 +1421,7 @@ export function MessageInput({
     return () => {
       window.removeEventListener(ATTACH_FILE_TO_SESSION_EVENT, handleAttachFile)
     }
-  }, [attach, attachmentTabId])
+  }, [attach, attachmentTabId, backendKey])
 
   // Sidebar "add to session": drop a session mention badge — the very same
   // reference the `@` panel's Sessions group inserts — at the caret. Deduped by
@@ -1430,6 +1435,7 @@ export function MessageInput({
       const customEvent = event as CustomEvent<AttachSessionToSessionDetail>
       if (!customEvent.detail) return
       if (customEvent.detail.tabId !== attachmentTabId) return
+      if (customEvent.detail.backendKey !== backendKey) return
       const editor = editorRef.current?.getEditor()
       if (!editor) return
       const { reference } = sessionToSuggestion(customEvent.detail.conversation)
@@ -1453,7 +1459,7 @@ export function MessageInput({
         handleAttachSession
       )
     }
-  }, [attachmentTabId])
+  }, [attachmentTabId, backendKey])
 
   // Built-in browser "send to chat": an element the person picked, a
   // screenshot, the console. The block is page content — the backend already
@@ -1473,6 +1479,9 @@ export function MessageInput({
       const detail = customEvent.detail
       if (!detail) return
       if (detail.tabId !== attachmentTabId) return
+      // Persisted tab IDs survive same-key runtime replacement; page bytes
+      // must be rejected before insertion or the new client's image upload.
+      if (detail.backendScope !== backendScope) return
       const editor = editorRef.current?.getEditor()
       if (!editor) return
       if (detail.text) {
@@ -1517,7 +1526,12 @@ export function MessageInput({
     return () => {
       window.removeEventListener(ATTACH_PAGE_TO_SESSION_EVENT, handleAttachPage)
     }
-  }, [attach, attachmentTabId, promptCapabilities.embedded_context])
+  }, [
+    attach,
+    attachmentTabId,
+    backendScope,
+    promptCapabilities.embedded_context,
+  ])
 
   useEffect(() => {
     if (!attachmentTabId) return
@@ -1526,6 +1540,11 @@ export function MessageInput({
       const customEvent = event as CustomEvent<AppendTextToSessionDetail>
       if (!customEvent.detail) return
       if (customEvent.detail.tabId !== attachmentTabId) return
+      if (
+        customEvent.detail.backendKey != null &&
+        customEvent.detail.backendKey !== backendKey
+      )
+        return
       const appendText = customEvent.detail.text
       const editor = editorRef.current?.getEditor()
       if (!editor) return
@@ -1544,7 +1563,7 @@ export function MessageInput({
     return () => {
       window.removeEventListener(APPEND_TEXT_TO_SESSION_EVENT, handleAppendText)
     }
-  }, [attachmentTabId])
+  }, [attachmentTabId, backendKey])
 
   const buildDraft = useCallback((): PromptDraft | null => {
     const editor = editorRef.current?.getEditor()

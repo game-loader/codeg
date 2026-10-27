@@ -70,12 +70,11 @@ const OUTBOUND_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 use crate::app_error::{
     AppCommandError, AppErrorCode, UPLOAD_I18N_KEY_NOT_A_FILE, UPLOAD_I18N_KEY_TOO_LARGE,
 };
-use crate::db::service::remote_workspace_connection_service;
 use crate::db::AppDatabase;
 use crate::models::{RemoteWorkspaceConnectionInfo, ToHeaderMap};
 use crate::workspace_transfer::{
-    TransferDirection, TransferState, WorkspaceTransferManager, WorkspaceTransferProgress,
-    WORKSPACE_TRANSFER_PROGRESS_EVENT,
+    RemoteTransferOwner, TransferDirection, TransferState, WorkspaceTransferManager,
+    WorkspaceTransferProgress, WORKSPACE_TRANSFER_PROGRESS_EVENT,
 };
 
 /// Default HTTP request timeout. Long enough to survive remote ACP prompts
@@ -148,6 +147,7 @@ struct WsTaskEntry {
 struct WsSubscriber {
     label: String,
     window_instance_id: String,
+    config_revision: Option<String>,
 }
 
 /// Matches `reqwest`'s own default redirect bound.
@@ -218,16 +218,8 @@ pub(crate) fn connection_redirect_policy() -> reqwest::redirect::Policy {
 /// the source chain: the redirect refusal above, the connect error, the TLS
 /// failure. Without this the host-pinning error reaches the user as a bare
 /// "error following redirect" and looks like a bug rather than a decision.
-pub(crate) fn request_error_detail(err: &reqwest::Error) -> String {
-    let mut detail = err.to_string();
-    let mut source: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(err);
-    while let Some(cause) = source {
-        detail.push_str(": ");
-        detail.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    detail
-}
+pub(crate) use super::remote_binding::request_error_detail;
+use super::remote_binding::{RemoteBinding, RemoteBindingState};
 
 /// Tauri-managed singleton.
 pub struct RemoteProxyState {
@@ -235,11 +227,13 @@ pub struct RemoteProxyState {
     destroyed_window_instances: Mutex<HashSet<String>>,
     http: reqwest::Client,
     workspace_http: reqwest::Client,
+    pub(crate) bindings: RemoteBindingState,
 }
 
 impl RemoteProxyState {
     pub fn new() -> Self {
         Self {
+            bindings: RemoteBindingState::default(),
             tasks: Mutex::new(HashMap::new()),
             destroyed_window_instances: Mutex::new(HashSet::new()),
             http: reqwest::Client::builder()
@@ -251,6 +245,114 @@ impl RemoteProxyState {
                 .redirect(connection_redirect_policy())
                 .build()
                 .expect("failed to build reqwest workspace client for remote proxy"),
+        }
+    }
+
+    /// Called under the binding write guard after a saved configuration change.
+    /// Legacy subscribers reconnect; revision-bound subscribers must rebuild.
+    pub(crate) async fn connection_changed(
+        &self,
+        app: &AppHandle,
+        id: i32,
+        deleted: bool,
+        config_revision: &str,
+    ) {
+        let (disconnected, stale) = self.invalidate_connection(id, deleted).await;
+        let event_name = format!("remote-ws-event-{id}");
+        for label in disconnected {
+            emit_internal_to_label(
+                app,
+                &label,
+                &event_name,
+                WS_DISCONNECTED_CHANNEL,
+                config_revision,
+            );
+        }
+        for label in stale {
+            emit_internal_to_label(
+                app,
+                &label,
+                &event_name,
+                "__configuration_changed__",
+                config_revision,
+            );
+        }
+    }
+
+    async fn invalidate_connection(&self, id: i32, deleted: bool) -> (Vec<String>, Vec<String>) {
+        self.bindings.invalidate_locked(id).await;
+        let mut tasks = self.tasks.lock().await;
+        let Some(entry) = tasks.get(&id).cloned() else {
+            return (vec![], vec![]);
+        };
+        *entry.ready.write().await = false;
+        let mut subscribers = entry.subscribers.lock().await;
+        let disconnected: HashSet<_> = subscribers.values().map(|sub| sub.label.clone()).collect();
+        let stale: HashSet<_> = subscribers
+            .values()
+            .filter(|sub| sub.config_revision.is_some())
+            .map(|sub| sub.label.clone())
+            .collect();
+        if deleted {
+            subscribers.clear();
+        } else {
+            subscribers.retain(|_, sub| sub.config_revision.is_none());
+        }
+        if subscribers.is_empty() {
+            tasks.remove(&id);
+            entry.shutdown_tx.send_replace(true);
+        }
+        (
+            disconnected.into_iter().collect(),
+            stale.into_iter().collect(),
+        )
+    }
+
+    /// Caller holds the connection write gate. Metadata-only saves preserve
+    /// live transfers and subscriptions, just as they preserve the DB revision.
+    async fn invalidate_saved_update(
+        &self,
+        transfers: &WorkspaceTransferManager,
+        before: &RemoteWorkspaceConnectionInfo,
+        updated: &RemoteWorkspaceConnectionInfo,
+    ) -> Option<(Vec<String>, Vec<String>)> {
+        if before.config_revision == updated.config_revision {
+            return None;
+        }
+        transfers.cancel_connection(updated.id).await;
+        Some(self.invalidate_connection(updated.id, false).await)
+    }
+
+    pub(crate) async fn connection_updated(
+        &self,
+        app: &AppHandle,
+        transfers: &WorkspaceTransferManager,
+        before: &RemoteWorkspaceConnectionInfo,
+        updated: &RemoteWorkspaceConnectionInfo,
+    ) {
+        if let Some((disconnected, stale)) = self
+            .invalidate_saved_update(transfers, before, updated)
+            .await
+        {
+            let event_name = format!("remote-ws-event-{}", updated.id);
+            for label in disconnected {
+                emit_internal_to_label(
+                    app,
+                    &label,
+                    &event_name,
+                    WS_DISCONNECTED_CHANNEL,
+                    &before.config_revision,
+                );
+            }
+            for label in stale {
+                emit_internal_to_label(
+                    app,
+                    &label,
+                    &event_name,
+                    "__configuration_changed__",
+                    &before.config_revision,
+                );
+            }
         }
     }
 
@@ -285,23 +387,15 @@ impl RemoteProxyState {
     /// no subscribers remain. A stale unsubscribe from a destroyed transport
     /// only removes its own ID and cannot affect any other transport.
     async fn remove_subscription(self: &Arc<Self>, connection_id: i32, subscription_id: &str) {
-        let shutdown_tx = {
-            let mut tasks = self.tasks.lock().await;
-            let entry = match tasks.get(&connection_id) {
-                Some(e) => e.clone(),
-                None => return,
-            };
-            let mut subs = entry.subscribers.lock().await;
-            subs.remove(subscription_id);
-            if subs.is_empty() {
-                tasks.remove(&connection_id);
-                Some(entry.shutdown_tx.clone())
-            } else {
-                None
-            }
+        let mut tasks = self.tasks.lock().await;
+        let Some(entry) = tasks.get(&connection_id).cloned() else {
+            return;
         };
-        if let Some(tx) = shutdown_tx {
-            let _ = tx.send(true);
+        let mut subs = entry.subscribers.lock().await;
+        subs.remove(subscription_id);
+        if subs.is_empty() {
+            entry.shutdown_tx.send_replace(true);
+            tasks.remove(&connection_id);
         }
     }
 
@@ -315,12 +409,11 @@ impl RemoteProxyState {
         label: &str,
         window_instance_id: &str,
     ) {
-        let shutdown_txs = {
+        {
             let mut destroyed = self.destroyed_window_instances.lock().await;
             destroyed.insert(window_instance_id.to_string());
             let mut tasks = self.tasks.lock().await;
             let connection_ids: Vec<i32> = tasks.keys().copied().collect();
-            let mut shutdown_txs = Vec::new();
 
             for connection_id in connection_ids {
                 let entry = match tasks.get(&connection_id) {
@@ -336,16 +429,12 @@ impl RemoteProxyState {
                 if is_empty {
                     if let Some(stored) = tasks.get(&connection_id) {
                         if Arc::ptr_eq(stored, &entry) {
+                            entry.shutdown_tx.send_replace(true);
                             tasks.remove(&connection_id);
-                            shutdown_txs.push(entry.shutdown_tx.clone());
                         }
                     }
                 }
             }
-            shutdown_txs
-        };
-        for tx in shutdown_txs {
-            let _ = tx.send(true);
         }
     }
 }
@@ -382,70 +471,23 @@ pub async fn remote_http_call(
     command: String,
     args: Option<Value>,
     timeout_ms: Option<u64>,
+    config_revision: Option<String>,
 ) -> Result<Value, AppCommandError> {
-    let conn = remote_workspace_connection_service::get(&db.conn, connection_id)
-        .await
-        .map_err(AppCommandError::db)?
-        .ok_or_else(|| {
-            AppCommandError::not_found(format!("Remote connection {connection_id} not found"))
-        })?;
+    super::remote_binding::remote_http_call_core(
+        &db.conn,
+        &proxy.bindings,
+        &proxy.http,
+        connection_id,
+        &command,
+        args,
+        timeout_ms.map(clamp_http_timeout_ms),
+        config_revision.as_deref(),
+    )
+    .await
+}
 
-    let url = format!(
-        "{}/api/{}",
-        conn.base_url.trim_end_matches('/'),
-        command.trim_start_matches('/')
-    );
-
-    let body = args.unwrap_or(Value::Object(serde_json::Map::new()));
-
-    let mut request = proxy
-        .http
-        .post(&url)
-        .bearer_auth(conn.token.trim())
-        .headers(conn.headers.to_header_map())
-        .json(&body);
-    // Per-request override beats the client-wide 30s default. Used by the
-    // ACP probe path (`describeAgentOptions`) whose backend deadline is
-    // longer than 30s — without this override, reqwest would abort here
-    // before the backend can return its structured `ProbeTimedOut`.
-    if let Some(ms) = timeout_ms {
-        let requested = Duration::from_millis(ms);
-        request = request.timeout(requested.min(HTTP_TIMEOUT_MAX));
-    }
-    let response = request.send().await.map_err(|e| {
-        AppCommandError::network("Remote HTTP request failed").with_detail(request_error_detail(&e))
-    })?;
-
-    let status = response.status();
-
-    if status == reqwest::StatusCode::UNAUTHORIZED {
-        return Err(AppCommandError::authentication_failed(
-            "Remote Workspace token is invalid",
-        ));
-    }
-
-    if !status.is_success() {
-        let raw_body = response.text().await.unwrap_or_default();
-        // The remote codeg-server always returns `Json(AppCommandError)`
-        // on errors (see `web/handlers/error.rs::IntoResponse`). Try to
-        // deserialize so the caller sees the original code + i18n hint.
-        if let Ok(structured) = serde_json::from_str::<AppCommandError>(&raw_body) {
-            return Err(structured);
-        }
-        return Err(
-            AppCommandError::network(format!("Remote returned HTTP {status}")).with_detail(
-                if raw_body.is_empty() {
-                    status.canonical_reason().unwrap_or("error").to_string()
-                } else {
-                    raw_body
-                },
-            ),
-        );
-    }
-
-    response.json::<Value>().await.map_err(|e| {
-        AppCommandError::network("Failed to parse remote response").with_detail(e.to_string())
-    })
+fn clamp_http_timeout_ms(ms: u64) -> u64 {
+    ms.min(HTTP_TIMEOUT_MAX.as_millis() as u64)
 }
 
 // ─── Multipart upload proxy ───────────────────────────────────────────
@@ -646,6 +688,7 @@ pub async fn read_local_file_for_upload(
 /// `i18n_key` for the user toast), else wraps in `NetworkError`.
 #[allow(clippy::too_many_arguments)] // flat Tauri command args, like the rest of this module
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn remote_upload_attachment(
     app: AppHandle,
     db: State<'_, AppDatabase>,
@@ -656,152 +699,156 @@ pub async fn remote_upload_attachment(
     mime_type: Option<String>,
     session_id: Option<String>,
     data_base64: String,
+    config_revision: Option<String>,
 ) -> Result<Value, AppCommandError> {
-    let conn = remote_workspace_connection_service::get(&db.conn, connection_id)
+    let binding = proxy
+        .bindings
+        .bind(&db.conn, connection_id, config_revision.as_deref())
+        .await?;
+    let conn = &binding.connection;
+    binding
+        .run(async {
+            // Reject oversized payloads BEFORE allocating. The remote server
+            // enforces the same cap on the decoded bytes, but a malicious /
+            // buggy webview hitting this command directly would otherwise force
+            // a `Vec<u8>` allocation roughly equal to the base64 length before
+            // the cap fires server-side. Cap at `ceil(UPLOAD_MAX_BYTES * 4/3) +
+            // padding slack` so a legitimate maximum-sized file (which encodes
+            // to exactly `ceil(UPLOAD_MAX_BYTES / 3) * 4` bytes) always passes.
+            if data_base64.len() > REMOTE_UPLOAD_MAX_BASE64_LEN {
+                return Err(
+                    AppCommandError::io_error("Upload payload exceeds the size limit")
+                        .with_detail(format!(
+                            "size={} limit={REMOTE_UPLOAD_MAX_BASE64_LEN}",
+                            data_base64.len()
+                        ))
+                        .with_i18n(
+                            UPLOAD_I18N_KEY_TOO_LARGE,
+                            upload_i18n_params([
+                                ("size", data_base64.len().to_string()),
+                                ("limit", UPLOAD_MAX_BYTES.to_string()),
+                            ]),
+                        ),
+                );
+            }
+            let bytes = STANDARD.decode(data_base64.as_bytes()).map_err(|e| {
+                AppCommandError::io_error("Failed to decode upload payload")
+                    .with_detail(e.to_string())
+            })?;
+            // Belt-and-suspenders: decoded length must still respect the cap.
+            // The base64 check above is a fast pre-filter; this guarantees that
+            // any padding quirks can't squeeze through.
+            if bytes.len() as u64 > UPLOAD_MAX_BYTES {
+                return Err(
+                    AppCommandError::io_error("Upload payload exceeds the size limit")
+                        .with_detail(format!("size={} limit={UPLOAD_MAX_BYTES}", bytes.len()))
+                        .with_i18n(
+                            UPLOAD_I18N_KEY_TOO_LARGE,
+                            upload_i18n_params([
+                                ("size", bytes.len().to_string()),
+                                ("limit", UPLOAD_MAX_BYTES.to_string()),
+                            ]),
+                        ),
+                );
+            }
+
+            let mime = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
+            // `reqwest::multipart::Part::file_name` does NOT strip CR/LF or
+            // quote-escape — a name like `bad\r\nX-Auth: leak.txt` would inject
+            // additional headers into the `Content-Disposition` line. Sanitize
+            // ourselves before handing the value to reqwest. (The MIME string
+            // goes through `mime_str`, which already rejects non-token chars.)
+            //
+            // Defense-in-depth: this is deliberately a second sanitize pass.
+            // `read_local_file_for_upload` already sanitized `file_name` before
+            // it returned, but this command is reachable from other JS callers
+            // (e.g. the web `uploadAttachment` path packs an arbitrary
+            // `file.name` straight through). Re-running the filter here means
+            // every multipart frame leaving this process is uniformly clean,
+            // regardless of upstream — and the extra cost is a single pass over
+            // ≤255 chars, which is negligible compared to the upload itself.
+            let safe_name = sanitize_upload_file_name(&file_name);
+            // Report transfer progress only when the caller asked for it. The bytes are
+            // already in memory, so the stream just cuts them into chunks and counts
+            // them as reqwest pulls them — the same shape the workspace uploader uses
+            // (`file_upload_stream`), minus the disk read.
+            let progress_id = upload_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string);
+            let part = match progress_id {
+                Some(upload_id) => {
+                    let total = bytes.len() as u64;
+                    let body = reqwest::Body::wrap_stream(attachment_upload_stream(
+                        app.clone(),
+                        upload_id,
+                        Bytes::from(bytes),
+                        total,
+                    ));
+                    reqwest::multipart::Part::stream_with_length(body, total)
+                }
+                None => reqwest::multipart::Part::bytes(bytes),
+            }
+            .file_name(safe_name)
+            .mime_str(&mime)
+            .map_err(|e| {
+                AppCommandError::io_error("Invalid MIME type for upload").with_detail(e.to_string())
+            })?;
+            let mut form = reqwest::multipart::Form::new().part("file", part);
+            if let Some(sid) = session_id {
+                if !sid.is_empty() {
+                    form = form.text("session_id", sid);
+                }
+            }
+
+            let url = format!(
+                "{}/api/upload_attachment",
+                conn.base_url.trim_end_matches('/'),
+            );
+            let response = proxy
+                .http
+                .post(&url)
+                .bearer_auth(conn.token.trim())
+                .headers(conn.headers.to_header_map())
+                .multipart(form)
+                .send()
+                .await
+                .map_err(|e| {
+                    AppCommandError::network("Remote upload request failed")
+                        .with_detail(request_error_detail(&e))
+                })?;
+
+            let status = response.status();
+
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(AppCommandError::authentication_failed(
+                    "Remote Workspace token is invalid",
+                ));
+            }
+
+            if !status.is_success() {
+                let raw_body = response.text().await.unwrap_or_default();
+                if let Ok(structured) = serde_json::from_str::<AppCommandError>(&raw_body) {
+                    return Err(structured);
+                }
+                return Err(
+                    AppCommandError::network(format!("Remote returned HTTP {status}")).with_detail(
+                        if raw_body.is_empty() {
+                            status.canonical_reason().unwrap_or("error").to_string()
+                        } else {
+                            raw_body
+                        },
+                    ),
+                );
+            }
+
+            response.json::<Value>().await.map_err(|e| {
+                AppCommandError::network("Failed to parse remote upload response")
+                    .with_detail(e.to_string())
+            })
+        })
         .await
-        .map_err(AppCommandError::db)?
-        .ok_or_else(|| {
-            AppCommandError::not_found(format!("Remote connection {connection_id} not found"))
-        })?;
-
-    // Reject oversized payloads BEFORE allocating. The remote server
-    // enforces the same cap on the decoded bytes, but a malicious /
-    // buggy webview hitting this command directly would otherwise force
-    // a `Vec<u8>` allocation roughly equal to the base64 length before
-    // the cap fires server-side. Cap at `ceil(UPLOAD_MAX_BYTES * 4/3) +
-    // padding slack` so a legitimate maximum-sized file (which encodes
-    // to exactly `ceil(UPLOAD_MAX_BYTES / 3) * 4` bytes) always passes.
-    if data_base64.len() > REMOTE_UPLOAD_MAX_BASE64_LEN {
-        return Err(
-            AppCommandError::io_error("Upload payload exceeds the size limit")
-                .with_detail(format!(
-                    "size={} limit={REMOTE_UPLOAD_MAX_BASE64_LEN}",
-                    data_base64.len()
-                ))
-                .with_i18n(
-                    UPLOAD_I18N_KEY_TOO_LARGE,
-                    upload_i18n_params([
-                        ("size", data_base64.len().to_string()),
-                        ("limit", UPLOAD_MAX_BYTES.to_string()),
-                    ]),
-                ),
-        );
-    }
-    let bytes = STANDARD.decode(data_base64.as_bytes()).map_err(|e| {
-        AppCommandError::io_error("Failed to decode upload payload").with_detail(e.to_string())
-    })?;
-    // Belt-and-suspenders: decoded length must still respect the cap.
-    // The base64 check above is a fast pre-filter; this guarantees that
-    // any padding quirks can't squeeze through.
-    if bytes.len() as u64 > UPLOAD_MAX_BYTES {
-        return Err(
-            AppCommandError::io_error("Upload payload exceeds the size limit")
-                .with_detail(format!("size={} limit={UPLOAD_MAX_BYTES}", bytes.len()))
-                .with_i18n(
-                    UPLOAD_I18N_KEY_TOO_LARGE,
-                    upload_i18n_params([
-                        ("size", bytes.len().to_string()),
-                        ("limit", UPLOAD_MAX_BYTES.to_string()),
-                    ]),
-                ),
-        );
-    }
-
-    let mime = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
-    // `reqwest::multipart::Part::file_name` does NOT strip CR/LF or
-    // quote-escape — a name like `bad\r\nX-Auth: leak.txt` would inject
-    // additional headers into the `Content-Disposition` line. Sanitize
-    // ourselves before handing the value to reqwest. (The MIME string
-    // goes through `mime_str`, which already rejects non-token chars.)
-    //
-    // Defense-in-depth: this is deliberately a second sanitize pass.
-    // `read_local_file_for_upload` already sanitized `file_name` before
-    // it returned, but this command is reachable from other JS callers
-    // (e.g. the web `uploadAttachment` path packs an arbitrary
-    // `file.name` straight through). Re-running the filter here means
-    // every multipart frame leaving this process is uniformly clean,
-    // regardless of upstream — and the extra cost is a single pass over
-    // ≤255 chars, which is negligible compared to the upload itself.
-    let safe_name = sanitize_upload_file_name(&file_name);
-    // Report transfer progress only when the caller asked for it. The bytes are
-    // already in memory, so the stream just cuts them into chunks and counts
-    // them as reqwest pulls them — the same shape the workspace uploader uses
-    // (`file_upload_stream`), minus the disk read.
-    let progress_id = upload_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .map(str::to_string);
-    let part = match progress_id {
-        Some(upload_id) => {
-            let total = bytes.len() as u64;
-            let body = reqwest::Body::wrap_stream(attachment_upload_stream(
-                app.clone(),
-                upload_id,
-                Bytes::from(bytes),
-                total,
-            ));
-            reqwest::multipart::Part::stream_with_length(body, total)
-        }
-        None => reqwest::multipart::Part::bytes(bytes),
-    }
-    .file_name(safe_name)
-    .mime_str(&mime)
-    .map_err(|e| {
-        AppCommandError::io_error("Invalid MIME type for upload").with_detail(e.to_string())
-    })?;
-    let mut form = reqwest::multipart::Form::new().part("file", part);
-    if let Some(sid) = session_id {
-        if !sid.is_empty() {
-            form = form.text("session_id", sid);
-        }
-    }
-
-    let url = format!(
-        "{}/api/upload_attachment",
-        conn.base_url.trim_end_matches('/'),
-    );
-    let response = proxy
-        .http
-        .post(&url)
-        .bearer_auth(conn.token.trim())
-        .headers(conn.headers.to_header_map())
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| {
-            AppCommandError::network("Remote upload request failed")
-                .with_detail(request_error_detail(&e))
-        })?;
-
-    let status = response.status();
-
-    if status == reqwest::StatusCode::UNAUTHORIZED {
-        return Err(AppCommandError::authentication_failed(
-            "Remote Workspace token is invalid",
-        ));
-    }
-
-    if !status.is_success() {
-        let raw_body = response.text().await.unwrap_or_default();
-        if let Ok(structured) = serde_json::from_str::<AppCommandError>(&raw_body) {
-            return Err(structured);
-        }
-        return Err(
-            AppCommandError::network(format!("Remote returned HTTP {status}")).with_detail(
-                if raw_body.is_empty() {
-                    status.canonical_reason().unwrap_or("error").to_string()
-                } else {
-                    raw_body
-                },
-            ),
-        );
-    }
-
-    response.json::<Value>().await.map_err(|e| {
-        AppCommandError::network("Failed to parse remote upload response")
-            .with_detail(e.to_string())
-    })
 }
 
 /// Best-effort MIME guess by extension. Mirrors the frontend's
@@ -897,10 +944,13 @@ pub async fn remote_upload_workspace_paths(
     db: State<'_, AppDatabase>,
     proxy: State<'_, Arc<RemoteProxyState>>,
     transfers: State<'_, Arc<WorkspaceTransferManager>>,
+    window: WebviewWindow,
     connection_id: i32,
     root_path: String,
     target_path: String,
     entries: Vec<RemoteWorkspaceUploadPathEntry>,
+    window_instance_id: Option<String>,
+    config_revision: Option<String>,
 ) -> Result<RemoteWorkspaceUploadPathResult, AppCommandError> {
     if entries.is_empty() {
         return Err(AppCommandError::invalid_input(
@@ -908,16 +958,18 @@ pub async fn remote_upload_workspace_paths(
         ));
     }
 
-    let conn = remote_workspace_connection_service::get(&db.conn, connection_id)
-        .await
-        .map_err(AppCommandError::db)?
-        .ok_or_else(|| {
-            AppCommandError::not_found(format!("Remote connection {connection_id} not found"))
-        })?;
-
+    let gate = proxy.bindings.gate(connection_id).await;
+    let guard = gate.read().await;
+    let binding = proxy
+        .bindings
+        .bind_locked(&db.conn, connection_id, config_revision.as_deref())
+        .await?;
+    let conn = &binding.connection;
+    let owner = remote_transfer_owner(&window, connection_id, window_instance_id);
     let custom_headers = conn.headers.to_header_map();
-    let (transfer_id, cancel_token) = transfers.register_transfer().await;
-    let result = async {
+    let (transfer_id, cancel_token) = transfers.register_remote_transfer(owner.clone()).await;
+    drop(guard);
+    let transfer = binding.run(async {
         let _permit = transfers
             .remote_upload_semaphore
             .acquire()
@@ -976,6 +1028,7 @@ pub async fn remote_upload_workspace_paths(
                     let relative_path = join_upload_relative(&base_prefix, nested);
                     let file_result = upload_one_workspace_path(
                         &app,
+                        &owner,
                         &proxy,
                         &conn.base_url,
                         conn.token.trim(),
@@ -994,6 +1047,7 @@ pub async fn remote_upload_workspace_paths(
             } else if metadata.is_file() {
                 let file_result = upload_one_workspace_path(
                     &app,
+                    &owner,
                     &proxy,
                     &conn.base_url,
                     conn.token.trim(),
@@ -1017,6 +1071,7 @@ pub async fn remote_upload_workspace_paths(
 
         emit_workspace_transfer_progress(
             &app,
+            &owner,
             WorkspaceTransferProgress {
                 transfer_id: transfer_id.clone(),
                 direction: TransferDirection::Upload,
@@ -1033,8 +1088,12 @@ pub async fn remote_upload_workspace_paths(
             files: uploaded,
             bytes: total_bytes,
         })
-    }
-    .await;
+    });
+    let result = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => Err(workspace_transfer_cancelled()),
+        result = transfer => result,
+    };
 
     if let Err(err) = &result {
         let state = if cancel_token.is_cancelled() {
@@ -1044,6 +1103,7 @@ pub async fn remote_upload_workspace_paths(
         };
         emit_workspace_transfer_progress(
             &app,
+            &owner,
             WorkspaceTransferProgress {
                 transfer_id: transfer_id.clone(),
                 direction: TransferDirection::Upload,
@@ -1062,6 +1122,7 @@ pub async fn remote_upload_workspace_paths(
 #[allow(clippy::too_many_arguments)]
 async fn upload_one_workspace_path(
     app: &AppHandle,
+    owner: &RemoteTransferOwner,
     proxy: &RemoteProxyState,
     base_url: &str,
     token: &str,
@@ -1094,6 +1155,7 @@ async fn upload_one_workspace_path(
 
     emit_workspace_transfer_progress(
         app,
+        owner,
         WorkspaceTransferProgress {
             transfer_id: transfer_id.to_string(),
             direction: TransferDirection::Upload,
@@ -1107,6 +1169,7 @@ async fn upload_one_workspace_path(
 
     let stream = file_upload_stream(
         app.clone(),
+        owner.clone(),
         transfer_id.to_string(),
         cancel_token.clone(),
         file,
@@ -1174,6 +1237,7 @@ async fn upload_one_workspace_path(
         })?;
     emit_workspace_transfer_progress(
         app,
+        owner,
         WorkspaceTransferProgress {
             transfer_id: transfer_id.to_string(),
             direction: TransferDirection::Upload,
@@ -1189,6 +1253,7 @@ async fn upload_one_workspace_path(
 
 fn file_upload_stream(
     app: AppHandle,
+    owner: RemoteTransferOwner,
     transfer_id: String,
     cancel_token: CancellationToken,
     file: tokio::fs::File,
@@ -1197,6 +1262,7 @@ fn file_upload_stream(
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static {
     futures::stream::try_unfold((file, 0u64), move |(mut file, loaded)| {
         let app = app.clone();
+        let owner = owner.clone();
         let transfer_id = transfer_id.clone();
         let cancel_token = cancel_token.clone();
         let path = path.clone();
@@ -1217,6 +1283,7 @@ fn file_upload_stream(
             let loaded = loaded.saturating_add(n as u64);
             emit_workspace_transfer_progress(
                 &app,
+                &owner,
                 WorkspaceTransferProgress {
                     transfer_id,
                     direction: TransferDirection::Upload,
@@ -1247,16 +1314,50 @@ fn workspace_transfer_cancelled() -> AppCommandError {
     AppCommandError::task_execution_failed("Workspace transfer cancelled")
 }
 
-fn emit_workspace_transfer_progress(app: &AppHandle, progress: WorkspaceTransferProgress) {
-    let _ = app.emit(WORKSPACE_TRANSFER_PROGRESS_EVENT, progress);
+fn remote_transfer_owner(
+    window: &WebviewWindow,
+    connection_id: i32,
+    instance: Option<String>,
+) -> RemoteTransferOwner {
+    let label = window.label().to_string();
+    RemoteTransferOwner {
+        connection_id,
+        window_instance_id: instance.unwrap_or_else(|| label.clone()),
+        window_label: label,
+    }
+}
+
+fn emit_workspace_transfer_progress(
+    app: &AppHandle,
+    owner: &RemoteTransferOwner,
+    progress: WorkspaceTransferProgress,
+) {
+    #[derive(Clone, serde::Serialize)]
+    struct OwnedProgress<'a> {
+        #[serde(flatten)]
+        owner: &'a RemoteTransferOwner,
+        #[serde(flatten)]
+        progress: WorkspaceTransferProgress,
+    }
+    let _ = app.emit_to(
+        EventTarget::webview(&owner.window_label),
+        WORKSPACE_TRANSFER_PROGRESS_EVENT,
+        OwnedProgress { owner, progress },
+    );
 }
 
 #[tauri::command]
 pub async fn remote_cancel_workspace_transfer(
     transfers: State<'_, Arc<WorkspaceTransferManager>>,
+    window: WebviewWindow,
     transfer_id: String,
+    connection_id: Option<i32>,
+    window_instance_id: Option<String>,
 ) -> Result<bool, AppCommandError> {
-    Ok(transfers.cancel(&transfer_id).await)
+    let instance = window_instance_id.unwrap_or_else(|| window.label().to_string());
+    Ok(transfers
+        .cancel_remote(&transfer_id, window.label(), &instance, connection_id)
+        .await)
 }
 
 #[tauri::command]
@@ -1266,21 +1367,27 @@ pub async fn remote_download_workspace_file(
     db: State<'_, AppDatabase>,
     proxy: State<'_, Arc<RemoteProxyState>>,
     transfers: State<'_, Arc<WorkspaceTransferManager>>,
+    window: WebviewWindow,
     connection_id: i32,
     root_path: String,
     path: String,
     save_path: String,
+    window_instance_id: Option<String>,
+    config_revision: Option<String>,
 ) -> Result<RemoteWorkspaceDownloadResult, AppCommandError> {
     remote_workspace_download_stream(
         app,
         db,
         proxy,
         transfers,
+        window,
         connection_id,
         "file",
         root_path,
         path,
         save_path,
+        window_instance_id,
+        config_revision,
     )
     .await
 }
@@ -1292,21 +1399,27 @@ pub async fn remote_download_workspace_dir(
     db: State<'_, AppDatabase>,
     proxy: State<'_, Arc<RemoteProxyState>>,
     transfers: State<'_, Arc<WorkspaceTransferManager>>,
+    window: WebviewWindow,
     connection_id: i32,
     root_path: String,
     path: String,
     save_path: String,
+    window_instance_id: Option<String>,
+    config_revision: Option<String>,
 ) -> Result<RemoteWorkspaceDownloadResult, AppCommandError> {
     remote_workspace_download_stream(
         app,
         db,
         proxy,
         transfers,
+        window,
         connection_id,
         "dir",
         root_path,
         path,
         save_path,
+        window_instance_id,
+        config_revision,
     )
     .await
 }
@@ -1317,22 +1430,27 @@ async fn remote_workspace_download_stream(
     db: State<'_, AppDatabase>,
     proxy: State<'_, Arc<RemoteProxyState>>,
     transfers: State<'_, Arc<WorkspaceTransferManager>>,
+    window: WebviewWindow,
     connection_id: i32,
     kind: &str,
     root_path: String,
     path: String,
     save_path: String,
+    window_instance_id: Option<String>,
+    config_revision: Option<String>,
 ) -> Result<RemoteWorkspaceDownloadResult, AppCommandError> {
-    let conn = remote_workspace_connection_service::get(&db.conn, connection_id)
-        .await
-        .map_err(AppCommandError::db)?
-        .ok_or_else(|| {
-            AppCommandError::not_found(format!("Remote connection {connection_id} not found"))
-        })?;
-
+    let gate = proxy.bindings.gate(connection_id).await;
+    let guard = gate.read().await;
+    let binding = proxy
+        .bindings
+        .bind_locked(&db.conn, connection_id, config_revision.as_deref())
+        .await?;
+    let conn = &binding.connection;
+    let owner = remote_transfer_owner(&window, connection_id, window_instance_id);
     let custom_headers = conn.headers.to_header_map();
-    let (transfer_id, cancel_token) = transfers.register_transfer().await;
-    let result = async {
+    let (transfer_id, cancel_token) = transfers.register_remote_transfer(owner.clone()).await;
+    drop(guard);
+    let transfer = binding.run(async {
         let _permit = transfers
             .remote_download_semaphore
             .acquire()
@@ -1398,6 +1516,7 @@ async fn remote_workspace_download_stream(
         let total = response.content_length();
         emit_workspace_transfer_progress(
             &app,
+            &owner,
             WorkspaceTransferProgress {
                 transfer_id: transfer_id.clone(),
                 direction: TransferDirection::Download,
@@ -1422,6 +1541,7 @@ async fn remote_workspace_download_stream(
             |loaded| {
                 emit_workspace_transfer_progress(
                     &app,
+                    &owner,
                     WorkspaceTransferProgress {
                         transfer_id: transfer_id.clone(),
                         direction: TransferDirection::Download,
@@ -1438,6 +1558,7 @@ async fn remote_workspace_download_stream(
 
         emit_workspace_transfer_progress(
             &app,
+            &owner,
             WorkspaceTransferProgress {
                 transfer_id: transfer_id.clone(),
                 direction: TransferDirection::Download,
@@ -1452,10 +1573,15 @@ async fn remote_workspace_download_stream(
             transfer_id: transfer_id.clone(),
             bytes,
         })
-    }
-    .await;
+    });
+    let result = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => Err(workspace_transfer_cancelled()),
+        result = transfer => result,
+    };
 
     if let Err(err) = &result {
+        let _ = tokio::fs::remove_file(partial_download_path(&save_path, &transfer_id)).await;
         let state = if cancel_token.is_cancelled() {
             TransferState::Cancelled
         } else {
@@ -1463,6 +1589,7 @@ async fn remote_workspace_download_stream(
         };
         emit_workspace_transfer_progress(
             &app,
+            &owner,
             WorkspaceTransferProgress {
                 transfer_id: transfer_id.clone(),
                 direction: TransferDirection::Download,
@@ -1592,22 +1719,13 @@ where
         return result;
     }
 
-    if tokio::fs::try_exists(save_path).await.unwrap_or(false) {
-        if let Err(e) = tokio::fs::remove_file(save_path).await {
-            let _ = tokio::fs::remove_file(&partial_path).await;
-            return Err(
-                AppCommandError::io_error("Failed to replace existing download")
-                    .with_detail(format!("{save_path}: {e}")),
-            );
-        }
-    }
-    tokio::fs::rename(&partial_path, save_path)
-        .await
-        .map_err(|e| {
-            let _ = std::fs::remove_file(&partial_path);
-            AppCommandError::io_error("Failed to finalize download")
-                .with_detail(format!("{partial_path} -> {save_path}: {e}"))
-        })?;
+    // Finalization is one filesystem rename, without a cancellation point
+    // between removing an old destination and replacing it.
+    std::fs::rename(&partial_path, save_path).map_err(|e| {
+        let _ = std::fs::remove_file(&partial_path);
+        AppCommandError::io_error("Failed to finalize download")
+            .with_detail(format!("{partial_path} -> {save_path}: {e}"))
+    })?;
 
     result
 }
@@ -1621,6 +1739,7 @@ where
 /// knows the ID. Two concurrent transports for the same window label never
 /// collide because each has a distinct subscription_id.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn remote_ws_subscribe(
     app: AppHandle,
     db: State<'_, AppDatabase>,
@@ -1629,14 +1748,25 @@ pub async fn remote_ws_subscribe(
     connection_id: i32,
     subscription_id: String,
     window_instance_id: String,
+    config_revision: Option<String>,
 ) -> Result<(), AppCommandError> {
     let label = window.label().to_string();
     let event_name = format!("remote-ws-event-{connection_id}");
     let proxy_arc: Arc<RemoteProxyState> = (*proxy).clone();
     let subscriber = WsSubscriber {
         label: label.clone(),
-        window_instance_id,
+        window_instance_id: window_instance_id.clone(),
+        config_revision: config_revision.clone(),
     };
+
+    let gate = proxy.bindings.gate(connection_id).await;
+    let _guard = gate.read().await;
+    // Validate even on the existing-task fast path, before inserting anything.
+    let binding = proxy
+        .bindings
+        .bind_locked(&db.conn, connection_id, config_revision.as_deref())
+        .await?;
+    proxy_arc.register_window_instance_cleanup(&window, window_instance_id);
 
     // Fast path: existing entry — insert this subscription_id.
     // Hold the destroyed-instance lock while inserting into `subscribers`, in
@@ -1661,17 +1791,18 @@ pub async fn remote_ws_subscribe(
     };
 
     if let Some(entry) = existing_entry {
-        acknowledge_ready_subscriber(&app, &entry, &label, &event_name).await;
+        acknowledge_ready_subscriber(&entry, &binding, || {
+            emit_internal_to_label(
+                &app,
+                &label,
+                &event_name,
+                WS_READY_CHANNEL,
+                &binding.connection.config_revision,
+            );
+        })
+        .await;
         return Ok(());
     }
-
-    // Slow path: load credentials, create entry, spawn WS task.
-    let conn = remote_workspace_connection_service::get(&db.conn, connection_id)
-        .await
-        .map_err(AppCommandError::db)?
-        .ok_or_else(|| {
-            AppCommandError::not_found(format!("Remote connection {connection_id} not found"))
-        })?;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (outbound_tx, outbound_rx) = mpsc::channel::<String>(OUTBOUND_CAPACITY);
@@ -1707,14 +1838,22 @@ pub async fn remote_ws_subscribe(
         }
     };
     if let Some(existing) = raced_entry {
-        acknowledge_ready_subscriber(&app, &existing, &label, &event_name).await;
+        acknowledge_ready_subscriber(&existing, &binding, || {
+            emit_internal_to_label(
+                &app,
+                &label,
+                &event_name,
+                WS_READY_CHANNEL,
+                &binding.connection.config_revision,
+            );
+        })
+        .await;
         return Ok(());
     }
 
     let task_app = app.clone();
     let task_proxy = proxy_arc.clone();
     let task_db = db.conn.clone();
-    let target = WsTarget::of(&conn);
     let task_entry = entry.clone();
 
     tauri::async_runtime::spawn(async move {
@@ -1723,7 +1862,6 @@ pub async fn remote_ws_subscribe(
             task_proxy,
             task_db,
             connection_id,
-            target,
             task_entry,
             shutdown_rx,
             outbound_rx,
@@ -1749,12 +1887,20 @@ pub async fn remote_ws_subscribe(
 /// so the failure-mode logic is unit-testable without a Tauri runtime.
 #[tauri::command]
 pub async fn remote_ws_send_text(
+    db: State<'_, AppDatabase>,
     proxy: State<'_, Arc<RemoteProxyState>>,
     connection_id: i32,
     text: String,
+    config_revision: Option<String>,
 ) -> Result<(), AppCommandError> {
     let proxy_arc: Arc<RemoteProxyState> = (*proxy).clone();
-    remote_ws_send_text_core(&proxy_arc, connection_id, text).await
+    let binding = proxy
+        .bindings
+        .bind(&db.conn, connection_id, config_revision.as_deref())
+        .await?;
+    binding
+        .run(remote_ws_send_text_core(&proxy_arc, connection_id, text))
+        .await
 }
 
 async fn remote_ws_send_text_core(
@@ -1811,253 +1957,319 @@ pub async fn remote_ws_unsubscribe(
 
 // ─── WS background task ───────────────────────────────────────────────
 
-/// Long-running task that maintains one WebSocket per `connection_id`.
-/// Lifecycle:
-///   1. Connect (with subprotocol-auth header).
-///   2. Forward the server's `__ready__` once its receiver is subscribed.
-///   3. Forward legacy envelopes and attach-protocol snapshot/replay/events.
-///   4. On network failure, emit `__disconnected__` and keep retrying with
-///      capped backoff, each retry dialing the connection as it is stored
-///      then. Only an HTTP 401 emits `__unauthorized__` and exits; so does a
-///      deleted connection, quietly.
-///   5. Heartbeats recover half-open sockets after sleep or lost packets.
-///   6. Shutdown cancels both connection attempts and backoff.
-///
-/// On exit (any path), the task removes its entry from `proxy.tasks` —
-/// but only if the entry still matches its own `Arc`, so a racy
-/// resubscribe that already replaced the entry isn't clobbered.
-// `app`/`proxy`/`db`/`connection_id`/`target`/`entry`/`shutdown_rx`/
-// `outbound_rx` are all distinct concerns the task needs; bundling into a
-// single struct would just spread the field definitions to a different
-// place without improving readability.
-#[allow(clippy::too_many_arguments)]
+/// Maintains one socket per task, with revision-fenced delivery and terminal
+/// retirement. Network waits are bounded and cancelled by shutdown or a saved
+/// configuration change; only an explicit current-binding HTTP 401 retires it.
 async fn run_ws_task(
     app: AppHandle,
     proxy: Arc<RemoteProxyState>,
     db: DatabaseConnection,
     connection_id: i32,
-    target: WsTarget,
     entry: Arc<WsTaskEntry>,
-    mut shutdown_rx: watch::Receiver<bool>,
-    mut outbound_rx: mpsc::Receiver<String>,
+    shutdown_rx: watch::Receiver<bool>,
+    outbound_rx: mpsc::Receiver<String>,
 ) {
     let event_name = format!("remote-ws-event-{connection_id}");
-    run_ws_connection(
-        target,
-        |last_known| stored_ws_target(db.clone(), connection_id, last_known),
-        &entry,
-        &mut shutdown_rx,
-        &mut outbound_rx,
-        |frame| forward_frame(&app, &entry, &event_name, frame),
+    run_ws_task_core(
+        proxy,
+        connection_id,
+        db,
+        entry,
+        (shutdown_rx, outbound_rx),
+        |label, envelope| {
+            if let Err(error) = app.emit_to(EventTarget::webview(label), &event_name, envelope) {
+                tracing::error!("[RemoteProxy] emit_to {label} for {event_name} failed: {error}");
+            }
+        },
+        || std::future::ready(()),
     )
     .await;
-
-    *entry.ready.write().await = false;
-
-    // A stale task must not remove a newer subscription's replacement entry.
-    let mut tasks = proxy.tasks.lock().await;
-    if tasks
-        .get(&connection_id)
-        .is_some_and(|stored| Arc::ptr_eq(stored, &entry))
-    {
-        tasks.remove(&connection_id);
-    }
 }
 
-/// Where the event WebSocket connects, and the credentials it presents.
+async fn run_ws_task_core<F: Future<Output = ()>>(
+    proxy: Arc<RemoteProxyState>,
+    connection_id: i32,
+    db: DatabaseConnection,
+    entry: Arc<WsTaskEntry>,
+    receivers: (watch::Receiver<bool>, mpsc::Receiver<String>),
+    emit: impl FnMut(&str, &Value),
+    mut unauthorized_selected: impl FnMut() -> F,
+) {
+    let (mut shutdown_rx, mut outbound_rx) = receivers;
+    let initial = tokio::select! {
+        biased;
+        _ = shutdown_rx.changed() => None,
+        binding = proxy.bindings.bind(&db, connection_id, None) => binding.ok(),
+    };
+    if let Some(binding) = initial {
+        // Each callback future owns its captures. A FnMut callback must not
+        // return a future borrowing its captured emitter or observer.
+        let emit = Arc::new(Mutex::new(emit));
+        run_ws_connection(
+            WsTarget::bound(binding),
+            |last_known| {
+                let proxy = proxy.clone();
+                let db = db.clone();
+                async move {
+                    stored_ws_target(db, connection_id, last_known, &proxy.bindings).await
+                }
+            },
+            &mut shutdown_rx,
+            &mut outbound_rx,
+            |target, event| {
+                let proxy = proxy.clone();
+                let entry = entry.clone();
+                let emit = emit.clone();
+                let selected = matches!(event, WsEvent::Unauthorized)
+                    .then(&mut unauthorized_selected);
+                async move {
+                    if let Some(selected) = selected {
+                        selected.await;
+                    }
+                    let binding = target.binding.as_ref().expect("native WS target is bound");
+                    let mut emit = emit.lock().await;
+                    match event {
+                        WsEvent::Unauthorized => {
+                            retire_unauthorized_ws_task(&proxy, &entry, binding, &mut *emit).await
+                        }
+                        WsEvent::Frame(frame) => {
+                            deliver_ws_envelope(&proxy, &entry, binding, frame, &mut *emit).await
+                        }
+                    }
+                }
+            },
+        )
+        .await;
+    }
+    remove_ws_task_entry(&proxy, connection_id, &entry).await;
+}
+
+/// Socket credentials plus the issuing generation for native delivery.
+/// Socket-only tests inject unbound targets into the same network loop.
 #[derive(Clone)]
 struct WsTarget {
     url: String,
     token: String,
     headers: HeaderMap,
+    binding: Option<Arc<RemoteBinding>>,
 }
 
 impl WsTarget {
     fn of(connection: &RemoteWorkspaceConnectionInfo) -> Self {
         Self {
             url: http_url_to_ws_url(&connection.base_url, WS_EVENTS_PATH),
-            token: connection.token.clone(),
+            token: connection.token.trim().to_owned(),
             headers: connection.headers.to_header_map(),
+            binding: None,
         }
+    }
+
+    fn bound(binding: RemoteBinding) -> Self {
+        let mut target = Self::of(&binding.connection);
+        target.binding = Some(Arc::new(binding));
+        target
+    }
+
+    fn invalidated(&self) -> CancellationToken {
+        self.binding
+            .as_ref()
+            .map(|binding| binding.invalidated.clone())
+            .unwrap_or_default()
     }
 }
 
-/// The target a retry dials: the connection as stored now. HTTP calls read
-/// the connection per request, so an edited address or token reaches them at
-/// once; without this, a socket retrying an address that has since been
-/// edited away would retry it until its window closed. `None` once the
-/// connection has been deleted. A failed lookup keeps `last_known`.
+/// Retries reload credentials under the generation gate. A transient DB
+/// failure may reuse a current binding, but never an invalidated generation.
 async fn stored_ws_target(
     db: DatabaseConnection,
     connection_id: i32,
     last_known: WsTarget,
+    bindings: &RemoteBindingState,
 ) -> Option<WsTarget> {
-    match remote_workspace_connection_service::get(&db, connection_id).await {
-        Ok(Some(connection)) => Some(WsTarget::of(&connection)),
-        Ok(None) => {
-            tracing::info!(
-                "[RemoteProxy] remote connection {connection_id} was deleted; its event socket stops"
-            );
-            None
-        }
-        Err(err) => {
-            tracing::warn!(
-                "[RemoteProxy] could not reload remote connection {connection_id}, retrying its last address: {err}"
-            );
-            Some(last_known)
+    match bindings.bind(&db, connection_id, None).await {
+        Ok(binding) => Some(WsTarget::bound(binding)),
+        Err(err) if matches!(err.code, AppErrorCode::NotFound) => None,
+        Err(_) => {
+            tracing::warn!("[RemoteProxy] could not reload remote connection {connection_id}");
+            (!last_known.invalidated().is_cancelled()).then_some(last_known)
         }
     }
 }
 
-/// Network lifecycle separated from Tauri delivery so tests exercise actual
-/// sockets, failures and recovery without constructing native webviews.
-/// `target` is dialed first; every retry dials what `refresh_target` returns
-/// for the target before it, and the loop ends when it returns `None`.
+enum WsEvent {
+    Frame(Value),
+    /// A selected handshake result, distinct from a remote JSON envelope.
+    Unauthorized,
+}
+
+/// Injectable network lifecycle shared by native binding/retirement tests
+/// and socket-only tests. The delivery result rejects selected stale frames;
+/// a rejected 401 retries with a freshly loaded binding instead of exiting.
 async fn run_ws_connection<R, RFut, F, Fut>(
     mut target: WsTarget,
     mut refresh_target: R,
-    entry: &WsTaskEntry,
     shutdown_rx: &mut watch::Receiver<bool>,
     outbound_rx: &mut mpsc::Receiver<String>,
     mut emit: F,
 ) where
     R: FnMut(WsTarget) -> RFut,
     RFut: Future<Output = Option<WsTarget>>,
-    F: FnMut(Value) -> Fut,
-    Fut: Future<Output = ()>,
+    F: FnMut(WsTarget, WsEvent) -> Fut,
+    Fut: Future<Output = bool>,
 {
     let mut fail_count: u32 = 0;
-
+    let mut refresh = false;
     'reconnect: loop {
-        if *shutdown_rx.borrow() {
+        if *shutdown_rx.borrow() || shutdown_rx.has_changed().is_err() {
             break;
         }
-        // A retry (any attempt after a failure or a lost socket) dials the
-        // connection as it is stored now; the first attempt uses what the
-        // subscribe has just read.
-        if fail_count > 0 {
-            match refresh_target(target.clone()).await {
+        if refresh {
+            let current = tokio::select! {
+                biased;
+                _ = shutdown_rx.changed() => break,
+                current = refresh_target(target.clone()) => current,
+            };
+            match current {
                 Some(current) => target = current,
                 None => break,
             }
         }
-
+        refresh = true;
+        let invalidated = target.invalidated();
+        // Never carry old resource attach/input frames across generations or
+        // sockets. Clear again after connect to cover the handshake interval.
+        while outbound_rx.try_recv().is_ok() {}
         let connect_result = tokio::select! {
             biased;
-            changed = shutdown_rx.changed() => {
-                if changed.is_err() || *shutdown_rx.borrow() {
-                    break;
-                }
-                continue;
-            }
-            res = connect_with_subprotocol_auth(&target.url, WS_EVENT_PROTOCOL, &target.token, &target.headers) => res,
+            _ = shutdown_rx.changed() => break,
+            _ = invalidated.cancelled() => continue,
+            result = connect_with_subprotocol_auth(&target.url, WS_EVENT_PROTOCOL, &target.token, &target.headers) => result,
         };
-
         let mut socket = match connect_result {
-            Ok(s) => s,
-            Err(err) => {
-                *entry.ready.write().await = false;
-                if matches!(err, WsConnectError::Unauthorized) {
-                    emit(lifecycle_frame(WS_UNAUTHORIZED_CHANNEL)).await;
+            Ok(socket) => socket,
+            Err(WsConnectError::Unauthorized) => {
+                if emit(target.clone(), WsEvent::Unauthorized).await {
                     break;
                 }
-                // Diagnostics deliberately exclude handshake headers/body,
-                // which can contain echoed tokens or custom credentials.
+                continue;
+            }
+            Err(err) => {
+                // Classification excludes response headers/body and tokens.
                 tracing::warn!("[RemoteProxy] WS connect failed: {err}");
-                emit(lifecycle_frame(WS_DISCONNECTED_CHANNEL)).await;
+                emit(
+                    target.clone(),
+                    WsEvent::Frame(lifecycle_frame(WS_DISCONNECTED_CHANNEL)),
+                )
+                .await;
                 fail_count = fail_count.saturating_add(1);
-                if backoff_sleep(shutdown_rx, fail_count).await {
+                if tokio::select! {
+                    biased;
+                    _ = invalidated.cancelled() => false,
+                    stop = backoff_sleep(shutdown_rx, fail_count) => stop,
+                } {
                     break;
                 }
                 continue;
             }
         };
 
-        // Connect succeeded — reset fail count. We do not emit `__ready__`
-        // here; the remote server emits the real `__ready__` only after it
-        // has subscribed to its broadcaster, and that is the readiness
-        // contract the frontend relies on.
+        // Readiness comes only from the server after broadcaster admission.
         fail_count = 0;
-        // Frames queued before a disconnect belonged to the old socket. The
-        // next ready reissues attaches with the current cursor; stale detach
-        // frames must not cancel those renewed subscriptions.
         while outbound_rx.try_recv().is_ok() {}
         let mut last_received = tokio::time::Instant::now();
         let mut ping = tokio::time::interval_at(last_received + WS_PING_INTERVAL, WS_PING_INTERVAL);
         ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-        // Read loop. Exits on shutdown, error, or remote close.
         loop {
             tokio::select! {
                 biased;
-                changed = shutdown_rx.changed() => {
-                    if changed.is_err() || *shutdown_rx.borrow() {
-                        break 'reconnect;
-                    }
-                }
+                _ = shutdown_rx.changed() => break 'reconnect,
+                _ = invalidated.cancelled() => break,
                 _ = ping.tick() => {
-                    if last_received.elapsed() >= WS_SILENCE_LIMIT
-                        || !send_ws_message(&mut socket, Message::Ping(Vec::new().into())).await
-                    {
+                    if last_received.elapsed() >= WS_SILENCE_LIMIT {
                         break;
                     }
+                    let sent = tokio::select! {
+                        biased;
+                        _ = shutdown_rx.changed() => break 'reconnect,
+                        _ = invalidated.cancelled() => break,
+                        sent = send_ws_message(&mut socket, Message::Ping(Vec::new().into())) => sent,
+                    };
+                    if !sent { break; }
                 }
                 outbound = outbound_rx.recv() => match outbound {
                     Some(text) => {
-                        if !send_ws_message(&mut socket, Message::Text(text.into())).await {
-                            break;
-                        }
+                        let sent = tokio::select! {
+                            biased;
+                            _ = shutdown_rx.changed() => break 'reconnect,
+                            _ = invalidated.cancelled() => break,
+                            sent = send_ws_message(&mut socket, Message::Text(text.into())) => sent,
+                        };
+                        if !sent { break; }
                     }
-                    None => {
-                        // Sender side dropped — only happens at proxy state
-                        // teardown; treat as graceful exit.
-                        break 'reconnect;
-                    }
+                    None => break 'reconnect,
                 },
                 msg = socket.next() => match msg {
                     Some(Ok(Message::Text(text))) => {
                         last_received = tokio::time::Instant::now();
                         match serde_json::from_str::<Value>(&text) {
-                            Ok(frame) => {
-                                if frame.get("channel").and_then(Value::as_str) == Some(WS_READY_CHANNEL) {
-                                    *entry.ready.write().await = true;
-                                }
-                                emit(frame).await;
+                            Ok(frame) if frame.is_object() => {
+                                if !emit(target.clone(), WsEvent::Frame(frame)).await { break; }
                             }
-                            Err(_) => tracing::warn!("[RemoteProxy] invalid WS JSON frame"),
+                            _ => tracing::warn!("[RemoteProxy] invalid WS JSON envelope"),
                         }
                     }
                     Some(Ok(Message::Binary(_))) => {
                         last_received = tokio::time::Instant::now();
-                        // Server only emits text frames today; ignore binary.
                     }
                     Some(Ok(Message::Ping(payload))) => {
                         last_received = tokio::time::Instant::now();
-                        if !send_ws_message(&mut socket, Message::Pong(payload)).await {
-                            break;
-                        }
+                        let sent = tokio::select! {
+                            biased;
+                            _ = shutdown_rx.changed() => break 'reconnect,
+                            _ = invalidated.cancelled() => break,
+                            sent = send_ws_message(&mut socket, Message::Pong(payload)) => sent,
+                        };
+                        if !sent { break; }
                     }
                     Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => {
                         last_received = tokio::time::Instant::now();
                     }
-                    Some(Ok(Message::Close(_))) | None => {
-                        break;
-                    }
-                    Some(Err(_)) => break,
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
                 },
             }
         }
-
-        // Disconnected (not via shutdown). Notify and try again.
-        *entry.ready.write().await = false;
-        emit(lifecycle_frame(WS_DISCONNECTED_CHANNEL)).await;
+        emit(
+            target.clone(),
+            WsEvent::Frame(lifecycle_frame(WS_DISCONNECTED_CHANNEL)),
+        )
+        .await;
         fail_count = fail_count.saturating_add(1);
-        if backoff_sleep(shutdown_rx, fail_count).await {
+        if tokio::select! {
+            biased;
+            _ = invalidated.cancelled() => false,
+            stop = backoff_sleep(shutdown_rx, fail_count) => stop,
+        } {
             break;
         }
     }
+}
 
+async fn remove_ws_task_entry(
+    proxy: &RemoteProxyState,
+    connection_id: i32,
+    entry: &Arc<WsTaskEntry>,
+) {
     *entry.ready.write().await = false;
+    entry.shutdown_tx.send_replace(true);
+    let mut tasks = proxy.tasks.lock().await;
+    if tasks
+        .get(&connection_id)
+        .is_some_and(|stored| Arc::ptr_eq(stored, entry))
+    {
+        // The old runner cannot remove a replacement installed by a new
+        // subscribe. Its own Arc is already marked retired.
+        tasks.remove(&connection_id);
+    }
 }
 
 type RemoteWsSocket =
@@ -2068,6 +2280,31 @@ async fn send_ws_message(socket: &mut RemoteWsSocket, message: Message) -> bool 
         tokio::time::timeout(WS_SEND_TIMEOUT, socket.send(message)).await,
         Ok(Ok(()))
     )
+}
+
+/// A terminal 401 must retire the issuing task before update or subscription
+/// admission can reuse its Arc. A selected old 401 instead resumes reconnect
+/// with the current binding. A read gate cannot exclude new subscriptions.
+async fn retire_unauthorized_ws_task(
+    proxy: &RemoteProxyState,
+    entry: &Arc<WsTaskEntry>,
+    binding: &RemoteBinding,
+    emit: impl FnMut(&str, &Value),
+) -> bool {
+    let gate = proxy.bindings.gate(binding.connection.id).await;
+    let _guard = gate.write().await;
+    if binding.invalidated.is_cancelled() {
+        return false;
+    }
+    deliver_ws_envelope_locked(
+        entry,
+        binding,
+        serde_json::json!({"channel": WS_UNAUTHORIZED_CHANNEL, "payload": null}),
+        emit,
+    )
+    .await;
+    remove_ws_task_entry(proxy, binding.connection.id, entry).await;
+    true
 }
 
 /// Sleep for the exponential-backoff duration corresponding to
@@ -2093,55 +2330,94 @@ async fn backoff_sleep(shutdown_rx: &mut watch::Receiver<bool>, fail_count: u32)
 /// We re-emit the payload as-is into the Tauri event named
 /// `remote-ws-event-{connection_id}`, but only to webview labels listed in
 /// the subscriber set — never broadcast.
-async fn forward_frame(
-    app: &AppHandle,
+/// The issuing binding fences ready writes, subscriber selection, and the
+/// actual IPC emit under the same read gate as registration. The revision in
+/// every envelope additionally lets new JS runtimes discard queued old IPC.
+async fn deliver_ws_envelope(
+    proxy: &RemoteProxyState,
     entry: &Arc<WsTaskEntry>,
-    event_name: &str,
+    binding: &RemoteBinding,
     envelope: Value,
-) {
-    let labels = snapshot_subscribers(entry).await;
-    for label in labels {
-        if let Err(e) = app.emit_to(EventTarget::webview(&label), event_name, &envelope) {
-            tracing::error!("[RemoteProxy] emit_to {label} for {event_name} failed: {e}");
-        }
+    emit: impl FnMut(&str, &Value),
+) -> bool {
+    binding
+        .with_current(
+            &proxy.bindings,
+            deliver_ws_envelope_locked(entry, binding, envelope, emit),
+        )
+        .await
+        .unwrap_or(false)
+}
+
+/// Caller holds the connection gate and has validated the issuing binding.
+async fn deliver_ws_envelope_locked(
+    entry: &Arc<WsTaskEntry>,
+    binding: &RemoteBinding,
+    mut envelope: Value,
+    mut emit: impl FnMut(&str, &Value),
+) -> bool {
+    if *entry.shutdown_tx.borrow() {
+        return false;
     }
+    envelope["configRevision"] = Value::String(binding.connection.config_revision.clone());
+    match envelope.get("channel").and_then(Value::as_str) {
+        Some(WS_READY_CHANNEL) => *entry.ready.write().await = true,
+        Some(WS_DISCONNECTED_CHANNEL | WS_UNAUTHORIZED_CHANNEL) => {
+            *entry.ready.write().await = false
+        }
+        _ => {}
+    }
+    let subs = entry.subscribers.lock().await;
+    let mut labels: Vec<_> = subs
+        .values()
+        .filter(|sub| {
+            sub.config_revision
+                .as_deref()
+                .is_none_or(|revision| revision == binding.connection.config_revision)
+        })
+        .map(|sub| sub.label.clone())
+        .collect();
+    labels.sort_unstable();
+    labels.dedup();
+    for label in labels {
+        emit(&label, &envelope);
+    }
+    true
 }
 
-/// Emit one of the internal lifecycle channels (`__ready__`,
-/// `__disconnected__`, `__unauthorized__`) to all current subscribers.
-fn lifecycle_frame(channel: &'static str) -> Value {
-    serde_json::json!({ "channel": channel, "payload": Value::Null })
-}
-
-fn emit_internal_to_label(app: &AppHandle, label: &str, event_name: &str, channel: &'static str) {
-    let envelope = lifecycle_frame(channel);
+fn emit_internal_to_label(
+    app: &AppHandle,
+    label: &str,
+    event_name: &str,
+    channel: &'static str,
+    config_revision: &str,
+) {
+    let envelope = serde_json::json!({
+        "channel": channel,
+        "payload": Value::Null,
+        "configRevision": config_revision,
+    });
     if let Err(e) = app.emit_to(EventTarget::webview(label), event_name, &envelope) {
         tracing::error!("[RemoteProxy] emit_to {label} for {event_name} ({channel}) failed: {e}");
     }
 }
 
+/// Caller holds the connection read gate through this acknowledgement.
 async fn acknowledge_ready_subscriber(
-    app: &AppHandle,
     entry: &WsTaskEntry,
-    label: &str,
-    event_name: &str,
+    binding: &RemoteBinding,
+    mut emit_ready: impl FnMut(),
 ) {
-    // Hold readiness through the acknowledgement so it cannot overtake a
-    // disconnect notification. Also used after the slow-path insert race.
+    // Holding readiness through IPC prevents a ready ack overtaking a
+    // disconnect. Both subscription insertion paths use this helper.
     let ready = entry.ready.read().await;
-    if *ready {
-        emit_internal_to_label(app, label, event_name, WS_READY_CHANNEL);
+    if *ready && !*entry.shutdown_tx.borrow() && !binding.invalidated.is_cancelled() {
+        emit_ready();
     }
 }
 
-/// Collect the unique labels to fan-out to. Deduplicates because two
-/// subscription IDs could theoretically map to the same label.
-async fn snapshot_subscribers(entry: &Arc<WsTaskEntry>) -> Vec<String> {
-    let subs = entry.subscribers.lock().await;
-    let mut labels: Vec<String> = subs.values().map(|sub| sub.label.clone()).collect();
-    labels.sort_unstable();
-    labels.dedup();
-    labels
+fn lifecycle_frame(channel: &'static str) -> Value {
+    serde_json::json!({ "channel": channel, "payload": Value::Null })
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────
@@ -2302,11 +2578,13 @@ pub(crate) fn http_url_to_ws_url(base_url: &str, path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::service::remote_workspace_connection_service;
 
     fn subscriber(label: &str, window_instance_id: &str) -> WsSubscriber {
         WsSubscriber {
             label: label.to_string(),
             window_instance_id: window_instance_id.to_string(),
+            config_revision: None,
         }
     }
 
@@ -2319,6 +2597,628 @@ mod tests {
             shutdown_tx,
             outbound_tx,
         })
+    }
+
+    fn running_test_entry(
+        subscribers: HashMap<String, WsSubscriber>,
+    ) -> (
+        Arc<WsTaskEntry>,
+        (watch::Receiver<bool>, mpsc::Receiver<String>),
+    ) {
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (outbound_tx, outbound_rx) = mpsc::channel::<String>(8);
+        (
+            Arc::new(WsTaskEntry {
+                subscribers: Mutex::new(subscribers),
+                ready: RwLock::new(false),
+                shutdown_tx,
+                outbound_tx,
+            }),
+            (shutdown_rx, outbound_rx),
+        )
+    }
+
+    async fn ws_retirement_server(
+        unauthorized: bool,
+    ) -> (String, mpsc::Receiver<String>, tokio::task::JoinHandle<()>) {
+        use axum::extract::ws::{Message as AxumMessage, WebSocketUpgrade};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (request_tx, requests) = mpsc::channel(8);
+        let server = tokio::spawn(async move {
+            axum::serve(listener, axum::Router::new().route(WS_EVENTS_PATH,
+                axum::routing::get(move |headers: HeaderMap, ws: WebSocketUpgrade| {
+                    let request_tx = request_tx.clone();
+                    async move {
+                        request_tx.send(headers["sec-websocket-protocol"].to_str().unwrap().to_string()).await.unwrap();
+                        if unauthorized {
+                            return axum::response::IntoResponse::into_response(http::StatusCode::UNAUTHORIZED);
+                        }
+                        axum::response::IntoResponse::into_response(ws.protocols([WS_EVENT_PROTOCOL]).on_upgrade(|mut socket| async move {
+                            socket.send(AxumMessage::Text(serde_json::json!({"channel": WS_READY_CHANNEL, "payload": null, "configRevision": "forged"}).to_string().into())).await.unwrap();
+                            while socket.recv().await.is_some() {}
+                        }))
+                    }
+                })
+            )).await.unwrap();
+        });
+        (url, requests, server)
+    }
+
+    // Model the gated existing-entry path used by remote_ws_subscribe without
+    // requiring a native webview. The returned Arc exposes accidental reuse.
+    async fn admit_test_ws_subscriber(
+        proxy: &RemoteProxyState,
+        db: &sea_orm::DatabaseConnection,
+        id: i32,
+        revision: &str,
+    ) -> Arc<WsTaskEntry> {
+        let gate = proxy.bindings.gate(id).await;
+        let _guard = gate.read().await;
+        proxy
+            .bindings
+            .bind_locked(db, id, Some(revision))
+            .await
+            .unwrap();
+        let tasks = proxy.tasks.lock().await;
+        let entry = tasks.get(&id).unwrap().clone();
+        let mut current = subscriber("current", "current");
+        current.config_revision = Some(revision.to_string());
+        entry
+            .subscribers
+            .lock()
+            .await
+            .insert("current".into(), current);
+        entry
+    }
+
+    #[tokio::test]
+    async fn stale_selected_401_reconnects_current_config_on_the_same_entry_with_legacy_and_bound_subscribers(
+    ) {
+        use crate::db::test_helpers::fresh_in_memory_db;
+        let db = fresh_in_memory_db().await;
+        let proxy = Arc::new(RemoteProxyState::new());
+        let (old_url, _old_requests, old_server) = ws_retirement_server(true).await;
+        let (new_url, mut new_requests, new_server) = ws_retirement_server(false).await;
+        let a =
+            remote_workspace_connection_service::create(&db.conn, "A", &old_url, "old-token", &[])
+                .await
+                .unwrap();
+        let b = remote_workspace_connection_service::create(
+            &db.conn,
+            "B",
+            "http://localhost:3081",
+            "b-token",
+            &[],
+        )
+        .await
+        .unwrap();
+        let b_binding = proxy.bindings.bind(&db.conn, b.id, None).await.unwrap();
+        let b_entry = test_entry(HashMap::from([("B".into(), subscriber("B", "B"))]));
+        *b_entry.ready.write().await = true;
+        let mut old_subscriber = subscriber("old", "old");
+        old_subscriber.config_revision = Some(a.config_revision.clone());
+        let (entry, receivers) = running_test_entry(HashMap::from([
+            ("legacy".into(), subscriber("legacy", "legacy")),
+            ("old".into(), old_subscriber),
+        ]));
+        {
+            let mut tasks = proxy.tasks.lock().await;
+            tasks.insert(a.id, entry.clone());
+            tasks.insert(b.id, b_entry.clone());
+        }
+        let (selected_tx, selected_rx) = tokio::sync::oneshot::channel();
+        let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+        let mut selected = Some((selected_tx, resume_rx));
+        let (emission_tx, mut emissions) = mpsc::unbounded_channel();
+        let task_proxy = proxy.clone();
+        let task_entry = entry.clone();
+        let task_db = db.conn.clone();
+        let runner = tokio::spawn(async move {
+            run_ws_task_core(
+                task_proxy,
+                a.id,
+                task_db,
+                task_entry,
+                receivers,
+                move |label, envelope| {
+                    emission_tx
+                        .send((label.to_string(), envelope.clone()))
+                        .unwrap();
+                },
+                move || {
+                    let (selected_tx, resume_rx) = selected.take().unwrap();
+                    async move {
+                        selected_tx.send(()).unwrap();
+                        resume_rx.await.unwrap();
+                    }
+                },
+            )
+            .await;
+        });
+        tokio::time::timeout(Duration::from_secs(5), selected_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let gate = proxy.bindings.gate(a.id).await;
+        let guard = gate.write().await;
+        let updated = remote_workspace_connection_service::update(
+            &db.conn,
+            a.id,
+            "A",
+            &new_url,
+            "new-token",
+            &[],
+        )
+        .await
+        .unwrap();
+        proxy.invalidate_connection(a.id, false).await;
+        drop(guard);
+        let reused =
+            admit_test_ws_subscriber(&proxy, &db.conn, a.id, &updated.config_revision).await;
+        assert!(Arc::ptr_eq(&reused, &entry));
+        assert!(!entry.subscribers.lock().await.contains_key("old"));
+        resume_tx.send(()).unwrap();
+
+        let protocols = tokio::time::timeout(Duration::from_secs(5), new_requests.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(protocols.contains(&format!(
+            "{WS_TOKEN_PROTOCOL_PREFIX}{}",
+            URL_SAFE_NO_PAD.encode("new-token")
+        )));
+        let mut labels = Vec::new();
+        for _ in 0..2 {
+            let (label, envelope) = tokio::time::timeout(Duration::from_secs(5), emissions.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                envelope["channel"], WS_READY_CHANNEL,
+                "stale 401 must reconnect, not emit unauthorized or exit"
+            );
+            assert_eq!(envelope["configRevision"], updated.config_revision);
+            labels.push(label);
+        }
+        labels.sort();
+        assert_eq!(labels, ["current", "legacy"]);
+        assert!(*entry.ready.read().await);
+        assert!(Arc::ptr_eq(
+            proxy.tasks.lock().await.get(&a.id).unwrap(),
+            &entry
+        ));
+        assert!(Arc::ptr_eq(
+            proxy.tasks.lock().await.get(&b.id).unwrap(),
+            &b_entry
+        ));
+        assert!(!b_binding.invalidated.is_cancelled());
+        assert!(*b_entry.ready.read().await);
+        entry.shutdown_tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), runner)
+            .await
+            .unwrap()
+            .unwrap();
+        old_server.abort();
+        new_server.abort();
+    }
+
+    #[tokio::test]
+    async fn current_401_emission_holds_writer_and_admission_until_retirement_before_final_cleanup()
+    {
+        use crate::db::test_helpers::fresh_in_memory_db;
+        let db = fresh_in_memory_db().await;
+        let proxy = Arc::new(RemoteProxyState::new());
+        let (url, _requests, server) = ws_retirement_server(true).await;
+        let a = remote_workspace_connection_service::create(&db.conn, "A", &url, "old-token", &[])
+            .await
+            .unwrap();
+        let b = remote_workspace_connection_service::create(
+            &db.conn,
+            "B",
+            "http://localhost:3081",
+            "b-token",
+            &[],
+        )
+        .await
+        .unwrap();
+        let b_binding = proxy.bindings.bind(&db.conn, b.id, None).await.unwrap();
+        let b_entry = test_entry(HashMap::from([("B".into(), subscriber("B", "B"))]));
+        let mut bound = subscriber("bound", "bound");
+        bound.config_revision = Some(a.config_revision.clone());
+        let (entry, receivers) = running_test_entry(HashMap::from([
+            ("legacy".into(), subscriber("legacy", "legacy")),
+            ("bound".into(), bound),
+        ]));
+        let mut tasks = proxy.tasks.lock().await;
+        tasks.insert(a.id, entry.clone());
+        tasks.insert(b.id, b_entry.clone());
+        // Block map cleanup after the real 401 has emitted successfully.
+        let (emission_tx, mut emissions) = mpsc::unbounded_channel();
+        let task_proxy = proxy.clone();
+        let task_entry = entry.clone();
+        let task_db = db.conn.clone();
+        let runner = tokio::spawn(async move {
+            run_ws_task_core(
+                task_proxy,
+                a.id,
+                task_db,
+                task_entry,
+                receivers,
+                move |label, envelope| {
+                    emission_tx
+                        .send((label.to_string(), envelope.clone()))
+                        .unwrap();
+                },
+                || std::future::ready(()),
+            )
+            .await;
+        });
+        for _ in 0..2 {
+            let (_, envelope) = tokio::time::timeout(Duration::from_secs(5), emissions.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(envelope["channel"], WS_UNAUTHORIZED_CHANNEL);
+            assert_eq!(envelope["configRevision"], a.config_revision);
+        }
+        let gate = proxy.bindings.gate(a.id).await;
+        let writer = gate.write();
+        tokio::pin!(writer);
+        assert!(futures_util::poll!(&mut writer).is_pending());
+        {
+            let admission = admit_test_ws_subscriber(&proxy, &db.conn, a.id, &a.config_revision);
+            tokio::pin!(admission);
+            assert!(futures_util::poll!(&mut admission).is_pending());
+        }
+        assert!(
+            deliver_ws_envelope(
+                &proxy,
+                &b_entry,
+                &b_binding,
+                serde_json::json!({"channel": WS_READY_CHANNEL}),
+                |_, envelope| {
+                    assert_eq!(envelope["configRevision"], b.config_revision);
+                }
+            )
+            .await
+        );
+        // Delay the runner's trailing cleanup until the writer has installed
+        // a new entry. The terminal helper has already reset the old ready bit.
+        let hold_final_cleanup = entry.ready.read().await;
+        drop(tasks);
+        let guard = writer.await;
+        assert!(
+            !proxy.tasks.lock().await.contains_key(&a.id),
+            "retirement must remove the reused Arc before any writer can update it"
+        );
+        let updated = remote_workspace_connection_service::update(
+            &db.conn,
+            a.id,
+            "A",
+            "http://localhost:3090",
+            "new-token",
+            &[],
+        )
+        .await
+        .unwrap();
+        proxy.invalidate_connection(a.id, false).await;
+        let new_entry = test_entry(HashMap::new());
+        *new_entry.ready.write().await = true;
+        proxy.tasks.lock().await.insert(a.id, new_entry.clone());
+        drop(guard);
+        let admitted =
+            admit_test_ws_subscriber(&proxy, &db.conn, a.id, &updated.config_revision).await;
+        assert!(Arc::ptr_eq(&admitted, &new_entry));
+        assert!(!Arc::ptr_eq(&admitted, &entry));
+        drop(hold_final_cleanup);
+        tokio::time::timeout(Duration::from_secs(5), runner)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(Arc::ptr_eq(
+            proxy.tasks.lock().await.get(&a.id).unwrap(),
+            &new_entry
+        ));
+        assert!(*new_entry.ready.read().await);
+        assert!(new_entry.subscribers.lock().await.contains_key("current"));
+        assert!(Arc::ptr_eq(
+            proxy.tasks.lock().await.get(&b.id).unwrap(),
+            &b_entry
+        ));
+        assert!(!b_binding.invalidated.is_cancelled());
+        assert!(*b_entry.ready.read().await);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn selected_old_ws_payload_ready_and_lifecycle_are_fenced_after_update_or_delete() {
+        use crate::db::test_helpers::fresh_in_memory_db;
+        for deleted in [false, true] {
+            for channel in [
+                "folder://changed",
+                WS_READY_CHANNEL,
+                WS_DISCONNECTED_CHANNEL,
+                WS_UNAUTHORIZED_CHANNEL,
+            ] {
+                let db = fresh_in_memory_db().await;
+                let proxy = Arc::new(RemoteProxyState::new());
+                let connection = remote_workspace_connection_service::create(
+                    &db.conn,
+                    "A",
+                    "http://localhost:3080",
+                    "token",
+                    &[],
+                )
+                .await
+                .unwrap();
+                let old = proxy
+                    .bindings
+                    .bind(&db.conn, connection.id, None)
+                    .await
+                    .unwrap();
+                let entry = test_entry(HashMap::from([(
+                    "legacy".into(),
+                    subscriber("legacy", "legacy"),
+                )]));
+                proxy
+                    .tasks
+                    .lock()
+                    .await
+                    .insert(connection.id, entry.clone());
+                let gate = proxy.bindings.gate(connection.id).await;
+                let guard = gate.write().await;
+                let (selected_tx, selected_rx) = tokio::sync::oneshot::channel();
+                let delivery_proxy = proxy.clone();
+                let delivery_entry = entry.clone();
+                let emissions = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let emitted = emissions.clone();
+                let delivery = tokio::spawn(async move {
+                    selected_tx.send(()).unwrap();
+                    deliver_ws_envelope(
+                        &delivery_proxy,
+                        &delivery_entry,
+                        &old,
+                        serde_json::json!({"channel": channel, "payload": {"id": "old"}}),
+                        |label, envelope| {
+                            emitted
+                                .lock()
+                                .unwrap()
+                                .push((label.to_string(), envelope.clone()))
+                        },
+                    )
+                    .await
+                });
+                selected_rx.await.unwrap();
+                let current = if deleted {
+                    remote_workspace_connection_service::delete(&db.conn, connection.id)
+                        .await
+                        .unwrap();
+                    None
+                } else {
+                    let updated = remote_workspace_connection_service::update(
+                        &db.conn,
+                        connection.id,
+                        "A",
+                        "http://localhost:3090",
+                        "new-token",
+                        &[],
+                    )
+                    .await
+                    .unwrap();
+                    Some(updated)
+                };
+                proxy.invalidate_connection(connection.id, deleted).await;
+                let binding = if let Some(current) = current {
+                    let binding = proxy
+                        .bindings
+                        .bind_locked(&db.conn, current.id, Some(&current.config_revision))
+                        .await
+                        .unwrap();
+                    let mut replacement = subscriber("replacement", "replacement");
+                    replacement.config_revision = Some(current.config_revision);
+                    entry
+                        .subscribers
+                        .lock()
+                        .await
+                        .insert("replacement".into(), replacement);
+                    Some(binding)
+                } else {
+                    None
+                };
+                drop(guard);
+                assert!(!delivery.await.unwrap());
+                assert!(emissions.lock().unwrap().is_empty());
+                assert!(
+                    !*entry.ready.read().await,
+                    "old ready must not mutate new state"
+                );
+                if let Some(binding) = binding {
+                    assert!(deliver_ws_envelope(&proxy, &entry, &binding, serde_json::json!({"channel": WS_READY_CHANNEL, "configRevision": "remote-forged"}), |label, envelope| emissions.lock().unwrap().push((label.to_string(), envelope.clone()))).await);
+                    assert!(*entry.ready.read().await);
+                    let sent = emissions.lock().unwrap();
+                    assert_eq!(sent.len(), 2);
+                    assert!(sent
+                        .iter()
+                        .all(|(_, value)| value["configRevision"]
+                            == binding.connection.config_revision));
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn rename_preserves_transfers_bindings_and_ready_while_each_config_field_invalidates_only_a(
+    ) {
+        use crate::db::test_helpers::fresh_in_memory_db;
+        use crate::models::RemoteWorkspaceHeader;
+        let db = fresh_in_memory_db().await;
+        let proxy = RemoteProxyState::new();
+        let transfers = WorkspaceTransferManager::new_from_env();
+        let mut a = remote_workspace_connection_service::create(
+            &db.conn,
+            "A",
+            "http://localhost:3080",
+            "token",
+            &[],
+        )
+        .await
+        .unwrap();
+        let b = remote_workspace_connection_service::create(
+            &db.conn,
+            "B",
+            "http://localhost:3081",
+            "b-token",
+            &[],
+        )
+        .await
+        .unwrap();
+        let b_binding = proxy.bindings.bind(&db.conn, b.id, None).await.unwrap();
+        let b_entry = test_entry(HashMap::from([("B".into(), subscriber("B", "B"))]));
+        *b_entry.ready.write().await = true;
+        proxy.tasks.lock().await.insert(b.id, b_entry.clone());
+        let (_, b_transfer) = transfers
+            .register_remote_transfer(RemoteTransferOwner {
+                connection_id: b.id,
+                window_label: "main".into(),
+                window_instance_id: "B".into(),
+            })
+            .await;
+        let a_entry = test_entry(HashMap::from([(
+            "legacy".into(),
+            subscriber("legacy", "legacy"),
+        )]));
+        proxy.tasks.lock().await.insert(a.id, a_entry.clone());
+        for (url, token, headers, rotate) in [
+            ("http://localhost:3080///", " token ", vec![], false),
+            ("http://localhost:3090", "token", vec![], true),
+            ("http://localhost:3090", "new-token", vec![], true),
+            (
+                "http://localhost:3090",
+                "new-token",
+                vec![RemoteWorkspaceHeader {
+                    name: "X-Test".into(),
+                    value: "new".into(),
+                }],
+                true,
+            ),
+        ] {
+            let binding = proxy
+                .bindings
+                .bind(&db.conn, a.id, Some(&a.config_revision))
+                .await
+                .unwrap();
+            let (_, transfer) = transfers
+                .register_remote_transfer(RemoteTransferOwner {
+                    connection_id: a.id,
+                    window_label: "main".into(),
+                    window_instance_id: "A".into(),
+                })
+                .await;
+            let mut bound = subscriber("A", "A");
+            bound.config_revision = Some(a.config_revision.clone());
+            a_entry
+                .subscribers
+                .lock()
+                .await
+                .insert("bound".into(), bound);
+            *a_entry.ready.write().await = true;
+            let gate = proxy.bindings.gate(a.id).await;
+            let _guard = gate.write().await;
+            let updated = remote_workspace_connection_service::update(
+                &db.conn,
+                a.id,
+                "Renamed A",
+                url,
+                token,
+                &headers,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                proxy
+                    .invalidate_saved_update(&transfers, &a, &updated)
+                    .await
+                    .is_some(),
+                rotate
+            );
+            assert_eq!(binding.invalidated.is_cancelled(), rotate);
+            assert_eq!(transfer.is_cancelled(), rotate);
+            assert_eq!(*a_entry.ready.read().await, !rotate);
+            assert_eq!(
+                a_entry.subscribers.lock().await.contains_key("bound"),
+                !rotate
+            );
+            assert!(!b_binding.invalidated.is_cancelled());
+            assert!(!b_transfer.is_cancelled());
+            assert!(*b_entry.ready.read().await);
+            assert!(b_entry.subscribers.lock().await.contains_key("B"));
+            assert_eq!(
+                serde_json::to_value(
+                    remote_workspace_connection_service::get(&db.conn, b.id)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                )
+                .unwrap(),
+                serde_json::to_value(&b).unwrap()
+            );
+            a = updated;
+        }
+    }
+
+    #[tokio::test]
+    async fn ws_auth_helper_preserves_rejected_handshake_status() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                axum::Router::new().route(
+                    "/ws/events",
+                    axum::routing::get(|| async { http::StatusCode::UNAUTHORIZED }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let error = connect_with_subprotocol_auth(
+            &format!("ws://{address}/ws/events"),
+            WS_EVENT_PROTOCOL,
+            "test-token",
+            &HeaderMap::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, WsConnectError::Unauthorized));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn updating_connection_keeps_legacy_subscribers_and_retires_bound_instances() {
+        let proxy = Arc::new(RemoteProxyState::new());
+        let mut bound = subscriber("main", "bound");
+        bound.config_revision = Some("old".into());
+        let a = test_entry(HashMap::from([
+            ("legacy".into(), subscriber("settings", "legacy")),
+            ("bound".into(), bound),
+        ]));
+        let b = test_entry(HashMap::from([("other".into(), subscriber("main", "B"))]));
+        proxy.tasks.lock().await.insert(1, a.clone());
+        proxy.tasks.lock().await.insert(2, b.clone());
+        *a.ready.write().await = true;
+        let (labels, stale) = proxy.invalidate_connection(1, false).await;
+        assert_eq!(labels.len(), 2);
+        assert_eq!(stale, vec!["main"]);
+        assert!(!*a.ready.read().await);
+        assert!(proxy.tasks.lock().await.contains_key(&1));
+        assert!(a.subscribers.lock().await.contains_key("legacy"));
+        assert!(!a.subscribers.lock().await.contains_key("bound"));
+        assert!(b.subscribers.lock().await.contains_key("other"));
+        let (labels, _) = proxy.invalidate_connection(1, true).await;
+        assert_eq!(labels, vec!["settings"]);
+        assert!(!proxy.tasks.lock().await.contains_key(&1));
+        assert!(proxy.tasks.lock().await.contains_key(&2));
     }
 
     // ─── Host pinning for credential-carrying requests ──────────────────
@@ -2563,6 +3463,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_download_keeps_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let save = dir.path().join("download");
+        std::fs::write(&save, "original").unwrap();
+        let save = save.to_string_lossy().into_owned();
+        let cancel = CancellationToken::new();
+        let stream = futures_util::stream::iter([Ok(Bytes::from_static(b"partial"))])
+            .chain(futures_util::stream::pending());
+        let result =
+            write_response_stream_to_partial(stream, &save, "cancelled", cancel.clone(), |_| {
+                cancel.cancel()
+            })
+            .await;
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&save).unwrap(), b"original");
+        assert!(!Path::new(&partial_download_path(&save, "cancelled")).exists());
+    }
+
+    #[tokio::test]
     async fn stale_unsubscribe_only_removes_its_own_subscription() {
         let proxy = Arc::new(RemoteProxyState::new());
         let entry = test_entry(HashMap::from([
@@ -2745,6 +3664,96 @@ mod tests {
         );
     }
 
+    #[test]
+    fn http_timeout_overrides_are_clamped_without_raising_short_timeouts() {
+        for (requested, expected) in [
+            (0, 0),
+            (1, 1),
+            (70_000, 70_000),
+            (600_000, 600_000),
+            (600_001, 600_000),
+            (u64::MAX, 600_000),
+        ] {
+            assert_eq!(clamp_http_timeout_ms(requested), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn ready_ack_holds_readiness_and_suppresses_disconnected_or_retired_bindings() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let proxy = RemoteProxyState::new();
+        let connection = remote_workspace_connection_service::create(
+            &db.conn,
+            "A",
+            "http://localhost:3080",
+            "token",
+            &[],
+        )
+        .await
+        .unwrap();
+        let binding = proxy
+            .bindings
+            .bind(&db.conn, connection.id, None)
+            .await
+            .unwrap();
+        let entry = test_entry(HashMap::new());
+        let gate = proxy.bindings.gate(connection.id).await;
+        let _guard = gate.read().await;
+        *entry.ready.write().await = true;
+        let mut acknowledgements = 0;
+        acknowledge_ready_subscriber(&entry, &binding, || {
+            assert!(entry.ready.try_write().is_err());
+            assert!(gate.try_write().is_err());
+            acknowledgements += 1;
+        })
+        .await;
+        assert_eq!(acknowledgements, 1);
+        {
+            // An acknowledgement selected while disconnect owns readiness
+            // must observe false after the disconnect wins that lock.
+            let mut ready = entry.ready.write().await;
+            let acknowledgement = acknowledge_ready_subscriber(&entry, &binding, || {
+                panic!("late ready acknowledgement after disconnect");
+            });
+            tokio::pin!(acknowledgement);
+            assert!(futures_util::poll!(&mut acknowledgement).is_pending());
+            *ready = false;
+            drop(ready);
+            acknowledgement.await;
+        }
+        *entry.ready.write().await = true;
+        entry.shutdown_tx.send_replace(true);
+        acknowledge_ready_subscriber(&entry, &binding, || {
+            panic!("retired task acknowledged ready")
+        })
+        .await;
+        entry.shutdown_tx.send_replace(false);
+        binding.invalidated.cancel();
+        acknowledge_ready_subscriber(&entry, &binding, || {
+            panic!("invalidated binding acknowledged ready")
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn old_task_cleanup_retires_its_arc_without_touching_a_replacement() {
+        let proxy = RemoteProxyState::new();
+        let old = test_entry(HashMap::new());
+        let replacement = test_entry(HashMap::new());
+        *old.ready.write().await = true;
+        *replacement.ready.write().await = true;
+        proxy.tasks.lock().await.insert(7, replacement.clone());
+        remove_ws_task_entry(&proxy, 7, &old).await;
+        assert!(*old.shutdown_tx.borrow());
+        assert!(!*old.ready.read().await);
+        assert!(!*replacement.shutdown_tx.borrow());
+        assert!(*replacement.ready.read().await);
+        assert!(Arc::ptr_eq(
+            proxy.tasks.lock().await.get(&7).unwrap(),
+            &replacement
+        ));
+    }
+
     struct TestSocketLoop {
         frames: mpsc::UnboundedReceiver<Value>,
         task: tokio::task::JoinHandle<()>,
@@ -2757,6 +3766,7 @@ mod tests {
             url,
             token: "private-token-sentinel".into(),
             headers: HeaderMap::new(),
+            binding: None,
         }
     }
 
@@ -2778,12 +3788,15 @@ mod tests {
             run_ws_connection(
                 target,
                 refresh_target,
-                &entry,
                 &mut shutdown_rx,
                 &mut outbound_rx,
-                |frame| {
+                |_, event| {
+                    let frame = match event {
+                        WsEvent::Frame(frame) => frame,
+                        WsEvent::Unauthorized => lifecycle_frame(WS_UNAUTHORIZED_CHANNEL),
+                    };
                     let _ = tx.send(frame);
-                    std::future::ready(())
+                    std::future::ready(true)
                 },
             )
             .await;
@@ -2823,6 +3836,48 @@ mod tests {
             request.push(byte[0]);
             assert!(request.len() <= 8192, "test handshake must be bounded");
         }
+    }
+
+    #[tokio::test]
+    async fn ws_connect_timeout_and_shutdown_bound_an_unanswered_handshake() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (accepted_tx, mut accepted_rx) = mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            let mut held = Vec::new();
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                read_test_handshake(&mut stream).await;
+                held.push(stream);
+                accepted_tx.send(()).unwrap();
+            }
+        });
+        let url = format!("ws://{address}/ws/events");
+        let connect_url = url.clone();
+        let attempt = tokio::spawn(async move {
+            connect_with_subprotocol_auth(
+                &connect_url,
+                WS_EVENT_PROTOCOL,
+                "private-token-sentinel",
+                &HeaderMap::new(),
+            )
+            .await
+        });
+        accepted_rx.recv().await.unwrap();
+        tokio::time::pause();
+        tokio::time::advance(WS_CONNECT_TIMEOUT).await;
+        let error = attempt.await.unwrap().unwrap_err();
+        assert!(matches!(error, WsConnectError::Retryable(_)));
+        assert!(error.to_string().contains("timed out"));
+        tokio::time::resume();
+        let client = start_test_socket_loop(url);
+        accepted_rx.recv().await.unwrap();
+        client.shutdown.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), client.task)
+            .await
+            .unwrap()
+            .unwrap();
+        server.abort();
     }
 
     #[tokio::test]
@@ -3039,6 +4094,7 @@ mod tests {
                 url,
                 token: token.into(),
                 headers,
+                binding: None,
             }
         }
 
@@ -3120,26 +4176,41 @@ mod tests {
         )
         .await
         .unwrap();
-        let current = stored_ws_target(db.conn.clone(), created.id, initial.clone())
-            .await
-            .expect("a stored connection has a target");
+        let current = stored_ws_target(
+            db.conn.clone(),
+            created.id,
+            initial.clone(),
+            &RemoteBindingState::default(),
+        )
+        .await
+        .expect("a stored connection has a target");
         assert_eq!(current.url, "wss://new.example/ws/events");
         assert_eq!(current.token, "new-token");
 
         // A lookup that fails keeps dialing the last address it found.
         let closed = crate::db::test_helpers::fresh_in_memory_db().await;
         closed.conn.close_by_ref().await.unwrap();
-        let kept = stored_ws_target(closed.conn.clone(), created.id, current.clone())
-            .await
-            .expect("a failed lookup keeps the last target");
+        let kept = stored_ws_target(
+            closed.conn.clone(),
+            created.id,
+            current.clone(),
+            &RemoteBindingState::default(),
+        )
+        .await
+        .expect("a failed lookup keeps the last target");
         assert_eq!(kept.url, current.url);
 
         remote_workspace_connection_service::delete(&db.conn, created.id)
             .await
             .unwrap();
-        assert!(stored_ws_target(db.conn.clone(), created.id, current)
-            .await
-            .is_none());
+        assert!(stored_ws_target(
+            db.conn.clone(),
+            created.id,
+            current,
+            &RemoteBindingState::default()
+        )
+        .await
+        .is_none());
     }
 
     // ─── Dialing the remote host ───────────────────────────────────────

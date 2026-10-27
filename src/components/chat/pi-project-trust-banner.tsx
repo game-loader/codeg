@@ -46,6 +46,7 @@
  * Returns null (no layout impact) when there's nothing to decide.
  */
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { AlertTriangle, Loader2, ShieldCheck, X } from "lucide-react"
@@ -68,12 +69,7 @@ import {
 } from "@/components/ui/tooltip"
 import { useConnection } from "@/hooks/use-connection"
 import type { AgentType } from "@/lib/types"
-import {
-  acpPiAcknowledgeProjectTrust,
-  acpPiProjectTrustState,
-  acpPiSetProjectTrust,
-  type PiProjectTrustState,
-} from "@/lib/api"
+import { type PiProjectTrustState } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 /** Trust state plus the directory whose probe produced it. */
@@ -99,6 +95,8 @@ export function PiProjectTrustBanner({
   /** The tab's working directory, for the same reason. */
   workingDir: string | undefined
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.chat.piProjectTrust")
   const { status, isViewer, isDelegationChild, reapplyConfig, connect } =
     useConnection(contextKey)
@@ -125,7 +123,7 @@ export function PiProjectTrustBanner({
     const issuedAt = generation.current
     const requestedFor = workingDir
     try {
-      const state = await acpPiProjectTrustState(requestedFor)
+      const state = await backendApi.acpPiProjectTrustState(requestedFor)
       if (generation.current !== issuedAt) return
       setProbed({ requestedFor, state })
     } catch {
@@ -134,7 +132,7 @@ export function PiProjectTrustBanner({
       if (generation.current !== issuedAt) return
       setProbed(null)
     }
-  }, [eligible, workingDir])
+  }, [eligible, workingDir, backendApi])
 
   useEffect(() => {
     // Invalidate anything in flight for the previous workspace before deciding
@@ -197,7 +195,7 @@ export function PiProjectTrustBanner({
       // The backend keeps codeg's acknowledgement in step with the verdict: a
       // grant counts as answered, a decline or revoke clears the record so a
       // later grant is disclosed again instead of riding on a stale "seen".
-      await acpPiSetProjectTrust(current.workspace, trusted)
+      await backendApi.acpPiSetProjectTrust(current.workspace, trusted)
       setDialogOpen(false)
 
       if (trusted === false) {
@@ -235,7 +233,7 @@ export function PiProjectTrustBanner({
     if (!current || actionDisabled) return
     setApplying(true)
     try {
-      await acpPiAcknowledgeProjectTrust(current.workspace)
+      await backendApi.acpPiAcknowledgeProjectTrust(current.workspace)
       setDialogOpen(false)
       await applyToPi()
       await refresh()

@@ -507,7 +507,12 @@ describe("AgentToolsSettingsSection", () => {
     fireEvent.click(row)
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
 
-    await waitFor(() => expect(mockSetComputer).toHaveBeenCalledWith(true))
+    await waitFor(() =>
+      expect(mockSetComputer).toHaveBeenCalledWith(
+        true,
+        expect.objectContaining({ getTransport: expect.any(Function) })
+      )
+    )
     expect(mockSetComputer).toHaveBeenCalledTimes(1)
     expect(mockSetBrowser).not.toHaveBeenCalled()
   })

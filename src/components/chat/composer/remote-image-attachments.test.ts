@@ -27,12 +27,28 @@ const runtime = vi.hoisted(() => ({
 }))
 vi.mock("@/lib/platform", () => ({
   isDesktop: () => runtime.desktop,
+  getActiveRemoteConnectionId: () => runtime.remoteId,
+  getTransport: () => ({ call: runtime.call }),
   openFileDialog: vi.fn(),
 }))
 vi.mock("@/lib/transport", () => ({
   isDesktop: () => runtime.desktop,
   getActiveRemoteConnectionId: () => runtime.remoteId,
+  getServerBaseUrl: () => window.location.origin,
+  getActiveRemoteTransportConfig: () =>
+    runtime.remoteId === null
+      ? null
+      : {
+          id: runtime.remoteId,
+          name: "Remote",
+          baseUrl: window.location.origin,
+          token: "test-token",
+          configRevision: "test-revision",
+          windowInstanceId: "test-window",
+        },
+  notifyRemoteDesktopUnauthorized: vi.fn(),
   getTransport: () => ({ call: runtime.call }),
+  getShellTransport: () => ({ call: runtime.call }),
 }))
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api")>()),

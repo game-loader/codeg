@@ -1,12 +1,14 @@
 "use client"
 
+import { useTabStore as legacyTabs } from "@/contexts/tab-context"
+import { useConversationRuntimeStore as legacyConversationRuntime } from "@/stores/conversation-runtime-store"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useCallback, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import { useShallow } from "zustand/react/shallow"
 import type { MessageTurn } from "@/lib/types"
-import { useTabStore } from "@/contexts/tab-context"
-import { useConversationRuntimeStore } from "@/stores/conversation-runtime-store"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import { resolveActiveSessionDetails } from "@/components/conversations/active-session-details"
 import { SessionDetailsCard } from "@/components/conversations/session-details-content"
 import { MessageNavScrollContext } from "@/components/message/message-nav-scroll-context"
@@ -34,6 +36,15 @@ const EMPTY_TURNS: MessageTurn[] = []
  * needed for the focused session.
  */
 export function SessionDetailsTab() {
+  const backendStores = useBackendStores({
+    tabs: legacyTabs,
+    conversationRuntime: legacyConversationRuntime,
+    workspace: legacyWorkspace,
+  })
+  const useTabStore = backendStores.tabs
+  const useConversationRuntimeStore = backendStores.conversationRuntime
+  const useAppWorkspaceStore = backendStores.workspace
+
   const t = useTranslations("Folder.sessionDetails")
   const { isOpen, activeTab } = useAuxPanelContext()
   const active = isOpen && activeTab === "session_details"

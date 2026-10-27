@@ -1,9 +1,12 @@
 "use client"
 
+import { useForgeRefreshStore as legacyForgeRefresh } from "@/stores/forge-refresh-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendEventScope } from "@/hooks/use-runtime-event-scope"
 import { useTranslations } from "next-intl"
 import { RefreshCw, Settings2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { useForgeRefreshStore } from "@/stores/forge-refresh-store"
+
 import { cn } from "@/lib/utils"
 import type { WorkbenchChromeActionsProps } from "@/components/workbench/workbench-content"
 
@@ -29,6 +32,10 @@ export function ForgeChromeActions({
   buttonClassName,
   iconClassName,
 }: WorkbenchChromeActionsProps) {
+  const backendScope = useBackendEventScope()
+  const backendStores = useBackendStores({ forgeRefresh: legacyForgeRefresh })
+  const useForgeRefreshStore = backendStores.forgeRefresh
+
   const t = useTranslations("Forge")
   const refresh = useForgeRefreshStore((s) => s.refresh)
   const busy = useForgeRefreshStore((s) => s.busy)
@@ -55,7 +62,11 @@ export function ForgeChromeActions({
         size="icon"
         className={buttonClassName}
         onClick={() =>
-          window.dispatchEvent(new Event(OPEN_FORGE_SETTINGS_EVENT))
+          window.dispatchEvent(
+            new CustomEvent(OPEN_FORGE_SETTINGS_EVENT, {
+              detail: { backendScope },
+            })
+          )
         }
         title={t("settingsTitle")}
         aria-label={t("settingsTitle")}

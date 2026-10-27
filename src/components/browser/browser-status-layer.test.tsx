@@ -13,6 +13,7 @@ import {
 const mocks = vi.hoisted(() => ({
   actions: null as null | { openBrowserTab: Mock },
   openUrl: vi.fn(),
+  browserRevealDownload: vi.fn(async () => {}),
   revealItemInDir: vi.fn(),
   openWithOsHandler: vi.fn(),
   browserAgentGrant: vi.fn(() => Promise.resolve({})),
@@ -23,6 +24,7 @@ vi.mock("@/contexts/workspace-context", () => ({
 }))
 vi.mock("@/lib/browser/browser-api", () => ({
   browserReload: vi.fn(),
+  browserRevealDownload: mocks.browserRevealDownload,
   browserAgentGrant: mocks.browserAgentGrant,
 }))
 vi.mock("@/lib/link-open", () => ({
@@ -88,6 +90,7 @@ beforeEach(() => {
   mocks.actions = null
   mocks.openUrl.mockClear()
   mocks.revealItemInDir.mockClear()
+  mocks.browserRevealDownload.mockClear()
   mocks.openWithOsHandler.mockClear()
   mocks.browserAgentGrant.mockClear()
 })
@@ -289,7 +292,8 @@ describe("BrowserNoticeBar — refused navigations", () => {
     ).toBeInTheDocument()
     fireEvent.click(screen.getByText("Open with system app"))
     expect(mocks.openWithOsHandler).toHaveBeenCalledWith(
-      "mailto:someone@example.com"
+      "mailto:someone@example.com",
+      expect.objectContaining({ getTransport: expect.any(Function) })
     )
     expect(screen.queryByText(/Navigation blocked/)).not.toBeInTheDocument()
     unmount()
@@ -576,9 +580,7 @@ describe("BrowserDownloadBar", () => {
     act(() => setBrowserDownload(download({ state: "completed" })))
     expect(screen.getByText("Saved")).toBeInTheDocument()
     fireEvent.click(screen.getByText("Show in folder"))
-    expect(mocks.revealItemInDir).toHaveBeenCalledWith(
-      "/Users/dev/Downloads/a.bin"
-    )
+    expect(mocks.browserRevealDownload).toHaveBeenCalledWith("dl-1")
   })
 
   it("shows a failed download and lets the row be dismissed", () => {

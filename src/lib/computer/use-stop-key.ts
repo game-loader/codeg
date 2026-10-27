@@ -6,14 +6,15 @@
 // first broadcast. A broadcast that lands while the answer is on its way is
 // the newer of the two.
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useEffect, useState } from "react"
-
-import { subscribe } from "@/lib/platform"
 
 import { computerStopKeyStatus, useComputerAvailable } from "./computer-api"
 import { COMPUTER_STOP_KEY_EVENT, type StopKeyStatus } from "./types"
 
 export function useComputerStopKey(): StopKeyStatus | null {
+  const backendPlatform = useBackendPlatform()
+
   const [status, setStatus] = useState<StopKeyStatus | null>(null)
   const available = useComputerAvailable()
   useEffect(() => {
@@ -23,16 +24,17 @@ export function useComputerStopKey(): StopKeyStatus | null {
     let unsubscribe: (() => void) | undefined
     const ask = () => {
       if (disposed) return
-      computerStopKeyStatus()
+      computerStopKeyStatus(backendPlatform)
         .then((s) => {
           if (!disposed && broadcasts === 0) setStatus(s)
         })
         .catch(() => {})
     }
-    void subscribe<StopKeyStatus>(COMPUTER_STOP_KEY_EVENT, (s) => {
-      broadcasts += 1
-      setStatus(s)
-    })
+    void backendPlatform
+      .subscribe<StopKeyStatus>(COMPUTER_STOP_KEY_EVENT, (s) => {
+        broadcasts += 1
+        setStatus(s)
+      })
       .then((fn) => {
         if (disposed) fn()
         else unsubscribe = fn
@@ -43,6 +45,6 @@ export function useComputerStopKey(): StopKeyStatus | null {
       disposed = true
       unsubscribe?.()
     }
-  }, [available])
+  }, [available, backendPlatform])
   return status
 }

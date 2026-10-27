@@ -1,15 +1,14 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
-import { onTransportReady, subscribe } from "@/lib/platform"
+import { onTransportReady } from "@/lib/platform"
 import {
-  terminalSpawn,
-  terminalSnapshot,
-  terminalWrite,
-  terminalResize,
-  terminalKill,
-} from "@/lib/api"
+  useBackendApi,
+  useBackendPlatform,
+  useOptionalBackendClient,
+} from "@/contexts/backend-client-context"
+import { useEffect, useRef, useState } from "react"
+
 import { createWriteQueue, type WriteQueue } from "@/lib/terminal/write-queue"
 import { getTerminalTheme } from "@/lib/terminal/theme"
 import {
@@ -131,6 +130,10 @@ export function TerminalView({
   ignoreAppZoom = false,
   onProcessExited,
 }: TerminalViewProps) {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+  const client = useOptionalBackendClient()
+
   const containerRef = useRef<HTMLDivElement>(null)
   const fitAddonRef = useRef<{ fit: () => void } | null>(null)
   const termRef = useRef<XTermTerminal | null>(null)
@@ -337,7 +340,9 @@ export function TerminalView({
       // send is dropped, not retried — re-sending an ambiguous write could
       // duplicate already-delivered bytes, worse than a drop in a shell. See
       // lib/terminal/write-queue.ts.
-      let writeQueue = createWriteQueue((d) => terminalWrite(terminalId, d))
+      let writeQueue = createWriteQueue((d) =>
+        backendApi.terminalWrite(terminalId, d)
+      )
       // 暴露给键栏按键——必须走这条队列，否则与软键盘输入抢着发会乱序。
       writeQueueRef.current = writeQueue
 
@@ -422,7 +427,7 @@ export function TerminalView({
           lastResizeRef.current = { cols, rows }
           if (resizeTimer) clearTimeout(resizeTimer)
           resizeTimer = setTimeout(() => {
-            terminalResize(terminalId, cols, rows).catch(() => {})
+            backendApi.terminalResize(terminalId, cols, rows).catch(() => {})
           }, 50)
         }
       )
@@ -492,7 +497,7 @@ export function TerminalView({
       }
 
       // Subscribe to events BEFORE spawning so no initial output is lost
-      const unlisten = await subscribe<TerminalEvent>(
+      const unlisten = await backendPlatform.subscribe<TerminalEvent>(
         `terminal://output/${terminalId}`,
         (payload) => {
           if (replayBuffer) {
@@ -516,7 +521,7 @@ export function TerminalView({
         if (exits.some(isCurrentExit)) showExit()
       }
 
-      const unlistenExit = await subscribe<TerminalEvent>(
+      const unlistenExit = await backendPlatform.subscribe<TerminalEvent>(
         `terminal://exit/${terminalId}`,
         (event) => {
           if (replayBuffer) exitsWhileBuffering.push(event)
@@ -547,7 +552,9 @@ export function TerminalView({
       const applySnapshot = (snapshot: TerminalSnapshot) => {
         if (snapshot.alive && exitShown) {
           writeQueue.dispose()
-          writeQueue = createWriteQueue((d) => terminalWrite(terminalId, d))
+          writeQueue = createWriteQueue((d) =>
+            backendApi.terminalWrite(terminalId, d)
+          )
           writeQueueRef.current = writeQueue
           onProcessRestoredRef.current?.(terminalId)
           exitShown = false
@@ -616,7 +623,8 @@ export function TerminalView({
           replayBuffer = []
           exitsWhileBuffering = []
         }
-        void terminalSnapshot(terminalId)
+        void backendApi
+          .terminalSnapshot(terminalId)
           .then((snapshot) => {
             if (cancelled || generation !== reconnectGeneration) return
             if (!snapshot.alive && !snapshot.exists) {
@@ -637,7 +645,12 @@ export function TerminalView({
             flushReplay(null)
           })
       }
-      unlistenReconnect = onTransportReady(() => {
+      // Standalone views retain the compatibility hook. Managed panes listen
+      // only to their owner's fenced transport, including while hidden.
+      const subscribeReady = client
+        ? (callback: () => void) => client.transport.onReady?.(callback) ?? null
+        : onTransportReady
+      unlistenReconnect = subscribeReady(() => {
         // If the first server ready lands while the startup snapshot is still
         // in flight, let that snapshot finish, then resample. The ready event
         // cannot be missed between the probe and listener registration.
@@ -659,7 +672,9 @@ export function TerminalView({
         const deadline = Date.now() + 10_000
         let lastAnswer: TerminalSnapshot | null = null
         do {
-          const snapshot = await terminalSnapshot(terminalId).catch(() => null)
+          const snapshot = await backendApi
+            .terminalSnapshot(terminalId)
+            .catch(() => null)
           if (cancelled) return null
           if (snapshot && accept(snapshot)) return snapshot
           if (!retryMissing) return snapshot
@@ -704,7 +719,12 @@ export function TerminalView({
       // A new panel tab and canvas card can spawn. Restored panel tabs cannot.
       if (!attached && spawnOnMissing) {
         try {
-          await terminalSpawn(workingDir, shell, initialCommand, terminalId)
+          await backendApi.terminalSpawn(
+            workingDir,
+            shell,
+            initialCommand,
+            terminalId
+          )
           // Reported before anything that bails out on unmount: the tab
           // outlives this view (a drawer swiped shut mid-spawn), and whichever
           // view mounts for it next must attach, never launch the command twice.
@@ -766,7 +786,7 @@ export function TerminalView({
       // not to this mount — that is the whole point of attaching, and killing
       // here would take a running command down with a view switch.
       if (cancelled) {
-        if (!attach) terminalKill(terminalId).catch(() => {})
+        if (!attach) backendApi.terminalKill(terminalId).catch(() => {})
         teardown()
         return
       }
@@ -820,7 +840,16 @@ export function TerminalView({
       // menu must not outlive it and open the old terminal's link.
       setLinkClick(null)
     }
-  }, [terminalId, workingDir, shell, initialCommand, attach])
+  }, [
+    terminalId,
+    workingDir,
+    shell,
+    initialCommand,
+    attach,
+    backendApi,
+    backendPlatform,
+    client,
+  ])
 
   // Refit and focus when becoming active or panel becomes visible
   useEffect(() => {

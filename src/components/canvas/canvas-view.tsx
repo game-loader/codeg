@@ -1,5 +1,17 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+import { beginContentWrite as standaloneBeginContentWrite } from "@/stores/canvas-store"
+import { hasContentWriteInFlight as standaloneHasContentWriteInFlight } from "@/stores/canvas-store"
+import { isConversationDeleted as standaloneIsConversationDeleted } from "@/stores/app-workspace-store"
+import { defaultBackendStoreStorage as legacyStorage } from "@/stores/backend-store-storage"
+
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useCanvasStore as legacyCanvas } from "@/stores/canvas-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
+import { useRuntimeEventScope } from "@/hooks/use-runtime-event-scope"
 import "@xyflow/react/dist/style.css"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -23,35 +35,19 @@ import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { toPng } from "html-to-image"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
-import { useTabActions } from "@/contexts/tab-context"
+
 import {
   useAcpActions,
   useConnectionStore,
 } from "@/contexts/acp-connections-context"
 import {
-  canvasCreateNode,
-  canvasDeleteNode,
-  canvasDeleteNodes,
-  canvasDetachMember,
-  canvasGroupIntoRegion,
-  canvasMoveNodes,
-  canvasUpdateNode,
   type CanvasNodePatchInput,
   type CreateCanvasNodeInput,
   type GroupIntoRegionInput,
 } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import {
-  loadCanvasDrafts,
-  loadCanvasExpandedCards,
-  loadCanvasExpandedRegions,
-  loadCanvasSurfaceKeys,
-  loadCanvasViewport,
-  saveCanvasDrafts,
-  saveCanvasExpandedCards,
-  saveCanvasExpandedRegions,
-  saveCanvasSurfaceKeys,
-  saveCanvasViewport,
+  getCanvasViewStorage,
   type CanvasDraftCard,
   type CanvasSurfaceKey,
 } from "@/lib/canvas-view-storage"
@@ -73,16 +69,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { cn, randomUUID } from "@/lib/utils"
-import {
-  isConversationDeleted,
-  useAppWorkspaceStore,
-} from "@/stores/app-workspace-store"
-import {
-  applyMovesTo,
-  beginContentWrite,
-  hasContentWriteInFlight,
-  useCanvasStore,
-} from "@/stores/canvas-store"
+
+import { applyMovesTo } from "@/stores/canvas-store"
 import { NOTE_H, NOTE_W } from "./add-node-menu"
 import { CanvasConversationDrawer } from "./canvas-conversation-drawer"
 import { useBoardNodes, useCanvasData } from "./canvas-data"
@@ -196,6 +184,43 @@ function CanvasFlow({
   boardId: number
   exportName: string
 }) {
+  const backendStoreSelection = useBackendStoreSelection()
+  const ownsEvent = useRuntimeEventScope()
+
+  const backendStores = useBackendStores({
+    storage: legacyStorage,
+    workspace: legacyWorkspace,
+    canvas: legacyCanvas,
+  })
+  const {
+    loadCanvasViewport,
+    loadCanvasExpandedRegions,
+    loadCanvasExpandedCards,
+    loadCanvasDrafts,
+    loadCanvasSurfaceKeys,
+    saveCanvasExpandedCards,
+    saveCanvasDrafts,
+    saveCanvasExpandedRegions,
+    saveCanvasSurfaceKeys,
+    saveCanvasViewport,
+  } = getCanvasViewStorage(backendStores.storage)
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+  const useAppWorkspaceStore = backendStores.workspace
+  const beginContentWrite = backendStoreSelection
+    ? backendStores.canvas.beginContentWrite
+    : standaloneBeginContentWrite
+  const useCanvasStore = backendStores.canvas
+  const hasContentWriteInFlight = backendStoreSelection
+    ? backendStores.canvas.hasContentWriteInFlight
+    : standaloneHasContentWriteInFlight
+  const isConversationDeleted = backendStoreSelection
+    ? backendStores.workspace.isConversationDeleted
+    : standaloneIsConversationDeleted
+
+  const backendApi = useBackendApi()
+
   useCanvasData(boardId)
   const t = useTranslations("Canvas")
   const { openConversations } = useWorkbenchRoute()
@@ -342,6 +367,7 @@ function CanvasFlow({
   const [alignGuides, setAlignGuides] = useState<readonly AlignmentGuide[]>([])
   useEffect(() => {
     const sync = (e: KeyboardEvent) => {
+      if (!ownsEvent(e.target)) return
       altHeldRef.current = e.altKey
     }
     // Losing the window mid-drag leaves the key state unknowable; assume
@@ -357,7 +383,7 @@ function CanvasFlow({
       window.removeEventListener("keyup", sync)
       window.removeEventListener("blur", clear)
     }
-  }, [])
+  }, [ownsEvent])
   const [exporting, setExporting] = useState(false)
   const [seeding, setSeeding] = useState(false)
 
@@ -369,7 +395,7 @@ function CanvasFlow({
         return next
       })
     },
-    [boardId]
+    [boardId, saveCanvasExpandedCards]
   )
 
   const setDraftsPersisted = useCallback(
@@ -382,7 +408,7 @@ function CanvasFlow({
         return next
       })
     },
-    [boardId]
+    [boardId, saveCanvasDrafts]
   )
 
   // Drop ids whose nodes are gone — deleted here, deleted from another window,
@@ -428,7 +454,14 @@ function CanvasFlow({
       saveCanvasSurfaceKeys(boardId, next)
       return next
     })
-  }, [boardId, hydrated, dbNodes, setDetailCardsPersisted])
+  }, [
+    boardId,
+    hydrated,
+    dbNodes,
+    setDetailCardsPersisted,
+    saveCanvasExpandedRegions,
+    saveCanvasSurfaceKeys,
+  ])
 
   /** Terminal cards on the board, by row id. */
   const terminalNodeIds = useMemo(() => {
@@ -546,7 +579,7 @@ function CanvasFlow({
       const endWrite =
         patch.content !== undefined ? beginContentWrite(nodeId) : null
       try {
-        const res = await canvasUpdateNode(nodeId, patch)
+        const res = await backendApi.canvasUpdateNode(nodeId, patch)
         useCanvasStore
           .getState()
           .applyResponse(res.revision, (nodes) =>
@@ -558,7 +591,7 @@ function CanvasFlow({
         endWrite?.()
       }
     },
-    []
+    [backendApi, beginContentWrite, useCanvasStore]
   )
 
   /**
@@ -571,12 +604,15 @@ function CanvasFlow({
    * note is in flight too, and asking about a note the user just emptied costs
    * one dialog, while the other error costs the paragraph they just typed.
    */
-  const notesAtRisk = useCallback((ids: readonly number[]) => {
-    const rows = useCanvasStore.getState().nodes
-    return ids.filter(
-      (id) => noteHoldsProse(rows.get(id)) || hasContentWriteInFlight(id)
-    ).length
-  }, [])
+  const notesAtRisk = useCallback(
+    (ids: readonly number[]) => {
+      const rows = useCanvasStore.getState().nodes
+      return ids.filter(
+        (id) => noteHoldsProse(rows.get(id)) || hasContentWriteInFlight(id)
+      ).length
+    },
+    [useCanvasStore, hasContentWriteInFlight]
+  )
 
   /**
    * How many of these nodes are terminals — i.e. how many running processes
@@ -589,10 +625,13 @@ function CanvasFlow({
    * answers "yes" and costs one dialog, while asking the backend would make a
    * confirmation prompt depend on a round trip.
    */
-  const terminalsAtRisk = useCallback((ids: readonly number[]) => {
-    const rows = useCanvasStore.getState().nodes
-    return ids.filter((id) => rows.get(id)?.kind === "terminal").length
-  }, [])
+  const terminalsAtRisk = useCallback(
+    (ids: readonly number[]) => {
+      const rows = useCanvasStore.getState().nodes
+      return ids.filter((id) => rows.get(id)?.kind === "terminal").length
+    },
+    [useCanvasStore]
+  )
 
   const forgetNodes = useCallback(
     (ids: readonly number[]) => {
@@ -609,7 +648,7 @@ function CanvasFlow({
   const commitDeleteNode = useCallback(
     async (nodeId: number) => {
       try {
-        const res = await canvasDeleteNode(nodeId)
+        const res = await backendApi.canvasDeleteNode(nodeId)
         useCanvasStore
           .getState()
           .applyResponse(res.revision, (nodes) => nodes.delete(nodeId))
@@ -618,7 +657,7 @@ function CanvasFlow({
         toast.error(toErrorMessage(e))
       }
     },
-    [forgetNodes]
+    [forgetNodes, backendApi, useCanvasStore]
   )
 
   /**
@@ -649,7 +688,7 @@ function CanvasFlow({
   const createNode = useCallback(
     async (input: CreateCanvasNodeInput) => {
       try {
-        const res = await canvasCreateNode(boardId, input)
+        const res = await backendApi.canvasCreateNode(boardId, input)
         useCanvasStore
           .getState()
           .applyResponse(res.revision, (nodes) =>
@@ -661,7 +700,7 @@ function CanvasFlow({
         return null
       }
     },
-    [boardId]
+    [boardId, backendApi, useCanvasStore]
   )
 
   /** Keep a passage from a card's transcript as a note beside it. Parked just
@@ -696,19 +735,24 @@ function CanvasFlow({
     [createNode]
   )
 
-  const moveNodes = useCallback(async (moves: CanvasNodeMovePayload[]) => {
-    if (moves.length === 0) return
-    try {
-      const res = await canvasMoveNodes(moves)
-      // res.value is what the backend actually wrote (clamped, ghosts
-      // dropped) — mirroring the broadcast payload exactly.
-      useCanvasStore
-        .getState()
-        .applyResponse(res.revision, (nodes) => applyMovesTo(nodes, res.value))
-    } catch (e) {
-      toast.error(toErrorMessage(e))
-    }
-  }, [])
+  const moveNodes = useCallback(
+    async (moves: CanvasNodeMovePayload[]) => {
+      if (moves.length === 0) return
+      try {
+        const res = await backendApi.canvasMoveNodes(moves)
+        // res.value is what the backend actually wrote (clamped, ghosts
+        // dropped) — mirroring the broadcast payload exactly.
+        useCanvasStore
+          .getState()
+          .applyResponse(res.revision, (nodes) =>
+            applyMovesTo(nodes, res.value)
+          )
+      } catch (e) {
+        toast.error(toErrorMessage(e))
+      }
+    },
+    [backendApi, useCanvasStore]
+  )
 
   const openConversation = useCallback(
     (conversation: DbConversationSummary, pin: boolean) => {
@@ -737,7 +781,7 @@ function CanvasFlow({
         return next
       })
     },
-    [boardId]
+    [boardId, saveCanvasExpandedRegions]
   )
 
   const activateSurface = useCallback((contextKey: string) => {
@@ -848,7 +892,12 @@ function CanvasFlow({
     }
     if (conversationsLoading) return
     if (drawerConversation == null) setDrawerConversationId(null)
-  }, [conversationsLoading, drawerConversationId, drawerConversation])
+  }, [
+    conversationsLoading,
+    drawerConversationId,
+    drawerConversation,
+    isConversationDeleted,
+  ])
 
   /** Connection keys with a surface actually MOUNTED right now. */
   const mountedSurfaceKeys = useMemo(() => {
@@ -928,7 +977,12 @@ function CanvasFlow({
       const x = rect ? rect.x + rect.width + 32 : 0
       const y = rect ? rect.y : 0
       try {
-        const res = await canvasDetachMember(regionDbId, conversationId, x, y)
+        const res = await backendApi.canvasDetachMember(
+          regionDbId,
+          conversationId,
+          x,
+          y
+        )
         useCanvasStore.getState().applyResponse(res.revision, (nodes) => {
           const region = nodes.get(regionDbId)
           if (region && region.kind === "custom") {
@@ -945,7 +999,7 @@ function CanvasFlow({
         toast.error(toErrorMessage(e))
       }
     },
-    [derived.regionRects, setCardDetail]
+    [derived.regionRects, setCardDetail, backendApi, useCanvasStore]
   )
 
   const removeMember = useCallback(
@@ -1073,6 +1127,7 @@ function CanvasFlow({
       activateSurface,
       setDetailCardsPersisted,
       setDraftsPersisted,
+      saveCanvasSurfaceKeys,
     ]
   )
 
@@ -1226,124 +1281,127 @@ function CanvasFlow({
 
   // ── Drag reconcile ──
 
-  const handleNodesChange = useCallback((changes: NodeChange[]) => {
-    setSelectedIds((prev) => {
-      let next: Set<string> | null = null
-      for (const change of changes) {
-        if (change.type !== "select") continue
-        next ??= new Set(prev)
-        if (change.selected) next.add(change.id)
-        else next.delete(change.id)
-      }
-      return next ?? prev
-    })
-    // Alignment: nudge the whole gesture by whatever the GRABBED node needs to
-    // land on a neighbour's edge or centre line. Computed before the overlay
-    // write so the node is painted already snapped — a correction applied after
-    // would show the unsnapped frame first and jitter.
-    //
-    // `dragging === true` is what separates a drag from a resize: RF reports a
-    // top/left resize handle as a position change too, and those must not snap
-    // (the opposite edge is anchored, so a nudge would silently resize).
-    let snapDx = 0
-    let snapDy = 0
-    const primary = alignPrimaryRef.current
-    if (primary && !altHeldRef.current) {
-      const lead = changes.find(
-        (c) => c.type === "position" && c.id === primary.id && c.dragging
-      )
-      if (lead?.type === "position" && lead.position) {
-        const { dx, dy, guides } = computeAlignment(
-          {
-            x: lead.position.x,
-            y: lead.position.y,
-            width: primary.width,
-            height: primary.height,
-          },
-          alignCandidatesRef.current,
-          // Constant on SCREEN: the same few pixels of pointer travel must
-          // reach a guide whether the board is zoomed in or out.
-          ALIGN_TOLERANCE_PX / Math.max(zoomRef.current, 0.01),
-          // The dots, as the fallback for whichever axis found no neighbour —
-          // which on an infinite board is most of a drag.
-          BOARD_DOT_GAP
+  const handleNodesChange = useCallback(
+    (changes: NodeChange[]) => {
+      setSelectedIds((prev) => {
+        let next: Set<string> | null = null
+        for (const change of changes) {
+          if (change.type !== "select") continue
+          next ??= new Set(prev)
+          if (change.selected) next.add(change.id)
+          else next.delete(change.id)
+        }
+        return next ?? prev
+      })
+      // Alignment: nudge the whole gesture by whatever the GRABBED node needs to
+      // land on a neighbour's edge or centre line. Computed before the overlay
+      // write so the node is painted already snapped — a correction applied after
+      // would show the unsnapped frame first and jitter.
+      //
+      // `dragging === true` is what separates a drag from a resize: RF reports a
+      // top/left resize handle as a position change too, and those must not snap
+      // (the opposite edge is anchored, so a nudge would silently resize).
+      let snapDx = 0
+      let snapDy = 0
+      const primary = alignPrimaryRef.current
+      if (primary && !altHeldRef.current) {
+        const lead = changes.find(
+          (c) => c.type === "position" && c.id === primary.id && c.dragging
         )
-        snapDx = dx
-        snapDy = dy
-        lastSnapRef.current = { dx, dy }
-        setAlignGuides((prev) =>
-          prev.length === 0 && guides.length === 0 ? prev : guides
-        )
+        if (lead?.type === "position" && lead.position) {
+          const { dx, dy, guides } = computeAlignment(
+            {
+              x: lead.position.x,
+              y: lead.position.y,
+              width: primary.width,
+              height: primary.height,
+            },
+            alignCandidatesRef.current,
+            // Constant on SCREEN: the same few pixels of pointer travel must
+            // reach a guide whether the board is zoomed in or out.
+            ALIGN_TOLERANCE_PX / Math.max(zoomRef.current, 0.01),
+            // The dots, as the fallback for whichever axis found no neighbour —
+            // which on an infinite board is most of a drag.
+            BOARD_DOT_GAP
+          )
+          snapDx = dx
+          snapDy = dy
+          lastSnapRef.current = { dx, dy }
+          setAlignGuides((prev) =>
+            prev.length === 0 && guides.length === 0 ? prev : guides
+          )
+        }
+      } else if (primary && altHeldRef.current) {
+        lastSnapRef.current = { dx: 0, dy: 0 }
+        setAlignGuides((prev) => (prev.length === 0 ? prev : []))
       }
-    } else if (primary && altHeldRef.current) {
-      lastSnapRef.current = { dx: 0, dy: 0 }
-      setAlignGuides((prev) => (prev.length === 0 ? prev : []))
-    }
 
-    // Position changes feed the transient overlay — never the store; the store
-    // position only moves via command responses / events. Both drags (cleared
-    // at dragStop) and top/left-handle resizes (cleared by endNodeResize)
-    // land here.
-    setOverlay((prev) => {
-      let next: Map<string, { x: number; y: number }> | null = null
+      // Position changes feed the transient overlay — never the store; the store
+      // position only moves via command responses / events. Both drags (cleared
+      // at dragStop) and top/left-handle resizes (cleared by endNodeResize)
+      // land here.
+      setOverlay((prev) => {
+        let next: Map<string, { x: number; y: number }> | null = null
+        for (const change of changes) {
+          if (change.type !== "position" || !change.position) continue
+          next ??= new Map(prev)
+          const snap = change.dragging === true
+          next.set(change.id, {
+            x: change.position.x + (snap ? snapDx : 0),
+            y: change.position.y + (snap ? snapDy : 0),
+          })
+        }
+        return next ?? prev
+      })
+      // Dimension changes feed the size overlay ONLY while a NodeResizer handle
+      // is actively held (`resizing`): RF also emits dimension changes for
+      // plain DOM measurements (mount, visibility), and admitting those would
+      // pin every node's size and shadow remote resizes forever. Cleared by
+      // endNodeResize.
+      //
+      // Region dimensions are QUANTIZED to whole cards on the way in, so the
+      // frame steps one column / one row at a time and can never come to rest at
+      // a width that renders a ragged half-column. Resolved here rather than
+      // inside the updater, which must stay a pure function of `prev`.
+      const storeNodes = useCanvasStore.getState().nodes
+      const liveSizes: [string, { width: number; height: number }][] = []
       for (const change of changes) {
-        if (change.type !== "position" || !change.position) continue
-        next ??= new Map(prev)
-        const snap = change.dragging === true
-        next.set(change.id, {
-          x: change.position.x + (snap ? snapDx : 0),
-          y: change.position.y + (snap ? snapDy : 0),
+        if (
+          change.type !== "dimensions" ||
+          !change.dimensions ||
+          change.resizing !== true
+        ) {
+          continue
+        }
+        const dbId = parseRegionNodeId(change.id)
+        const dbNode = dbId != null ? storeNodes.get(dbId) : undefined
+        // Only member GRIDS snap; notes, files, terminals and (expanded)
+        // conversation cards resize freely — they have no cards to line up.
+        const isRegion = dbNode != null && isRegionKind(dbNode.kind)
+        liveSizes.push([
+          change.id,
+          isRegion
+            ? {
+                width: regionWidthForColumns(
+                  columnsForRegionWidth(change.dimensions.width)
+                ),
+                height: regionHeightForRows(
+                  rowsForRegionHeight(change.dimensions.height)
+                ),
+              }
+            : change.dimensions,
+        ])
+      }
+      if (liveSizes.length > 0) {
+        setSizeOverlay((prev) => {
+          const next = new Map(prev)
+          for (const [id, size] of liveSizes) next.set(id, size)
+          return next
         })
       }
-      return next ?? prev
-    })
-    // Dimension changes feed the size overlay ONLY while a NodeResizer handle
-    // is actively held (`resizing`): RF also emits dimension changes for
-    // plain DOM measurements (mount, visibility), and admitting those would
-    // pin every node's size and shadow remote resizes forever. Cleared by
-    // endNodeResize.
-    //
-    // Region dimensions are QUANTIZED to whole cards on the way in, so the
-    // frame steps one column / one row at a time and can never come to rest at
-    // a width that renders a ragged half-column. Resolved here rather than
-    // inside the updater, which must stay a pure function of `prev`.
-    const storeNodes = useCanvasStore.getState().nodes
-    const liveSizes: [string, { width: number; height: number }][] = []
-    for (const change of changes) {
-      if (
-        change.type !== "dimensions" ||
-        !change.dimensions ||
-        change.resizing !== true
-      ) {
-        continue
-      }
-      const dbId = parseRegionNodeId(change.id)
-      const dbNode = dbId != null ? storeNodes.get(dbId) : undefined
-      // Only member GRIDS snap; notes, files, terminals and (expanded)
-      // conversation cards resize freely — they have no cards to line up.
-      const isRegion = dbNode != null && isRegionKind(dbNode.kind)
-      liveSizes.push([
-        change.id,
-        isRegion
-          ? {
-              width: regionWidthForColumns(
-                columnsForRegionWidth(change.dimensions.width)
-              ),
-              height: regionHeightForRows(
-                rowsForRegionHeight(change.dimensions.height)
-              ),
-            }
-          : change.dimensions,
-      ])
-    }
-    if (liveSizes.length > 0) {
-      setSizeOverlay((prev) => {
-        const next = new Map(prev)
-        for (const [id, size] of liveSizes) next.set(id, size)
-        return next
-      })
-    }
-  }, [])
+    },
+    [useCanvasStore]
+  )
 
   /** Open a gesture: claim the next token, record what it is moving, and
    *  snapshot what it can align to. */
@@ -1560,7 +1618,7 @@ function CanvasFlow({
    *  gestures (box-select, card into region, card onto card). */
   const groupIntoRegion = useCallback(
     async (input: GroupIntoRegionInput) => {
-      const res = await canvasGroupIntoRegion(boardId, input)
+      const res = await backendApi.canvasGroupIntoRegion(boardId, input)
       useCanvasStore.getState().applyResponse(res.revision, (nodes) => {
         for (const id of res.value.deletedIds) nodes.delete(id)
         nodes.set(res.value.node.id, res.value.node)
@@ -1568,7 +1626,7 @@ function CanvasFlow({
       forgetNodes(res.value.deletedIds)
       setSelectedIds(new Set([regionNodeId(res.value.node.id)]))
     },
-    [boardId, forgetNodes]
+    [boardId, forgetNodes, backendApi, useCanvasStore]
   )
 
   /** Turn a drop into its command. The hint is recomputed from the drag's FINAL
@@ -1581,7 +1639,7 @@ function CanvasFlow({
         // A loose card just moved (already batched); a member card leaves its
         // region for the spot it was dropped on.
         if (source.kind !== "member") return
-        const res = await canvasDetachMember(
+        const res = await backendApi.canvasDetachMember(
           source.regionDbId,
           source.conversationId,
           hint.x,
@@ -1626,7 +1684,7 @@ function CanvasFlow({
         height: hint.rect.height,
       })
     },
-    [groupIntoRegion]
+    [groupIntoRegion, backendApi, useCanvasStore]
   )
 
   const handleNodeDragStop = useCallback(
@@ -1725,6 +1783,7 @@ function CanvasFlow({
       moveNodes,
       applyDrop,
       clearDragState,
+      useCanvasStore,
     ]
   )
 
@@ -1824,7 +1883,7 @@ function CanvasFlow({
     for (const draftId of selection.draftIds) dismissDraft(draftId)
     if (selection.deletableIds.length === 0) return
     try {
-      const res = await canvasDeleteNodes(selection.deletableIds)
+      const res = await backendApi.canvasDeleteNodes(selection.deletableIds)
       useCanvasStore.getState().applyResponse(res.revision, (nodes) => {
         for (const id of res.value) nodes.delete(id)
       })
@@ -1833,7 +1892,7 @@ function CanvasFlow({
     } catch (e) {
       toast.error(toErrorMessage(e))
     }
-  }, [selection, dismissDraft, forgetNodes])
+  }, [selection, dismissDraft, forgetNodes, backendApi, useCanvasStore])
 
   /**
    * Delete is destructive and the board has no undo, so a selection holding
@@ -1912,6 +1971,7 @@ function CanvasFlow({
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (!ownsEvent(e.target)) return
       // Keys that belong to whatever the user is typing in, or to a layer
       // floating above the board. A canvas card holds a whole conversation —
       // composer, rename input, a note being edited — and Delete inside any of
@@ -2035,6 +2095,7 @@ function CanvasFlow({
     window.addEventListener("keydown", onKeyDown, true)
     return () => window.removeEventListener("keydown", onKeyDown, true)
   }, [
+    ownsEvent,
     dbNodes,
     deleteSelection,
     groupSelection,
@@ -2072,7 +2133,7 @@ function CanvasFlow({
   }, [seeding, openFolders, createNode, fitView])
 
   const exportPng = useCallback(async () => {
-    const viewportEl = document.querySelector<HTMLElement>(
+    const viewportEl = surfaceRef.current?.querySelector<HTMLElement>(
       ".react-flow__viewport"
     )
     if (!viewportEl || rfNodes.length === 0) return
@@ -2143,7 +2204,7 @@ function CanvasFlow({
         }
       }, VIEWPORT_SAVE_DELAY_MS)
     },
-    [boardId]
+    [boardId, saveCanvasViewport]
   )
   useEffect(
     () => () => {
@@ -2154,7 +2215,7 @@ function CanvasFlow({
         saveCanvasViewport(boardId, pendingViewport.current)
       }
     },
-    [boardId]
+    [boardId, saveCanvasViewport]
   )
 
   const empty = hydrated && dbNodes.size === 0 && drafts.length === 0

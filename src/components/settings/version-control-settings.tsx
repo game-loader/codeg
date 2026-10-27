@@ -1,5 +1,8 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
+import type { BackendApi } from "@/lib/backend/types"
+import * as legacyBackendApi from "@/lib/api"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   CheckCircle2,
@@ -29,19 +32,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import {
-  detectGit,
-  getGitSettings,
-  updateGitSettings,
-  testGitPath,
-  getGitHubAccounts,
-  updateGitHubAccounts,
-  validateGitHubToken,
-  validateGitLabToken,
-  validateGiteaToken,
-  getAccountToken,
-  deleteAccountToken,
-} from "@/lib/api"
+
 import type {
   ForgeProviderId,
   GitDetectResult,
@@ -83,11 +74,12 @@ function isGiteaAccount(account: GitHubAccount): boolean {
  *  plain git credential — those validate against nothing, so the most that can
  *  be said is that the keyring still holds the secret. */
 function validatorFor(
-  account: GitHubAccount
-): typeof validateGitHubToken | null {
-  if (isGiteaAccount(account)) return validateGiteaToken
-  if (isGitLabAccount(account)) return validateGitLabToken
-  if (isGitHubAccount(account)) return validateGitHubToken
+  account: GitHubAccount,
+  backendApi: BackendApi = legacyBackendApi
+): typeof backendApi.validateGitHubToken | null {
+  if (isGiteaAccount(account)) return backendApi.validateGiteaToken
+  if (isGitLabAccount(account)) return backendApi.validateGitLabToken
+  if (isGitHubAccount(account)) return backendApi.validateGitHubToken
   return null
 }
 
@@ -215,6 +207,8 @@ function AccountRow({
 // ---------------------------------------------------------------------------
 
 export function VersionControlSettings() {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("VersionControlSettings")
 
   const [loading, setLoading] = useState(true)
@@ -259,9 +253,9 @@ export function VersionControlSettings() {
     setLoading(true)
     try {
       const [git, settings, ghAccounts] = await Promise.all([
-        detectGit(),
-        getGitSettings(),
-        getGitHubAccounts(),
+        backendApi.detectGit(),
+        backendApi.getGitSettings(),
+        backendApi.getGitHubAccounts(),
       ])
       setGitInfo(git)
       setCustomPath(settings.custom_path ?? "")
@@ -272,7 +266,7 @@ export function VersionControlSettings() {
     } finally {
       setLoading(false)
     }
-  }, [t])
+  }, [t, backendApi])
 
   useEffect(() => {
     loadData().catch(console.error)
@@ -286,7 +280,7 @@ export function VersionControlSettings() {
     try {
       // Test first if a custom path is provided
       if (trimmed) {
-        const result = await testGitPath(trimmed)
+        const result = await backendApi.testGitPath(trimmed)
         if (!result.installed) {
           toast.error(
             t("testFailed", { message: "not a valid git executable" })
@@ -294,8 +288,8 @@ export function VersionControlSettings() {
           return
         }
       }
-      await updateGitSettings({ custom_path: trimmed || null })
-      const git = await detectGit()
+      await backendApi.updateGitSettings({ custom_path: trimmed || null })
+      const git = await backendApi.detectGit()
       setGitInfo(git)
       setEditingPath(false)
       toast.success(t("saveSuccess"))
@@ -305,15 +299,16 @@ export function VersionControlSettings() {
     } finally {
       setSavingGit(false)
     }
-  }, [customPath, t])
+  }, [customPath, t, backendApi])
 
   const handleCancelEdit = useCallback(() => {
     setEditingPath(false)
     // Restore to the saved value
-    getGitSettings()
+    backendApi
+      .getGitSettings()
       .then((s) => setCustomPath(s.custom_path ?? ""))
       .catch(() => {})
-  }, [])
+  }, [backendApi])
 
   // --- Shared account handlers ---
 
@@ -333,7 +328,7 @@ export function VersionControlSettings() {
           : [...others, account],
       }
       try {
-        const saved = await updateGitHubAccounts(updated)
+        const saved = await backendApi.updateGitHubAccounts(updated)
         setAccounts(saved)
         toast.success(t("addSuccess", { username: account.username }))
       } catch (err) {
@@ -341,19 +336,19 @@ export function VersionControlSettings() {
         toast.error(t("addFailed", { message }))
       }
     },
-    [accounts, t]
+    [accounts, t, backendApi]
   )
 
   const handleTestConnection = useCallback(
     async (account: GitHubAccount) => {
       setTestingAccountId(account.id)
       try {
-        const token = await getAccountToken(account.id)
+        const token = await backendApi.getAccountToken(account.id)
         if (!token) {
           toast.error(t("connectionFailed", { message: "Token not found" }))
           return
         }
-        const validate = validatorFor(account)
+        const validate = validatorFor(account, backendApi)
         if (validate) {
           const result = await validate(account.server_url, token)
           if (result.success) {
@@ -377,7 +372,7 @@ export function VersionControlSettings() {
         setTestingAccountId(null)
       }
     },
-    [t]
+    [t, backendApi]
   )
 
   const handleSetDefault = useCallback(
@@ -389,7 +384,7 @@ export function VersionControlSettings() {
         })),
       }
       try {
-        const saved = await updateGitHubAccounts(updated)
+        const saved = await backendApi.updateGitHubAccounts(updated)
         setAccounts(saved)
         toast.success(t("defaultSet"))
       } catch (err) {
@@ -397,7 +392,7 @@ export function VersionControlSettings() {
         toast.error(message)
       }
     },
-    [accounts, t]
+    [accounts, t, backendApi]
   )
 
   const handleRemoveAccount = useCallback(async () => {
@@ -406,8 +401,8 @@ export function VersionControlSettings() {
       accounts: accounts.accounts.filter((a) => a.id !== removeTarget.id),
     }
     try {
-      await deleteAccountToken(removeTarget.id)
-      const saved = await updateGitHubAccounts(updated)
+      await backendApi.deleteAccountToken(removeTarget.id)
+      const saved = await backendApi.updateGitHubAccounts(updated)
       setAccounts(saved)
       toast.success(t("removeSuccess"))
     } catch (err) {
@@ -416,7 +411,7 @@ export function VersionControlSettings() {
     } finally {
       setRemoveTarget(null)
     }
-  }, [accounts, removeTarget, t])
+  }, [accounts, removeTarget, t, backendApi])
 
   // --- Render ---
 

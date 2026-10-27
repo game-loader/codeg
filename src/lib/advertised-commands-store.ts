@@ -37,6 +37,7 @@
  */
 
 import type { AvailableCommandInfo } from "@/lib/types"
+import type { BackendClient } from "@/lib/backend/types"
 
 /** Each entry's key: this prefix, then `[agentType, folder]` as JSON. */
 const KEY_PREFIX = "codeg:advertised-commands:"
@@ -62,8 +63,31 @@ let entries: Map<string, Entry> | null = null
 const listeners = new Set<() => void>()
 let windowBound = false
 
-function storageKeyOf(agentType: string, folder: string): string {
-  return KEY_PREFIX + JSON.stringify([agentType, folder])
+/** Persisted records never cross machines or saved connection revisions. */
+export function advertisedCommandsScope(
+  client: BackendClient | null
+): string | undefined {
+  return client
+    ? JSON.stringify([
+        client.key,
+        client.remoteConnection?.config_revision ?? null,
+      ])
+    : undefined
+}
+
+function storageKeyOf(
+  agentType: string,
+  folder: string,
+  backendScope?: string
+): string {
+  return (
+    KEY_PREFIX +
+    JSON.stringify(
+      backendScope === undefined
+        ? [agentType, folder]
+        : [agentType, folder, backendScope]
+    )
+  )
 }
 
 function sameNames(a: AdvertisedCommands, b: AdvertisedCommands): boolean {
@@ -281,11 +305,12 @@ function trimToCap(keep: string): boolean {
 export function rememberAdvertisedCommands(
   agentType: string,
   folder: string | null | undefined,
-  commands: readonly Pick<AvailableCommandInfo, "name">[]
+  commands: readonly Pick<AvailableCommandInfo, "name">[],
+  backendScope?: string
 ): void {
   if (!folder || typeof window === "undefined") return
   const copy = load()
-  const key = storageKeyOf(agentType, folder)
+  const key = storageKeyOf(agentType, folder, backendScope)
   const previous = copy.get(key)
   const names = namesOf(commands.map((command) => command.name))
   const entry: Entry = {
@@ -316,10 +341,13 @@ export function rememberAdvertisedCommands(
  */
 export function getLastAdvertisedCommands(
   agentType: string,
-  folder: string | null | undefined
+  folder: string | null | undefined,
+  backendScope?: string
 ): AdvertisedCommands | null {
   if (!folder) return null
-  return load().get(storageKeyOf(agentType, folder))?.commands ?? null
+  return (
+    load().get(storageKeyOf(agentType, folder, backendScope))?.commands ?? null
+  )
 }
 
 export function subscribeLastAdvertisedCommands(

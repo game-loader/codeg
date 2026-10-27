@@ -14,6 +14,9 @@ import {
   savePersistedPanelState,
 } from "@/lib/panel-state-storage"
 import { useActiveFolder } from "@/contexts/active-folder-context"
+import { useTabStore as legacyTabs } from "@/contexts/tab-context"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import type { FolderDetail } from "@/lib/types"
 import { detectPlatform } from "@/hooks/use-platform"
 import type { AuxPanelTab } from "@/lib/aux-panel-tab-order"
 import { isDesktop } from "@/lib/platform"
@@ -56,6 +59,13 @@ interface AuxPanelContextValue {
   setWidth: (w: number) => void
   setActiveTab: (tab: AuxPanelTab) => void
   openTab: (tab: AuxPanelTab) => void
+  /** Transient explicit location, independent of the retained composer. */
+  folderToolContext: Pick<FolderDetail, "id" | "path"> | null
+  clearFolderToolContext: () => void
+  openFolderTab: (
+    tab: Exclude<AuxPanelTab, "session_details">,
+    folder: Pick<FolderDetail, "id" | "path">
+  ) => void
   pendingRevealPath: string | null
   revealInFileTree: (path: string) => void
   consumePendingRevealPath: () => void
@@ -81,20 +91,47 @@ interface AuxPanelProviderProps {
 
 export function AuxPanelProvider({ children }: AuxPanelProviderProps) {
   const storageKey = STORAGE_KEY
-  const { activeFolderId } = useActiveFolder()
+  const { activeFolderId, activeFolder } = useActiveFolder()
+  const stores = useBackendStores({ tabs: legacyTabs })
+  const activeTabId = stores.tabs((s) => s.activeTabId)
   const [isOpen, setIsOpen] = useState(DEFAULT_IS_OPEN)
   const [width, setWidthState] = useState(DEFAULT_WIDTH)
   const [restored, setRestored] = useState(false)
-  const [activeTab, setActiveTab] = useState<AuxPanelTab>("session_details")
+  const [activeTab, setActiveTabState] =
+    useState<AuxPanelTab>("session_details")
+  const [explicitFolder, setExplicitFolder] = useState<{
+    folder: Pick<FolderDetail, "id" | "path">
+    tabId: string | null
+  } | null>(null)
+  const folderToolContext =
+    explicitFolder &&
+    explicitFolder.tabId === activeTabId &&
+    explicitFolder.folder.id === activeFolder?.id &&
+    explicitFolder.folder.path === activeFolder.path &&
+    activeFolder.kind !== "chat"
+      ? explicitFolder.folder
+      : null
   const [pendingRevealPath, setPendingRevealPath] = useState<string | null>(
     null
   )
   // Platform-derived minimum (see resolveAuxMinWidth); stable for the session.
   const minWidth = useMemo(() => resolveAuxMinWidth(), [])
 
-  const toggle = useCallback(() => setIsOpen((prev) => !prev), [])
+  const toggle = useCallback(() => {
+    setExplicitFolder(null)
+    setIsOpen((prev) => !prev)
+  }, [])
 
-  const setOpen = useCallback((open: boolean) => setIsOpen(open), [])
+  const setOpen = useCallback((open: boolean) => {
+    if (!open) setExplicitFolder(null)
+    setIsOpen(open)
+  }, [])
+
+  const setActiveTab = useCallback((tab: AuxPanelTab) => {
+    if (tab === "session_details") setExplicitFolder(null)
+    setActiveTabState(tab)
+  }, [])
+  const clearFolderToolContext = useCallback(() => setExplicitFolder(null), [])
 
   const setWidth = useCallback(
     (w: number) => {
@@ -104,13 +141,37 @@ export function AuxPanelProvider({ children }: AuxPanelProviderProps) {
   )
 
   const openTab = useCallback((tab: AuxPanelTab) => {
-    setActiveTab(tab)
+    setExplicitFolder(null)
+    setActiveTabState(tab)
     setIsOpen(true)
   }, [])
 
+  const openFolderTab = useCallback(
+    (
+      tab: Exclude<AuxPanelTab, "session_details">,
+      folder: Pick<FolderDetail, "id" | "path">
+    ) => {
+      setExplicitFolder({
+        folder: { id: folder.id, path: folder.path },
+        tabId: stores.tabs.getState().activeTabId,
+      })
+      setActiveTabState(tab)
+      setIsOpen(true)
+    },
+    [stores]
+  )
+
+  useEffect(() => {
+    if (explicitFolder && !folderToolContext) {
+      // Do not revive an explicit destination after returning to an old tab/path.
+      setExplicitFolder(null)
+    }
+  }, [explicitFolder, folderToolContext])
+
   const revealInFileTree = useCallback((path: string) => {
     setPendingRevealPath(path)
-    setActiveTab("file_tree")
+    setExplicitFolder(null)
+    setActiveTabState("file_tree")
     setIsOpen(true)
   }, [])
 
@@ -123,7 +184,6 @@ export function AuxPanelProvider({ children }: AuxPanelProviderProps) {
     const isMobileViewport = window.innerWidth < 768
     const defaultOpen = isMobileViewport ? false : DEFAULT_IS_OPEN
     // Hydrate from localStorage after mount to keep SSR/CSR markup consistent.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsOpen(isMobileViewport ? false : (stored?.isOpen ?? defaultOpen))
     setWidthState(clampWidth(stored?.width ?? DEFAULT_WIDTH, minWidth))
     setRestored(true)
@@ -138,7 +198,6 @@ export function AuxPanelProvider({ children }: AuxPanelProviderProps) {
   // state is content-driven by the workspace contexts and will refetch
   // naturally via its folder-path dependency.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPendingRevealPath(null)
   }, [activeFolderId])
 
@@ -155,6 +214,9 @@ export function AuxPanelProvider({ children }: AuxPanelProviderProps) {
       setWidth,
       setActiveTab,
       openTab,
+      folderToolContext,
+      clearFolderToolContext,
+      openFolderTab,
       pendingRevealPath,
       revealInFileTree,
       consumePendingRevealPath,
@@ -169,6 +231,10 @@ export function AuxPanelProvider({ children }: AuxPanelProviderProps) {
       setOpen,
       setWidth,
       openTab,
+      folderToolContext,
+      clearFolderToolContext,
+      openFolderTab,
+      setActiveTab,
       pendingRevealPath,
       revealInFileTree,
       consumePendingRevealPath,

@@ -2,6 +2,11 @@
 
 import { useMemo } from "react"
 import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import {
   AppWindow,
   Code,
   Copy,
@@ -17,16 +22,12 @@ import {
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import { openPath } from "@/lib/platform"
+
 import { isHtmlPreviewable } from "@/lib/language-detect"
-import {
-  downloadWorkspaceFile,
-  isWorkspaceFileApiAvailable,
-  WORKSPACE_DOWNLOAD_CANCELLED,
-} from "@/lib/api"
+import { WORKSPACE_DOWNLOAD_CANCELLED } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import { findOwningFolder, splitAbsPath } from "@/lib/file-open-target"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
 import {
   useWorkspaceActions,
   useWorkspaceFileTabs,
@@ -71,6 +72,12 @@ import { cn, copyTextFromMenu } from "@/lib/utils"
  * diff / image / PDF / office), so it wraps them all uniformly.
  */
 export function FileWorkspaceHeader() {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+  const useAppWorkspaceStore = useBackendStores({
+    workspace: legacyWorkspace,
+  }).workspace
+
   const t = useTranslations("Folder.fileWorkspace")
   // Copying a path is the file tree's own menu row, word for word — same
   // action, same wording, no second set of strings to keep in step.
@@ -141,14 +148,14 @@ export function FileWorkspaceHeader() {
   const canDownload =
     activeFileTab.kind === "file" &&
     downloadTarget !== null &&
-    isWorkspaceFileApiAvailable()
+    backendApi.isWorkspaceFileApiAvailable()
 
   const handleDownload = () => {
     if (!downloadTarget) return
     const name = activeFileTab.title
     void (async () => {
       try {
-        const result = await downloadWorkspaceFile(
+        const result = await backendApi.downloadWorkspaceFile(
           downloadTarget.rootPath,
           downloadTarget.path,
           name
@@ -297,7 +304,7 @@ export function FileWorkspaceHeader() {
                 <DropdownMenuItem
                   onSelect={() => {
                     // File tab paths are absolute — hand it straight to the OS.
-                    openPath(path).catch(() => {})
+                    backendPlatform.openPath(path).catch(() => {})
                   }}
                 >
                   <ExternalLink />

@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useState } from "react"
 import {
   AlertTriangle,
@@ -28,16 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import {
-  startWebServer,
-  stopWebServer,
-  getWebServerStatus,
-  getWebServiceConfig,
-  updateWebServiceConfig,
-  probeWebServicePort,
-  type WebServerInfo,
-  type WebServicePortProbe,
-} from "@/lib/api"
+import { type WebServerInfo, type WebServicePortProbe } from "@/lib/api"
 
 const DEFAULT_PORT = 3080
 import { openUrl } from "@/lib/platform"
@@ -278,6 +270,8 @@ function TokenEditor({
 }
 
 export function WebServiceSettings() {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("WebServiceSettings")
   const [status, setStatus] = useState<WebServerInfo | null>(null)
   const [port, setPort] = useState(String(DEFAULT_PORT))
@@ -289,14 +283,17 @@ export function WebServiceSettings() {
   const [configLoaded, setConfigLoaded] = useState(false)
   const [selectedAddress, setSelectedAddress] = useState<string | null>(null)
 
-  const probePort = useCallback(async (portNum: number) => {
-    try {
-      const result = await probeWebServicePort(portNum)
-      setPortProbe(result)
-    } catch {
-      setPortProbe(null)
-    }
-  }, [])
+  const probePort = useCallback(
+    async (portNum: number) => {
+      try {
+        const result = await backendApi.probeWebServicePort(portNum)
+        setPortProbe(result)
+      } catch {
+        setPortProbe(null)
+      }
+    },
+    [backendApi]
+  )
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -306,8 +303,9 @@ export function WebServiceSettings() {
         autoStart: false,
       }
       const [info, configResult] = await Promise.all([
-        getWebServerStatus(),
-        getWebServiceConfig()
+        backendApi.getWebServerStatus(),
+        backendApi
+          .getWebServiceConfig()
           .then((config) => ({ ok: true as const, config }))
           .catch(() => ({ ok: false as const, config: fallbackConfig })),
       ])
@@ -332,7 +330,7 @@ export function WebServiceSettings() {
     } catch {
       // Server status unavailable
     }
-  }, [probePort])
+  }, [probePort, backendApi])
 
   useEffect(() => {
     fetchStatus()
@@ -379,7 +377,7 @@ export function WebServiceSettings() {
       }
 
       try {
-        await updateWebServiceConfig({
+        await backendApi.updateWebServiceConfig({
           port: portNum,
           token: token.trim() || null,
           autoStart: nextAutoStart,
@@ -388,7 +386,7 @@ export function WebServiceSettings() {
         setError(t("saveConfigFailed"))
       }
     },
-    [autoStart, port, t, token]
+    [autoStart, port, t, token, backendApi]
   )
 
   useEffect(() => {
@@ -419,7 +417,7 @@ export function WebServiceSettings() {
     setLoading(true)
     try {
       const portNum = parseInt(port, 10) || DEFAULT_PORT
-      const info = await startWebServer({
+      const info = await backendApi.startWebServer({
         port: portNum,
         token: token.trim() || null,
       })
@@ -456,7 +454,7 @@ export function WebServiceSettings() {
   async function handleStop() {
     setLoading(true)
     try {
-      await stopWebServer()
+      await backendApi.stopWebServer()
       setStatus(null)
       // After stop, re-probe so the user can see whether the port was
       // released cleanly or is being held by an orphan child process.

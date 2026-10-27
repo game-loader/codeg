@@ -47,7 +47,7 @@ export function agentToSuggestion(agent: AcpAgentInfo): SuggestionItem {
     reference: {
       refType: "agent",
       id: agent.agent_type,
-      label: agent.name || getAgentLabel(agent.agent_type),
+      label: agent.name || getAgentLabel(agent.agent_type, null),
       uri: `codeg://agent/${agent.agent_type}`,
       meta: { agentType: agent.agent_type, available: agent.available },
     },

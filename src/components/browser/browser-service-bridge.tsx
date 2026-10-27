@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useEffect, useRef } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
@@ -13,7 +14,7 @@ import {
   type DetectedService,
 } from "@/lib/browser/types"
 import { getCurrentWindowLabel } from "@/lib/browser/window-label"
-import { getTransport, isDesktop } from "@/lib/transport"
+import { isDesktop } from "@/lib/transport"
 
 /**
  * Long enough to notice and reach for. Every toast holds the native browser
@@ -51,6 +52,8 @@ const NOTICE_MS = 10_000
  *   address started from a second terminal is a new thing to hear about.
  */
 export function BrowserServiceBridge() {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Browser.toast")
   const openBrowserTab = useOptionalWorkspaceActions()?.openBrowserTab ?? null
   const decide = useLinkDecision()
@@ -120,10 +123,9 @@ export function BrowserServiceBridge() {
     }
 
     void (async () => {
-      const stop = await getTransport().subscribe<DetectedService>(
-        BROWSER_SERVICE_DETECTED_EVENT,
-        handle
-      )
+      const stop = await backendPlatform
+        .getTransport()
+        .subscribe<DetectedService>(BROWSER_SERVICE_DETECTED_EVENT, handle)
       if (cancelled) {
         stop()
         return
@@ -135,7 +137,7 @@ export function BrowserServiceBridge() {
       cancelled = true
       unsubscribe?.()
     }
-  }, [])
+  }, [backendPlatform])
 
   return null
 }

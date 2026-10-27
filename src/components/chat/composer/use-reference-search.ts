@@ -1,10 +1,10 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react"
 
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { useFileTree, type FlatFileEntry } from "@/hooks/use-file-tree"
-import { gitLog, listAllConversations } from "@/lib/api"
 import type {
   AcpAgentInfo,
   AssistantInfo,
@@ -252,6 +252,8 @@ export function useReferenceSearch({
   enabled = true,
   labels,
 }: UseReferenceSearchOptions): ReferenceSearch {
+  const backendApi = useBackendApi()
+
   const path = defaultPath || null
 
   const { allFiles, loaded } = useFileTree({
@@ -321,86 +323,90 @@ export function useReferenceSearch({
     return () => window.removeEventListener("focus", onFocus)
   }, [])
 
-  return useCallback<ReferenceSearch>(async (query, signal, kinds) => {
-    if (!enabledRef.current) return []
+  return useCallback<ReferenceSearch>(
+    async (query, signal, kinds) => {
+      if (!enabledRef.current) return []
 
-    const path = pathRef.current
-    const wants = (kind: ReferenceKind) => !kinds || kinds.includes(kind)
+      const path = pathRef.current
+      const wants = (kind: ReferenceKind) => !kinds || kinds.includes(kind)
 
-    // Lazy session fetch. On rejection the cache entry is cleared (not cached as
-    // an empty result) so the next `@` retries instead of wedging on `[]`.
-    let sessionsPromise = EMPTY_SESSIONS
-    if (wants("session")) {
-      const sessionsKey = "all"
-      let sessionsEntry = sessionsRef.current
-      if (sessionsEntry?.key !== sessionsKey) {
-        const created: NonNullable<typeof sessionsRef.current> = {
-          key: sessionsKey,
-          promise: listAllConversations().catch(() => {
-            if (sessionsRef.current === created) sessionsRef.current = null
-            return [] as DbConversationSummary[]
-          }),
-        }
-        sessionsRef.current = created
-        sessionsEntry = created
-      }
-      sessionsPromise = sessionsEntry.promise
-    }
-
-    // Lazy git-log fetch, keyed by path with the same retry-on-rejection policy.
-    // A hidden commit tab leaves the cache alone: it is still keyed by path, so
-    // switching the tab back on reuses it or refetches as usual.
-    let commitsPromise = EMPTY_COMMITS
-    if (path && wants("commit")) {
-      let commitsEntry = commitsRef.current
-      if (commitsEntry?.key !== path) {
-        const created: NonNullable<typeof commitsRef.current> = {
-          key: path,
-          promise: gitLog(path, GIT_LOG_LIMIT)
-            .then((result) => result.entries)
-            .catch(() => {
-              if (commitsRef.current === created) commitsRef.current = null
-              return [] as GitLogEntry[]
+      // Lazy session fetch. On rejection the cache entry is cleared (not cached as
+      // an empty result) so the next `@` retries instead of wedging on `[]`.
+      let sessionsPromise = EMPTY_SESSIONS
+      if (wants("session")) {
+        const sessionsKey = "all"
+        let sessionsEntry = sessionsRef.current
+        if (sessionsEntry?.key !== sessionsKey) {
+          const created: NonNullable<typeof sessionsRef.current> = {
+            key: sessionsKey,
+            promise: backendApi.listAllConversations().catch(() => {
+              if (sessionsRef.current === created) sessionsRef.current = null
+              return [] as DbConversationSummary[]
             }),
+          }
+          sessionsRef.current = created
+          sessionsEntry = created
         }
-        commitsRef.current = created
-        commitsEntry = created
+        sessionsPromise = sessionsEntry.promise
       }
-      commitsPromise = commitsEntry.promise
-    } else if (!path) {
-      commitsRef.current = null
-    }
 
-    const [sessions, commits] = await Promise.all([
-      sessionsPromise,
-      commitsPromise,
-    ])
-    // Discard this result if it can no longer be trusted for the live panel: a
-    // newer query aborted us, the composer was disabled, or the workspace folder
-    // changed while the network fetch was in flight (the popup only aborts on a
-    // query change, so a folder switch would otherwise leak the old repo's
-    // commits — built against `path` — into the new folder's panel). The next
-    // keystroke re-runs the search against the current folder.
-    if (signal?.aborted || !enabledRef.current || pathRef.current !== path) {
-      return []
-    }
+      // Lazy git-log fetch, keyed by path with the same retry-on-rejection policy.
+      // A hidden commit tab leaves the cache alone: it is still keyed by path, so
+      // switching the tab back on reuses it or refetches as usual.
+      let commitsPromise = EMPTY_COMMITS
+      if (path && wants("commit")) {
+        let commitsEntry = commitsRef.current
+        if (commitsEntry?.key !== path) {
+          const created: NonNullable<typeof commitsRef.current> = {
+            key: path,
+            promise: backendApi
+              .gitLog(path, GIT_LOG_LIMIT)
+              .then((result) => result.entries)
+              .catch(() => {
+                if (commitsRef.current === created) commitsRef.current = null
+                return [] as GitLogEntry[]
+              }),
+          }
+          commitsRef.current = created
+          commitsEntry = created
+        }
+        commitsPromise = commitsEntry.promise
+      } else if (!path) {
+        commitsRef.current = null
+      }
 
-    const fileState = filesRef.current
-    return buildReferenceGroups(
-      query,
-      {
-        // Already loaded by their hooks, but a hidden tab's rows would only be
-        // matched and adapted to be thrown away.
-        files: wants("file") ? fileState.files : [],
-        workspaceRoot: fileState.root,
-        agents: wants("agent") ? agentsRef.current : [],
-        assistants: wants("assistant") ? assistantsRef.current : [],
-        assistantAgents: wants("assistant") ? agentsRef.current : [],
-        sessions,
-        commits,
-        repoKey: path,
-      },
-      labelsRef.current ?? DEFAULT_GROUP_LABELS
-    )
-  }, [])
+      const [sessions, commits] = await Promise.all([
+        sessionsPromise,
+        commitsPromise,
+      ])
+      // Discard this result if it can no longer be trusted for the live panel: a
+      // newer query aborted us, the composer was disabled, or the workspace folder
+      // changed while the network fetch was in flight (the popup only aborts on a
+      // query change, so a folder switch would otherwise leak the old repo's
+      // commits — built against `path` — into the new folder's panel). The next
+      // keystroke re-runs the search against the current folder.
+      if (signal?.aborted || !enabledRef.current || pathRef.current !== path) {
+        return []
+      }
+
+      const fileState = filesRef.current
+      return buildReferenceGroups(
+        query,
+        {
+          // Already loaded by their hooks, but a hidden tab's rows would only be
+          // matched and adapted to be thrown away.
+          files: wants("file") ? fileState.files : [],
+          workspaceRoot: fileState.root,
+          agents: wants("agent") ? agentsRef.current : [],
+          assistants: wants("assistant") ? assistantsRef.current : [],
+          assistantAgents: wants("assistant") ? agentsRef.current : [],
+          sessions,
+          commits,
+          repoKey: path,
+        },
+        labelsRef.current ?? DEFAULT_GROUP_LABELS
+      )
+    },
+    [backendApi]
+  )
 }

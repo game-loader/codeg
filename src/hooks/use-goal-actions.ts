@@ -34,9 +34,9 @@
  * that simply failed then has no status change coming).
  */
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useEffect, useRef, useState } from "react"
 
-import { acpGetSessionSnapshot } from "@/lib/api"
 import {
   LEGACY_GOAL_ACTIONS,
   NO_GOAL_ACTIONS,
@@ -55,6 +55,8 @@ export function useAdvertisedGoalActions(
   connectionId: string | null,
   connStatus?: ConnectionStatus | null
 ): readonly string[] {
+  const backendApi = useBackendApi()
+
   const [loaded, setLoaded] = useState<{
     id: string
     actions: readonly string[]
@@ -87,7 +89,8 @@ export function useAdvertisedGoalActions(
         if (!stale) setRetryTick((t) => t + 1)
       }, delay)
     }
-    acpGetSessionSnapshot(connectionId)
+    backendApi
+      .acpGetSessionSnapshot(connectionId)
       .then((snap) => {
         if (stale) return
         // A nullish snapshot means NOTHING was learned (connection already
@@ -113,7 +116,7 @@ export function useAdvertisedGoalActions(
       stale = true
       if (timer) clearTimeout(timer)
     }
-  }, [connectionId, connStatus, loaded, retryTick])
+  }, [connectionId, connStatus, loaded, retryTick, backendApi])
 
   return loaded && loaded.id === connectionId ? loaded.actions : NO_GOAL_ACTIONS
 }

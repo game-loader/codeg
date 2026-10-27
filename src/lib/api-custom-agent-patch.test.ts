@@ -27,6 +27,7 @@ vi.mock("@/lib/transport", () => ({
   getShellTransport: () => ({ call: vi.fn() }),
   isDesktop: () => false,
   isRemoteDesktopMode: () => false,
+  getServerBaseUrl: () => window.location.origin,
   getActiveRemoteConnectionId: () => null,
   notifyRemoteDesktopUnauthorized: vi.fn(),
 }))

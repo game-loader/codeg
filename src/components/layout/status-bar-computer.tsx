@@ -27,6 +27,10 @@
  * person returns from granting one in System Settings.
  */
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -57,7 +61,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover"
 import { ComputerWindowPicker } from "@/components/computer/computer-window-picker"
-import { openSettingsWindow } from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import {
   computerShareApp,
@@ -171,6 +175,9 @@ export function StatusBarComputer() {
 }
 
 function ComputerPopover() {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("ComputerUse")
   const { shared, sharedApps, sharedScreen, backend, activity } =
     useComputerStore()
@@ -208,10 +215,10 @@ function ComputerPopover() {
   // opening the popover.
   useEffect(() => {
     const mark = computerStoreMark()
-    computerSharedState()
+    computerSharedState(backendPlatform)
       .then((s) => setComputerStateSince(s, mark))
       .catch(() => {})
-  }, [])
+  }, [backendPlatform])
 
   const handleOpenChange = (next: boolean) => {
     setOpen(next)
@@ -220,7 +227,10 @@ function ComputerPopover() {
   const setLevel = async (targetId: string, level: GrantLevel) => {
     const mark = computerStoreMark()
     try {
-      setComputerSharedSince(await computerShareWindow(targetId, level), mark)
+      setComputerSharedSince(
+        await computerShareWindow(targetId, level, backendPlatform),
+        mark
+      )
     } catch (e) {
       setError(toErrorMessage(e))
     }
@@ -229,7 +239,10 @@ function ComputerPopover() {
   const setAppLevel = async (appId: string, level: GrantLevel) => {
     const mark = computerStoreMark()
     try {
-      setComputerStateSince(await computerShareApp({ appId }, level), mark)
+      setComputerStateSince(
+        await computerShareApp({ appId }, level, backendPlatform),
+        mark
+      )
     } catch (e) {
       setError(toErrorMessage(e))
     }
@@ -238,7 +251,10 @@ function ComputerPopover() {
   const setScreenLevel = async (level: GrantLevel) => {
     const mark = computerStoreMark()
     try {
-      setComputerStateSince(await computerShareScreen(level), mark)
+      setComputerStateSince(
+        await computerShareScreen(level, backendPlatform),
+        mark
+      )
     } catch (e) {
       setError(toErrorMessage(e))
     }
@@ -249,7 +265,7 @@ function ComputerPopover() {
   const stopSharing = async () => {
     setStopping(true)
     try {
-      await computerStop()
+      await computerStop(backendPlatform)
     } catch (e) {
       setError(toErrorMessage(e))
     } finally {
@@ -530,7 +546,7 @@ function ComputerPopover() {
             variant="outline"
             className="w-full"
             onClick={() => {
-              openSettingsWindow("computer-use").catch((err) => {
+              backendApi.openSettingsWindow("computer-use").catch((err) => {
                 console.error(
                   "[StatusBarComputer] failed to open settings:",
                   err

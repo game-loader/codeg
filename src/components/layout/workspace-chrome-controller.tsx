@@ -1,13 +1,24 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+import { isConversationDeleted as standaloneIsConversationDeleted } from "@/stores/app-workspace-store"
+import { useRuntimeEventScope } from "@/hooks/use-runtime-event-scope"
+import { defaultBackendStoreStorage as legacyStorage } from "@/stores/backend-store-storage"
+import { useTabStore as legacyTabs } from "@/contexts/tab-context"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { openSettingsWindow } from "@/lib/api"
+
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useIsActiveChatMode } from "@/hooks/use-is-active-chat-mode"
 import { useSidebarContext } from "@/contexts/sidebar-context"
+import { useWorkspaceRuntimeVisibility } from "@/contexts/workspace-runtime-visibility-context"
+import { UNIFIED_SIDEBAR_TOGGLE_EVENT } from "@/lib/unified-sidebar-events"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
-import { useTabActions, useTabStore } from "@/contexts/tab-context"
+
 import {
   useWorkspaceActions,
   useWorkspaceFileTabs,
@@ -17,11 +28,7 @@ import {
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useSearchDialog } from "@/contexts/search-dialog-context"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
-import {
-  isConversationDeleted,
-  useAppWorkspaceStore,
-} from "@/stores/app-workspace-store"
-import { popClosedTab } from "@/lib/closed-tab-stack"
+
 import {
   matchShortcutEvent,
   numberedTabIndexFromEvent,
@@ -50,6 +57,27 @@ import { WorkspaceFolderDialog } from "@/components/layout/workspace-folder-dial
  * visible bar. Renders no visible chrome — only the dialogs.
  */
 export function WorkspaceChromeController() {
+  const { managed } = useWorkspaceRuntimeVisibility()
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const ownsEvent = useRuntimeEventScope()
+  const backendStores = useBackendStores({
+    storage: legacyStorage,
+    tabs: legacyTabs,
+    workspace: legacyWorkspace,
+  })
+  const { popClosedTab } = backendStores.storage.closedTabs
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+  const useTabStore = backendStores.tabs
+  const isConversationDeleted = backendStoreSelection
+    ? backendStores.workspace.isConversationDeleted
+    : standaloneIsConversationDeleted
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendApi = useBackendApi()
+
   const { activeFolder } = useActiveFolder()
   const isChatMode = useIsActiveChatMode()
   const { toggle } = useSidebarContext()
@@ -92,10 +120,10 @@ export function WorkspaceChromeController() {
   const handleOpenFolder = useCallback(() => setBrowserOpen(true), [])
 
   const handleOpenSettings = useCallback(() => {
-    openSettingsWindow().catch((err) => {
+    backendApi.openSettingsWindow().catch((err) => {
       console.error("[WorkspaceChromeController] failed to open settings:", err)
     })
-  }, [])
+  }, [backendApi])
 
   // Close the current tab of the strip that belongs to `pane`. False when
   // there is none, which leaves ⌘W to the OS: it closes the window.
@@ -137,6 +165,11 @@ export function WorkspaceChromeController() {
   // spot; the second keeps the meaning ⌘W always had, closing the window.
   const handleMenuClose = useCallback(
     (payload: CloseShortcutPayload) => {
+      const origin = closeShortcutOrigin(payload.surfaceTabId)
+      if (origin.kind === "unknown") return
+      if (!ownsEvent(origin.kind === "element" ? origin.element : undefined)) {
+        return
+      }
       const closeWindow = () => {
         closeCurrentWindow().catch((err) => {
           console.error("[WorkspaceChromeController] ⌘W close failed:", err)
@@ -147,9 +180,6 @@ export function WorkspaceChromeController() {
         closeWindow()
         return
       }
-      const origin = closeShortcutOrigin(payload.surfaceTabId)
-      // A surface this document does not show: nothing here is safe to close.
-      if (origin.kind === "unknown") return
       // The listener below heard it and had no tab to close.
       if (origin.kind === "page") {
         closeWindow()
@@ -179,6 +209,7 @@ export function WorkspaceChromeController() {
       conversationMaximized,
       filesMaximized,
       mode,
+      ownsEvent,
       setActivePane,
       shortcuts.close_current_tab,
     ]
@@ -213,6 +244,7 @@ export function WorkspaceChromeController() {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      if (!ownsEvent(e.target)) return
       if (matchShortcutEvent(e, shortcuts.toggle_search)) {
         e.preventDefault()
         setSearchOpen((prev) => !prev)
@@ -220,7 +252,9 @@ export function WorkspaceChromeController() {
       }
       if (matchShortcutEvent(e, shortcuts.toggle_sidebar)) {
         e.preventDefault()
-        toggle()
+        if (managed)
+          window.dispatchEvent(new Event(UNIFIED_SIDEBAR_TOGGLE_EVENT))
+        else toggle()
         return
       }
       if (matchShortcutEvent(e, shortcuts.toggle_terminal)) {
@@ -408,6 +442,8 @@ export function WorkspaceChromeController() {
     document.addEventListener("keydown", handleKeyDown)
     return () => document.removeEventListener("keydown", handleKeyDown)
   }, [
+    ownsEvent,
+    managed,
     activeFolder,
     handleOpenFolder,
     handleOpenSettings,
@@ -434,6 +470,9 @@ export function WorkspaceChromeController() {
     fileTabs,
     closeAllFileTabs,
     switchFileTab,
+    isConversationDeleted,
+    useAppWorkspaceStore,
+    popClosedTab,
   ])
 
   return (

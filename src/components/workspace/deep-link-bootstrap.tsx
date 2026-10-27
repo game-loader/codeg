@@ -1,9 +1,14 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useTabStore as legacyTabs } from "@/contexts/tab-context"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef } from "react"
 import { toast } from "sonner"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useTabStore, useTabActions } from "@/contexts/tab-context"
+
 import { takePendingDeepLink } from "@/lib/deep-link"
 import type { AgentType } from "@/lib/types"
 
@@ -18,6 +23,18 @@ import type { AgentType } from "@/lib/types"
  * parked-target drain instead.)
  */
 export function DeepLinkBootstrap() {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({
+    workspace: legacyWorkspace,
+    tabs: legacyTabs,
+  })
+  const useAppWorkspaceStore = backendStores.workspace
+  const useTabStore = backendStores.tabs
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+
   const foldersHydrated = useAppWorkspaceStore((s) => s.foldersHydrated)
   const tabsHydrated = useTabStore((s) => s.tabsHydrated)
   // The conversation check below is the only thing that can reject a link, and
@@ -102,7 +119,13 @@ export function DeepLinkBootstrap() {
         clearUrl()
       }
     })()
-  }, [foldersHydrated, tabsHydrated, conversationsLoading, openTab])
+  }, [
+    foldersHydrated,
+    tabsHydrated,
+    conversationsLoading,
+    openTab,
+    useAppWorkspaceStore,
+  ])
 
   return null
 }
@@ -133,6 +156,20 @@ type FocusRequest = {
  * arrives before folders/tabs hydrate is queued and replayed.
  */
 export function PetFocusBridge() {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({
+    workspace: legacyWorkspace,
+    tabs: legacyTabs,
+  })
+  const useAppWorkspaceStore = backendStores.workspace
+  const useTabStore = backendStores.tabs
+  const useTabActions = backendStoreSelection
+    ? backendStores.tabs.useTabActions
+    : standaloneUseTabActions
+
+  const backendPlatform = useBackendPlatform()
+
   const foldersHydrated = useAppWorkspaceStore((s) => s.foldersHydrated)
   const tabsHydrated = useTabStore((s) => s.tabsHydrated)
   const { openTab } = useTabActions()
@@ -199,7 +236,7 @@ export function PetFocusBridge() {
       .catch((err) => {
         console.error("[PetFocusBridge] focus batch failed:", err)
       })
-  }, [])
+  }, [useAppWorkspaceStore])
 
   // Replay queued requests once hydration flips ready.
   useEffect(() => {
@@ -212,7 +249,7 @@ export function PetFocusBridge() {
 
     // Claim the parked deep link, if this call is the one that gets it.
     const drainDeepLink = async () => {
-      const parked = await takePendingDeepLink()
+      const parked = await takePendingDeepLink(backendPlatform)
       // Nothing to re-park on unmount: the workspace is tearing down, so
       // there is no tab left to open. Dropping it beats resurrecting it.
       if (cancelled || !parked) return
@@ -222,8 +259,7 @@ export function PetFocusBridge() {
 
     void (async () => {
       try {
-        const { getTransport } = await import("@/lib/transport")
-        const transport = getTransport()
+        const transport = backendPlatform.getTransport()
 
         const offFocus = await transport.subscribe<{
           folderId?: number
@@ -268,7 +304,7 @@ export function PetFocusBridge() {
       cancelled = true
       for (const off of disposers) off()
     }
-  }, [attempt])
+  }, [attempt, backendPlatform])
 
   return null
 }

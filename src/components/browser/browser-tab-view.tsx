@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useTranslations } from "next-intl"
 import { useEffect, useState, type KeyboardEvent } from "react"
 
@@ -26,7 +27,7 @@ import {
 import { useBrowserCapabilities } from "@/lib/browser/use-browser-capabilities"
 import { browserTabBackendId } from "@/lib/file-tab-id"
 
-import { getActiveRemoteConnectionId, isDesktop } from "@/lib/transport"
+import { isDesktop } from "@/lib/transport"
 
 import { BrowserBridgeView } from "./browser-bridge-view"
 import {
@@ -73,6 +74,8 @@ export function BrowserTabView({ tab }: { tab: BrowserWorkspaceTab }) {
  * tab says where the address lives, and why it cannot be opened here.
  */
 function RemoteBrowserTabView({ tab }: { tab: BrowserWorkspaceTab }) {
+  const backendPlatform = useBackendPlatform()
+
   const tRoot = useTranslations()
   const t = useTranslations("Browser.remote")
   const capabilities = useBrowserCapabilities()
@@ -80,8 +83,8 @@ function RemoteBrowserTabView({ tab }: { tab: BrowserWorkspaceTab }) {
   // Kept in the store: the host that asked may not be the one on screen
   // when the answer arrives.
   const outcome = useBrowserCreateOutcome(tab.id)
-  const connectionId = getActiveRemoteConnectionId()
-  const host = remoteHostDisplayName()
+  const connectionId = backendPlatform.getActiveRemoteConnectionId()
+  const host = remoteHostDisplayName(backendPlatform)
   // A surface that is already there — a popup the backend adopted, a tab
   // opened before — is shown whatever; there is nothing left to refuse.
   if (state === null) {

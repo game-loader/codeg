@@ -49,7 +49,9 @@ mod m20260920_000001_academic;
 mod m20260929_000001_canvas_board;
 mod m20260930_000001_agent_setting_drop_adapter_channel;
 mod m20261006_000001_conversation_tag;
+mod m20261011_000001_remote_connection_revision;
 mod m20261015_000001_kiro_builtin_agent;
+mod m20261015_000001_session_selector_state;
 mod m20261015_000001_work_task_deferred_at;
 mod m20261016_000001_assistant;
 mod m20261016_000002_conversation_assistant;
@@ -111,7 +113,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20260929_000001_canvas_board::Migration),
             Box::new(m20260930_000001_agent_setting_drop_adapter_channel::Migration),
             Box::new(m20261006_000001_conversation_tag::Migration),
+            Box::new(m20261011_000001_remote_connection_revision::Migration),
             Box::new(m20261015_000001_kiro_builtin_agent::Migration),
+            Box::new(m20261015_000001_session_selector_state::Migration),
             Box::new(m20261015_000001_work_task_deferred_at::Migration),
             Box::new(m20261016_000001_assistant::Migration),
             Box::new(m20261016_000002_conversation_assistant::Migration),
@@ -145,5 +149,81 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted);
+    }
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+
+    /// Migrations Codeg 0.40 added after the multi-host branch forked. A
+    /// database from that branch predates them, so they must not run when
+    /// rebuilding its schema.
+    const UPSTREAM_0_40_MIGRATIONS: &[&str] = &[
+        "m20261015_000001_kiro_builtin_agent",
+        "m20261015_000001_work_task_deferred_at",
+        "m20261016_000001_assistant",
+        "m20261016_000002_conversation_assistant",
+        "m20261017_000002_conversation_source",
+        "m20261020_000001_folder_command_run_local",
+        "m20261022_000001_tool_approval",
+    ];
+
+    struct PreviousMultiHost;
+    struct PreviousUpstream;
+
+    #[async_trait::async_trait]
+    impl MigratorTrait for PreviousMultiHost {
+        fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+            Migrator::migrations()
+                .into_iter()
+                .filter(|migration| {
+                    migration.name() != "m20261006_000001_conversation_tag"
+                        && migration.name() != "m20261015_000001_session_selector_state"
+                        && !UPSTREAM_0_40_MIGRATIONS.contains(&migration.name())
+                })
+                .collect()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MigratorTrait for PreviousUpstream {
+        fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+            Migrator::migrations()
+                .into_iter()
+                .filter(|migration| {
+                    migration.name() != "m20261011_000001_remote_connection_revision"
+                        && migration.name() != "m20261015_000001_session_selector_state"
+                })
+                .collect()
+        }
+    }
+
+    async fn assert_combined_schema(db: &sea_orm::DatabaseConnection) {
+        Migrator::up(db, None).await.unwrap();
+        let manager = SchemaManager::new(db);
+        assert!(manager.has_table("conversation_tag").await.unwrap());
+        assert!(manager.has_table("conversation_tag_link").await.unwrap());
+        assert!(manager.has_table("session_selector_state").await.unwrap());
+        assert!(manager
+            .has_column("remote_workspace_connection", "config_revision")
+            .await
+            .unwrap());
+        assert!(Migrator::get_pending_migrations(db).await.unwrap().is_empty());
+        Migrator::up(db, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn upgrades_existing_multi_host_database_with_earlier_tag_migration() {
+        let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
+        PreviousMultiHost::up(&db, None).await.unwrap();
+        assert_combined_schema(&db).await;
+    }
+
+    #[tokio::test]
+    async fn upgrades_existing_upstream_database_with_connection_revisions() {
+        let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
+        PreviousUpstream::up(&db, None).await.unwrap();
+        assert_combined_schema(&db).await;
     }
 }

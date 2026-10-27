@@ -144,6 +144,7 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                 None,
                 None,
                 None,
+                None,
                 app.state(),
             )
             .await
@@ -159,6 +160,7 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                 None,
                 None,
                 None,
+                None,
             )
             .await
             .map_err(err_string)?;
@@ -170,6 +172,7 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                 main_window()?,
                 app.state(),
                 app.state(),
+                None,
                 None,
                 None,
                 None,
@@ -190,6 +193,7 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                 app.state(),
                 app.state(),
                 folder_id,
+                None,
                 None,
                 None,
             )

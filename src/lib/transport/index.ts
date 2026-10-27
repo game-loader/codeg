@@ -1,11 +1,13 @@
 import { detectEnvironment } from "./detect"
 import type { RemoteTransportConfig, Transport } from "./types"
+import { REMOTE_CONFIGURATION_CHANGED_MESSAGE } from "./remote-errors"
 
 export type { RemoteTransportConfig, Transport, UnsubscribeFn } from "./types"
 
 let _shellTransport: Transport | null = null
 let _remoteTransport: Transport | null = null
 let _remoteConfig: RemoteTransportConfig | null = null
+let _remoteInvalidated = false
 
 function createTauriTransport(): Transport {
   // Use dynamic require to avoid bundling tauri deps in web mode.
@@ -39,7 +41,8 @@ export function configureRemoteDesktopTransport(
   config: RemoteTransportConfig
 ): void {
   _remoteTransport?.destroy?.()
-  _remoteConfig = config
+  _remoteConfig = { ...config }
+  _remoteInvalidated = false
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { RemoteDesktopTransport } = require("./remote-desktop-transport") as {
     RemoteDesktopTransport: new (config: RemoteTransportConfig) => Transport
@@ -51,6 +54,21 @@ export function clearRemoteDesktopTransport(): void {
   _remoteTransport?.destroy?.()
   _remoteTransport = null
   _remoteConfig = null
+  _remoteInvalidated = false
+}
+
+/** Retire the binding without allowing compatibility calls to fall back locally. */
+export function invalidateRemoteDesktopTransport(): void {
+  _remoteInvalidated = true
+  _remoteTransport?.destroy?.()
+}
+
+/** Capture all ownership fields and callbacks together, before any await. */
+export function getActiveRemoteTransportConfig(): RemoteTransportConfig | null {
+  if (_remoteInvalidated) {
+    throw new Error(REMOTE_CONFIGURATION_CHANGED_MESSAGE)
+  }
+  return _remoteConfig ? { ..._remoteConfig } : null
 }
 
 export function getActiveRemoteConnectionId(): number | null {
@@ -58,6 +76,9 @@ export function getActiveRemoteConnectionId(): number | null {
 }
 
 export function getTransport(): Transport {
+  if (_remoteInvalidated) {
+    throw new Error(REMOTE_CONFIGURATION_CHANGED_MESSAGE)
+  }
   return _remoteTransport ?? getShellTransport()
 }
 
@@ -112,4 +133,5 @@ export function __resetTransportForTests(): void {
   _shellTransport = null
   _remoteTransport = null
   _remoteConfig = null
+  _remoteInvalidated = false
 }

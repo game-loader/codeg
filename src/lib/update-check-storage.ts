@@ -1,6 +1,8 @@
 "use client"
 
-import { getActiveRemoteConnectionId } from "@/lib/transport"
+import type { BackendPlatform } from "@/lib/backend/types"
+import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
+
 import type { AppUpdateInfo } from "@/lib/updater"
 
 /**
@@ -36,21 +38,28 @@ export interface CachedUpdateCheck {
   info: AppUpdateInfo | null
 }
 
-function scoped(key: string): string {
-  const remoteId = getActiveRemoteConnectionId()
+function scoped(
+  key: string,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): string {
+  const remoteId = backendPlatform.getActiveRemoteConnectionId()
   return remoteId ? `${key}:remote-${remoteId}` : key
 }
 
 /** The key `writeLastCheck` writes to, for `storage`-event listeners. Scoped for
  * the same reason as {@link dismissedVersionStorageKey}. */
-export function lastCheckStorageKey(): string {
-  return scoped(LAST_CHECK_KEY)
+export function lastCheckStorageKey(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): string {
+  return scoped(LAST_CHECK_KEY, backendPlatform)
 }
 
-export function readLastCheck(): CachedUpdateCheck | null {
+export function readLastCheck(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): CachedUpdateCheck | null {
   if (typeof window === "undefined") return null
   try {
-    const raw = localStorage.getItem(scoped(LAST_CHECK_KEY))
+    const raw = localStorage.getItem(scoped(LAST_CHECK_KEY, backendPlatform))
     if (!raw) return null
     const parsed = JSON.parse(raw) as unknown
     if (!parsed || typeof parsed !== "object") return null
@@ -82,10 +91,16 @@ export function readLastCheck(): CachedUpdateCheck | null {
   }
 }
 
-export function writeLastCheck(value: CachedUpdateCheck): void {
+export function writeLastCheck(
+  value: CachedUpdateCheck,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): void {
   if (typeof window === "undefined") return
   try {
-    localStorage.setItem(scoped(LAST_CHECK_KEY), JSON.stringify(value))
+    localStorage.setItem(
+      scoped(LAST_CHECK_KEY, backendPlatform),
+      JSON.stringify(value)
+    )
   } catch {
     /* ignore */
   }
@@ -95,10 +110,12 @@ export function writeLastCheck(value: CachedUpdateCheck): void {
  * one the answer was computed against — most importantly the relaunch right
  * after an update lands, where the cache would otherwise advertise the very
  * release that was just installed. */
-export function clearLastCheck(): void {
+export function clearLastCheck(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): void {
   if (typeof window === "undefined") return
   try {
-    localStorage.removeItem(scoped(LAST_CHECK_KEY))
+    localStorage.removeItem(scoped(LAST_CHECK_KEY, backendPlatform))
   } catch {
     /* ignore */
   }
@@ -111,25 +128,35 @@ export function clearLastCheck(): void {
  * on its own. Scoping matters here: a remote-desktop window is the same origin
  * as the local app, and must not react to the other backend's dismissals.
  */
-export function dismissedVersionStorageKey(): string {
-  return scoped(DISMISSED_VERSION_KEY)
+export function dismissedVersionStorageKey(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): string {
+  return scoped(DISMISSED_VERSION_KEY, backendPlatform)
 }
 
 /** The version the user dismissed the badge for, if any. */
-export function readDismissedVersion(): string | null {
+export function readDismissedVersion(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): string | null {
   if (typeof window === "undefined") return null
   try {
-    return localStorage.getItem(scoped(DISMISSED_VERSION_KEY)) || null
+    return (
+      localStorage.getItem(scoped(DISMISSED_VERSION_KEY, backendPlatform)) ||
+      null
+    )
   } catch {
     return null
   }
 }
 
 /** Pass null to clear (the dismissed release is no longer the newest one). */
-export function writeDismissedVersion(version: string | null): void {
+export function writeDismissedVersion(
+  version: string | null,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): void {
   if (typeof window === "undefined") return
   try {
-    const key = scoped(DISMISSED_VERSION_KEY)
+    const key = scoped(DISMISSED_VERSION_KEY, backendPlatform)
     if (version) localStorage.setItem(key, version)
     else localStorage.removeItem(key)
   } catch {

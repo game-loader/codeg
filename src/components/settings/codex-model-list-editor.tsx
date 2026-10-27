@@ -1,5 +1,8 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
+import type { BackendApi } from "@/lib/backend/types"
+import * as legacyBackendApi from "@/lib/api"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -30,7 +33,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { codexBundledCatalog } from "@/lib/api"
+
 import {
   applyCodexCompatOverrides,
   hasCodexCustomization,
@@ -48,9 +51,13 @@ let catalogCache: CodexModelInfo[] | null = null
 let catalogPromise: Promise<CodexModelInfo[]> | null = null
 const catalogListeners = new Set<(models: CodexModelInfo[]) => void>()
 
-function loadCatalog(force = false): Promise<CodexModelInfo[]> {
+function loadCatalog(
+  force = false,
+  backendApi: BackendApi = legacyBackendApi
+): Promise<CodexModelInfo[]> {
   if (force) {
-    catalogPromise = codexBundledCatalog(true)
+    catalogPromise = backendApi
+      .codexBundledCatalog(true)
       .then((models) => {
         catalogCache = models
         catalogListeners.forEach((fn) => fn(models))
@@ -60,7 +67,8 @@ function loadCatalog(force = false): Promise<CodexModelInfo[]> {
     return catalogPromise
   }
   if (!catalogPromise) {
-    catalogPromise = codexBundledCatalog()
+    catalogPromise = backendApi
+      .codexBundledCatalog()
       .then((models) => {
         catalogCache = models
         catalogListeners.forEach((fn) => fn(models))
@@ -79,6 +87,8 @@ function useCodexCatalog(): {
   refreshing: boolean
   refresh: () => void
 } {
+  const backendApi = useBackendApi()
+
   const [catalog, setCatalog] = useState<CodexModelInfo[]>(catalogCache ?? [])
   const [refreshing, setRefreshing] = useState(false)
 
@@ -86,19 +96,19 @@ function useCodexCatalog(): {
     const listener = (models: CodexModelInfo[]) => setCatalog(models)
     catalogListeners.add(listener)
     let alive = true
-    void loadCatalog().then((models) => {
+    void loadCatalog(undefined, backendApi).then((models) => {
       if (alive && models.length) setCatalog(models)
     })
     return () => {
       alive = false
       catalogListeners.delete(listener)
     }
-  }, [])
+  }, [backendApi])
 
   const refresh = useCallback(() => {
     setRefreshing(true)
-    void loadCatalog(true).finally(() => setRefreshing(false))
-  }, [])
+    void loadCatalog(true, backendApi).finally(() => setRefreshing(false))
+  }, [backendApi])
 
   return { catalog, refreshing, refresh }
 }

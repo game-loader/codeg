@@ -20,8 +20,9 @@ import {
 import { formatFolderLabelWithAlias } from "@/lib/folder-display"
 import type { ConversationTagDetail } from "@/lib/types"
 import { cn } from "@/lib/utils"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useConversationTagsStore } from "@/stores/conversation-tags-store"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useRuntimeConversationTagsStore } from "@/stores/conversation-tags-store"
 import { Button } from "@/components/ui/button"
 import {
   Command,
@@ -36,7 +37,7 @@ import {
   DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu"
 import { ConversationTagChip } from "./conversation-tag-chip"
-import { openConversationTagsManager } from "./conversation-tags-manager"
+import { useOpenConversationTagsManager } from "./conversation-tags-manager"
 
 const FOOTER_ITEM_CLASS =
   "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm text-muted-foreground outline-none hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent disabled:pointer-events-none disabled:opacity-50"
@@ -163,8 +164,11 @@ function TagFilterPanel({
   const t = useTranslations("ConversationTags")
   const [query, setQuery] = useState("")
   const searchRef = useRef<HTMLInputElement>(null)
-  const tags = useConversationTagsStore((s) => s.tags)
-  const tagsById = useConversationTagsStore((s) => s.tagsById)
+  const useAppWorkspaceStore = useBackendStores({
+    workspace: legacyWorkspace,
+  }).workspace
+  const tags = useRuntimeConversationTagsStore((s) => s.tags)
+  const tagsById = useRuntimeConversationTagsStore((s) => s.tagsById)
   const folders = useAppWorkspaceStore((s) => s.folders)
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
   const conversations = useAppWorkspaceStore((s) => s.conversations)
@@ -370,6 +374,7 @@ export const SidebarTagFilterSubmenu = memo(function SidebarTagFilterSubmenu({
    *  dialog. */
   onCloseMenu: () => void
 }) {
+  const openConversationTagsManager = useOpenConversationTagsManager()
   const t = useTranslations("ConversationTags.filter")
   const activeId = useId()
   const panelRef = useRef<HTMLDivElement>(null)
@@ -466,7 +471,7 @@ export const SidebarTagFilterBar = memo(function SidebarTagFilterBar({
   onChange: (filter: TagFilter) => void
 }) {
   const t = useTranslations("ConversationTags.filter")
-  const tagsById = useConversationTagsStore((s) => s.tagsById)
+  const tagsById = useRuntimeConversationTagsStore((s) => s.tagsById)
   const tags = filter.tagIds
     .map((id) => tagsById.get(id))
     .filter((tag): tag is ConversationTagDetail => tag != null)

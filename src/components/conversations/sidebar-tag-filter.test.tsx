@@ -35,6 +35,7 @@ import {
 const h = vi.hoisted(() => ({ openConversationTagsManager: vi.fn() }))
 vi.mock("./conversation-tags-manager", () => ({
   openConversationTagsManager: h.openConversationTagsManager,
+  useOpenConversationTagsManager: () => h.openConversationTagsManager,
 }))
 
 import { SidebarTagFilterSubmenu } from "./sidebar-tag-filter"

@@ -16,6 +16,7 @@ import {
 } from "@/lib/panel-state-storage"
 import { isDesktop } from "@/lib/platform"
 import { MAC_TRAFFIC_LIGHT_INSET } from "@/lib/window-chrome"
+import { useBackendStores } from "@/contexts/backend-stores-context"
 
 const STORAGE_KEY = "workspace:left-sidebar"
 
@@ -67,11 +68,18 @@ function clampWidth(width: number, minWidth: number) {
 
 interface SidebarProviderProps {
   children: ReactNode
+  embedded?: boolean
 }
 
-export function SidebarProvider({ children }: SidebarProviderProps) {
-  const storageKey = STORAGE_KEY
-  const [isOpen, setIsOpen] = useState(DEFAULT_IS_OPEN)
+export function SidebarProvider({
+  children,
+  embedded = false,
+}: SidebarProviderProps) {
+  const { storage } = useBackendStores()
+  const storageKey = embedded
+    ? storage.key(`${STORAGE_KEY}:embedded`)
+    : STORAGE_KEY
+  const [isOpen, setIsOpen] = useState(embedded ? false : DEFAULT_IS_OPEN)
   const [width, setWidthState] = useState(DEFAULT_WIDTH)
   const [restored, setRestored] = useState(false)
   // Platform-derived minimum (see resolveSidebarMinWidth); stable for the
@@ -91,13 +99,13 @@ export function SidebarProvider({ children }: SidebarProviderProps) {
     const stored = loadPersistedPanelState(storageKey)
     // On mobile (< 768px), always start closed regardless of persisted state.
     const isMobileViewport = window.innerWidth < 768
-    const defaultOpen = isMobileViewport ? false : DEFAULT_IS_OPEN
+    const defaultOpen = isMobileViewport || embedded ? false : DEFAULT_IS_OPEN
     // Hydrate from localStorage after mount to keep SSR/CSR markup consistent.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsOpen(isMobileViewport ? false : (stored?.isOpen ?? defaultOpen))
     setWidthState(clampWidth(stored?.width ?? DEFAULT_WIDTH, minWidth))
     setRestored(true)
-  }, [storageKey, minWidth])
+  }, [storageKey, embedded, minWidth])
 
   useEffect(() => {
     if (!restored) return

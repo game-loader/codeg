@@ -1,5 +1,9 @@
 "use client"
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useState } from "react"
 import {
   AlertCircle,
@@ -34,16 +38,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import {
-  listChatChannels,
-  deleteChatChannel,
-  connectChatChannel,
-  disconnectChatChannel,
-  testChatChannel,
-  updateChatChannel,
-  getChatChannelStatus,
-} from "@/lib/api"
-import { subscribe } from "@/lib/platform"
+
 import type {
   ChatChannelInfo,
   ChannelStatusInfo,
@@ -55,6 +50,9 @@ import { EditChatChannelDialog } from "./edit-chat-channel-dialog"
 import { WeixinQrcodeDialog } from "./weixin-qrcode-dialog"
 
 export function ChannelListTab() {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("ChatChannelSettings")
   const [channels, setChannels] = useState<ChatChannelInfo[]>([])
   const [statuses, setStatuses] = useState<ChannelStatusInfo[]>([])
@@ -68,8 +66,8 @@ export function ChannelListTab() {
   const loadChannels = useCallback(async () => {
     try {
       const [chs, sts] = await Promise.all([
-        listChatChannels(),
-        getChatChannelStatus().catch(() => []),
+        backendApi.listChatChannels(),
+        backendApi.getChatChannelStatus().catch(() => []),
       ])
       setChannels(chs)
       setStatuses(sts)
@@ -78,7 +76,7 @@ export function ChannelListTab() {
     } finally {
       setLoading(false)
     }
-  }, [t])
+  }, [t, backendApi])
 
   useEffect(() => {
     loadChannels().catch(console.error)
@@ -88,50 +86,52 @@ export function ChannelListTab() {
   useEffect(() => {
     let cancelled = false
     let unsub: (() => void) | undefined
-    subscribe<{
-      channel_id: number
-      status: ChannelStatusInfo["status"]
-    }>("chat-channel://status", (payload) => {
-      setStatuses((prev) => {
-        const idx = prev.findIndex((s) => s.channel_id === payload.channel_id)
-        if (idx >= 0) {
-          const updated = [...prev]
-          updated[idx] = { ...updated[idx], status: payload.status }
-          return updated
-        }
-        return prev
+    backendPlatform
+      .subscribe<{
+        channel_id: number
+        status: ChannelStatusInfo["status"]
+      }>("chat-channel://status", (payload) => {
+        setStatuses((prev) => {
+          const idx = prev.findIndex((s) => s.channel_id === payload.channel_id)
+          if (idx >= 0) {
+            const updated = [...prev]
+            updated[idx] = { ...updated[idx], status: payload.status }
+            return updated
+          }
+          return prev
+        })
       })
-    }).then((fn) => {
-      if (cancelled) fn()
-      else unsub = fn
-    })
+      .then((fn) => {
+        if (cancelled) fn()
+        else unsub = fn
+      })
     return () => {
       cancelled = true
       unsub?.()
     }
-  }, [])
+  }, [backendPlatform])
 
   const handleToggleEnabled = useCallback(
     async (ch: ChatChannelInfo, connected: boolean) => {
       try {
         const disabling = ch.enabled
         if (disabling && connected) {
-          await disconnectChatChannel(ch.id)
+          await backendApi.disconnectChatChannel(ch.id)
         }
-        await updateChatChannel({ id: ch.id, enabled: !ch.enabled })
+        await backendApi.updateChatChannel({ id: ch.id, enabled: !ch.enabled })
         await loadChannels()
       } catch {
         toast.error(t("saveFailed"))
       }
     },
-    [loadChannels, t]
+    [loadChannels, t, backendApi]
   )
 
   const handleConnect = useCallback(
     async (id: number, channelType?: ChannelType) => {
       setActionLoading(id)
       try {
-        await connectChatChannel(id)
+        await backendApi.connectChatChannel(id)
         toast.success(t("connectSuccess"))
         await loadChannels()
       } catch (err: unknown) {
@@ -146,7 +146,7 @@ export function ChannelListTab() {
         setActionLoading(null)
       }
     },
-    [loadChannels, t]
+    [loadChannels, t, backendApi]
   )
 
   const handleWeixinAuthSuccess = useCallback(
@@ -154,7 +154,7 @@ export function ChannelListTab() {
       setQrcodeChannelId(null)
       setActionLoading(channelId)
       try {
-        await connectChatChannel(channelId)
+        await backendApi.connectChatChannel(channelId)
         toast.success(t("connectSuccess"))
         await loadChannels()
       } catch (err: unknown) {
@@ -164,14 +164,14 @@ export function ChannelListTab() {
         setActionLoading(null)
       }
     },
-    [loadChannels, t]
+    [loadChannels, t, backendApi]
   )
 
   const handleDisconnect = useCallback(
     async (id: number) => {
       setActionLoading(id)
       try {
-        await disconnectChatChannel(id)
+        await backendApi.disconnectChatChannel(id)
         toast.success(t("disconnectSuccess"))
         await loadChannels()
       } catch {
@@ -180,14 +180,14 @@ export function ChannelListTab() {
         setActionLoading(null)
       }
     },
-    [loadChannels, t]
+    [loadChannels, t, backendApi]
   )
 
   const handleTest = useCallback(
     async (id: number) => {
       setActionLoading(id)
       try {
-        await testChatChannel(id)
+        await backendApi.testChatChannel(id)
         toast.success(t("testSuccess"))
       } catch (err: unknown) {
         const msg = toErrorMessage(err)
@@ -196,20 +196,20 @@ export function ChannelListTab() {
         setActionLoading(null)
       }
     },
-    [t]
+    [t, backendApi]
   )
 
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return
     try {
-      await deleteChatChannel(deleteTarget.id)
+      await backendApi.deleteChatChannel(deleteTarget.id)
       toast.success(t("deleteSuccess"))
       setDeleteTarget(null)
       await loadChannels()
     } catch {
       toast.error(t("deleteFailed"))
     }
-  }, [deleteTarget, loadChannels, t])
+  }, [deleteTarget, loadChannels, t, backendApi])
 
   const getChannelStatus = (id: number) =>
     statuses.find((s) => s.channel_id === id)?.status ?? "disconnected"

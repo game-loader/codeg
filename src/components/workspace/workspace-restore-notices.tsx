@@ -1,14 +1,11 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useEffect } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { toErrorMessage } from "@/lib/app-error"
-import {
-  getShellTransport,
-  isDesktop,
-  isRemoteDesktopMode,
-} from "@/lib/transport"
+import { getShellTransport, isDesktop } from "@/lib/transport"
 import {
   takeWorkspaceRestoreFailures,
   WORKSPACE_RESTORE_FAILED_EVENT,
@@ -23,17 +20,21 @@ import {
  * window listens, so the failures are also taken once on mount.
  */
 export function WorkspaceRestoreNotices() {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("RemoteWorkspace")
 
   useEffect(() => {
-    if (!isDesktop() || isRemoteDesktopMode()) return
+    if (!isDesktop() || backendPlatform.isRemoteDesktopMode()) return
     let cancelled = false
     let unsubscribe: (() => void) | null = null
 
     // Shown even if this unmounted meanwhile: the failures are taken, so a
     // later mount would find nothing, and the toaster outlives this component.
     const drain = async () => {
-      for (const failure of await takeWorkspaceRestoreFailures()) {
+      for (const failure of await takeWorkspaceRestoreFailures(
+        backendPlatform
+      )) {
         toast.error(t("restoreFailed", { name: failure.name }), {
           description: toErrorMessage(failure.error),
         })
@@ -62,7 +63,7 @@ export function WorkspaceRestoreNotices() {
       cancelled = true
       unsubscribe?.()
     }
-  }, [t])
+  }, [t, backendPlatform])
 
   return null
 }

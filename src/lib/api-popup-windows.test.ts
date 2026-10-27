@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import type { RemoteTransportConfig, Transport } from "./transport"
+import { createBackendPlatform } from "./platform"
 
 /**
  * The web-mode app popup windows (commit / push / settings / import-sessions /
@@ -15,7 +17,9 @@ const mocks = vi.hoisted(() => ({
   shellCall: vi.fn(),
   isDesktop: vi.fn(() => false),
   isRemoteDesktopMode: vi.fn(() => false),
-  getActiveRemoteConnectionId: vi.fn<() => string | null>(() => null),
+  getServerBaseUrl: () => window.location.origin,
+  getActiveRemoteConnectionId: vi.fn<() => number | null>(() => null),
+  remoteConfig: null as RemoteTransportConfig | null,
   notifyRemoteDesktopUnauthorized: vi.fn(),
 }))
 
@@ -24,11 +28,20 @@ vi.mock("@/lib/transport", () => ({
   getShellTransport: () => ({ call: mocks.shellCall }),
   isDesktop: mocks.isDesktop,
   isRemoteDesktopMode: mocks.isRemoteDesktopMode,
+  getServerBaseUrl: () => window.location.origin,
   getActiveRemoteConnectionId: mocks.getActiveRemoteConnectionId,
+  getActiveRemoteTransportConfig: () => mocks.remoteConfig,
   notifyRemoteDesktopUnauthorized: mocks.notifyRemoteDesktopUnauthorized,
 }))
 
-import { openCommitWindow, openSettingsWindow } from "@/lib/api"
+import {
+  createBackendApi,
+  openCommitWindow,
+  openSettingsWindow,
+  uploadAttachment,
+  uploadLocalPathToRemote,
+  uploadWorkspaceLocalPathsToRemote,
+} from "@/lib/api"
 import { openLocalWorkspace } from "@/lib/remote-workspace"
 
 /** Stand-in for the reserved WindowProxy: only `location.href` and `close`. */
@@ -57,6 +70,7 @@ describe("web-mode app popup windows", () => {
     mocks.isDesktop.mockReturnValue(false)
     mocks.getActiveRemoteConnectionId.mockReset()
     mocks.getActiveRemoteConnectionId.mockReturnValue(null)
+    mocks.remoteConfig = null
     vi.restoreAllMocks()
   })
 
@@ -206,7 +220,7 @@ describe("web-mode app popup windows", () => {
   it("opens the local workspace even when the remote desktop is offline", async () => {
     mocks.isDesktop.mockReturnValue(true)
     mocks.isRemoteDesktopMode.mockReturnValue(true)
-    mocks.getActiveRemoteConnectionId.mockReturnValue("12")
+    mocks.getActiveRemoteConnectionId.mockReturnValue(12)
     mocks.call.mockImplementation(() => {
       throw new Error("remote server is offline")
     })
@@ -216,5 +230,226 @@ describe("web-mode app popup windows", () => {
 
     expect(mocks.shellCall).toHaveBeenCalledWith("open_local_workspace")
     expect(mocks.call).not.toHaveBeenCalled()
+  })
+})
+
+describe("compatibility API destination snapshots", () => {
+  beforeEach(() => {
+    mocks.shellCall.mockReset()
+    mocks.isDesktop.mockReturnValue(true)
+    mocks.getActiveRemoteConnectionId.mockReturnValue(1)
+    mocks.remoteConfig = {
+      id: 1,
+      name: "A",
+      baseUrl: "http://a.test",
+      token: "token-a",
+      configRevision: "revision-a",
+      windowInstanceId: "window-a",
+      onUnauthorized: vi.fn(),
+      onConfigurationChanged: vi.fn(),
+    }
+  })
+
+  function selectReplacement() {
+    mocks.remoteConfig = {
+      ...mocks.remoteConfig!,
+      name: "B",
+      baseUrl: "http://b.test",
+      configRevision: "revision-b",
+      windowInstanceId: "window-b",
+      onUnauthorized: vi.fn(),
+      onConfigurationChanged: vi.fn(),
+    }
+    return mocks.remoteConfig
+  }
+
+  it("carries the configured revision into a direct native popup launcher", async () => {
+    mocks.shellCall.mockResolvedValue(undefined)
+    await openCommitWindow(1)
+    expect(mocks.shellCall).toHaveBeenCalledWith(
+      "open_commit_window",
+      expect.objectContaining({
+        remoteConnectionId: 1,
+        configRevision: "revision-a",
+      })
+    )
+  })
+
+  it.each(["file", "local path"])(
+    "keeps a delayed %s attachment upload and its 401 notification on A",
+    async (kind) => {
+      const a = mocks.remoteConfig!
+      const authError = { code: "authentication_failed", message: "HTTP 401" }
+      let pending: Promise<unknown>
+      let release: () => void
+      if (kind === "file") {
+        const bytes = deferred<ArrayBuffer>()
+        const file = new File(["data"], "file.txt")
+        Object.defineProperty(file, "arrayBuffer", {
+          value: () => bytes.promise,
+        })
+        mocks.shellCall.mockRejectedValue(authError)
+        pending = uploadAttachment(file)
+        release = () => bytes.resolve(new Uint8Array([1]).buffer)
+      } else {
+        const read = deferred<unknown>()
+        mocks.shellCall
+          .mockReturnValueOnce(read.promise)
+          .mockRejectedValueOnce(authError)
+        pending = uploadLocalPathToRemote("/local/file.txt")
+        release = () =>
+          read.resolve({
+            fileName: "file.txt",
+            mimeType: null,
+            size: 1,
+            dataBase64: "YQ==",
+          })
+      }
+      const b = selectReplacement()
+      const rejected = expect(pending).rejects.toEqual(authError)
+      release()
+      await rejected
+      expect(mocks.shellCall).toHaveBeenLastCalledWith(
+        "remote_upload_attachment",
+        expect.objectContaining({
+          connectionId: 1,
+          configRevision: "revision-a",
+        })
+      )
+      expect(a.onUnauthorized).toHaveBeenCalledOnce()
+      expect(b.onUnauthorized).not.toHaveBeenCalled()
+    }
+  )
+
+  it("captures window ownership for direct workspace uploads", async () => {
+    const a = mocks.remoteConfig!
+    const error = {
+      code: "configuration_invalid",
+      message: "Remote connection configuration changed; reopen",
+    }
+    const upload = deferred<unknown>()
+    mocks.shellCall.mockReturnValue(upload.promise)
+    const pending = uploadWorkspaceLocalPathsToRemote({
+      rootPath: "/repo",
+      targetPath: "/repo",
+      entries: [],
+    })
+    const b = selectReplacement()
+    const rejected = expect(pending).rejects.toEqual(error)
+    upload.reject(error)
+    await rejected
+    expect(mocks.shellCall).toHaveBeenCalledWith(
+      "remote_upload_workspace_paths",
+      expect.objectContaining({
+        configRevision: "revision-a",
+        windowInstanceId: "window-a",
+      })
+    )
+    expect(a.onUnauthorized).not.toHaveBeenCalled()
+    expect(b.onUnauthorized).not.toHaveBeenCalled()
+  })
+
+  it("rejects a delayed attachment on the old revision without forwarding or notifying B", async () => {
+    const a = mocks.remoteConfig!
+    const bytes = deferred<ArrayBuffer>()
+    const file = new File(["data"], "file.txt")
+    Object.defineProperty(file, "arrayBuffer", { value: () => bytes.promise })
+    const forwarded = vi.fn()
+    const error = {
+      code: "configuration_invalid",
+      message: "Remote connection configuration changed; reopen",
+    }
+    mocks.shellCall.mockImplementation(async (_command, args) => {
+      if (args.configRevision !== mocks.remoteConfig?.configRevision)
+        throw error
+      forwarded()
+    })
+    const pending = uploadAttachment(file)
+    const b = selectReplacement()
+    const rejected = expect(pending).rejects.toEqual(error)
+    bytes.resolve(new Uint8Array([1]).buffer)
+    await rejected
+    expect(forwarded).not.toHaveBeenCalled()
+    expect(a.onConfigurationChanged).toHaveBeenCalledOnce()
+    expect(b.onConfigurationChanged).not.toHaveBeenCalled()
+    expect(a.onUnauthorized).not.toHaveBeenCalled()
+    expect(b.onUnauthorized).not.toHaveBeenCalled()
+  })
+})
+
+describe("upstream resource APIs on fixed backends", () => {
+  it("keeps new resource actions and readiness on A after the ambient connection changes to B", async () => {
+    const target: Transport = {
+      call: vi.fn(async () => undefined as never),
+      subscribe: vi.fn(async () => () => {}),
+      isDesktop: () => true,
+      onReady: vi.fn(() => () => {}),
+    }
+    const binding = {
+      transport: target,
+      remoteConnectionId: 1,
+      baseUrl: "http://a.test",
+      token: "token-a",
+      desktop: true,
+      configRevision: "revision-a",
+    }
+    const apiA = createBackendApi(binding)
+    const platformA = createBackendPlatform(binding)
+    mocks.getActiveRemoteConnectionId.mockReturnValue(2)
+    mocks.remoteConfig = {
+      id: 2,
+      name: "B",
+      baseUrl: "http://b.test",
+      token: "token-b",
+      windowInstanceId: "window-b",
+      configRevision: "revision-b",
+    }
+    mocks.call.mockClear()
+    mocks.shellCall.mockClear()
+
+    await apiA.listConversationTags()
+    await apiA.createConversationTag({ folderId: 1, name: "A", color: "blue" })
+    await apiA.updateConversationTag(1, { name: "Renamed" })
+    await apiA.deleteConversationTag(1)
+    await apiA.reorderConversationTags([1, 2])
+    await apiA.getConversationBranchTag()
+    await apiA.updateConversationBranchTag({ enabled: true, color: "blue" })
+    await apiA.updateConversationTags({ conversationId: 1, add: [2] })
+    await apiA.createDirectory("/repo", "new")
+    await apiA.terminalStop("terminal-a")
+    await apiA.generativeUiSkillInfo()
+    await apiA.generativeUiListAllInstallStatuses()
+    await apiA.generativeUiApplyLinks([])
+    await apiA.generativeUiReadContent()
+    await apiA.describeAgentOptions("opencode", "/repo", { model: "chosen" })
+    const ready = vi.fn()
+    platformA.onTransportReady(ready)
+
+    expect(target.call).toHaveBeenCalledTimes(15)
+    expect(target.call).toHaveBeenCalledWith("update_conversation_tags", {
+      conversationId: 1,
+      add: [2],
+      remove: [],
+    })
+    expect(target.call).toHaveBeenCalledWith("create_directory", {
+      parentPath: "/repo",
+      name: "new",
+    })
+    expect(target.call).toHaveBeenCalledWith("terminal_kill", {
+      terminalId: "terminal-a",
+      keepOutput: true,
+    })
+    expect(target.call).toHaveBeenCalledWith(
+      "acp_describe_agent_options",
+      {
+        agentType: "opencode",
+        workingDir: "/repo",
+        configValues: { model: "chosen" },
+      },
+      { timeoutMs: 70_000 }
+    )
+    expect(target.onReady).toHaveBeenCalledWith(ready)
+    expect(mocks.call).not.toHaveBeenCalled()
+    expect(mocks.shellCall).not.toHaveBeenCalled()
   })
 })

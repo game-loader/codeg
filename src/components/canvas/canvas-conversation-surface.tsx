@@ -1,5 +1,14 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useConversationRuntimeActions as standaloneUseConversationRuntimeActions } from "@/stores/conversation-runtime-store"
+import { getTimelineTurns as standaloneGetTimelineTurns } from "@/stores/conversation-runtime-store"
+import { defaultBackendStoreStorage as legacyStorage } from "@/stores/backend-store-storage"
+import { useConversationRuntimeStore as legacyConversationRuntime } from "@/stores/conversation-runtime-store"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import {
   useCallback,
   useEffect,
@@ -21,24 +30,15 @@ import {
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import { useConversationDetail } from "@/hooks/use-conversation-detail"
-import {
-  acpStopAsyncTask,
-  createChatConversation,
-  createConversation,
-  createChatDir,
-} from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import { notify } from "@/lib/notify"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import {
   extractUserImagesFromDraft,
   getPromptDraftDisplayText,
   promptDraftTitleSeed,
 } from "@/lib/prompt-draft"
-import {
-  getSavedModeId,
-  saveModePreference,
-} from "@/lib/selector-prefs-storage"
 import type {
   AgentType,
   ContentBlock,
@@ -49,12 +49,7 @@ import type {
 } from "@/lib/types"
 import { cn, randomUUID } from "@/lib/utils"
 import { userPromptHistory } from "@/lib/composer-history"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import {
-  getTimelineTurns,
-  useConversationRuntimeActions,
-  useConversationRuntimeStore,
-} from "@/stores/conversation-runtime-store"
+
 import { useShallow } from "zustand/react/shallow"
 
 /**
@@ -188,6 +183,28 @@ export function CanvasConversationSurface({
   isActive = true,
   className,
 }: CanvasConversationSurfaceProps) {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendStores = useBackendStores({
+    storage: legacyStorage,
+    conversationRuntime: legacyConversationRuntime,
+    workspace: legacyWorkspace,
+  })
+  const { saveModePreference, getSavedModeId } =
+    backendStores.storage.selectorPreferences
+  const useConversationRuntimeActions = backendStoreSelection
+    ? backendStores.conversationRuntime.useConversationRuntimeActions
+    : standaloneUseConversationRuntimeActions
+  const useAppWorkspaceStore = backendStores.workspace
+  const useConversationRuntimeStore = backendStores.conversationRuntime
+  const getTimelineTurns = backendStoreSelection
+    ? backendStores.conversationRuntime.getTimelineTurns
+    : standaloneGetTimelineTurns
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Canvas")
   const sharedT = useTranslations("Folder.chat.shared")
   const tAsyncTasks = useTranslations("Folder.chat.asyncTasks")
@@ -269,8 +286,11 @@ export function CanvasConversationSurface({
     )
   }, [contextKey, conversationId, effectiveConversationId, migrateConversation])
 
+  // Only a draft card seeds this device's saved mode; an existing session
+  // shows (and keeps) the mode the backend resumed it in. See the matching
+  // seed in `conversation-detail-panel.tsx`.
   const [modeId, setModeId] = useState<string | null>(() =>
-    getSavedModeId(agentType)
+    conversationId != null ? null : getSavedModeId(agentType)
   )
   // Sends handed back to the composer, which cleared itself as each went out
   // (see the bounce handler in `handleSend`). Oldest first, offered one at a
@@ -360,7 +380,7 @@ export function CanvasConversationSurface({
     let cancelled = false
     void (async () => {
       try {
-        const dir = await createChatDir()
+        const dir = await backendApi.createChatDir()
         if (cancelled) return
         chatDirRef.current = dir.path
         setChatDir(dir.path)
@@ -371,7 +391,7 @@ export function CanvasConversationSurface({
     return () => {
       cancelled = true
     }
-  }, [draftTarget?.kind, isActive])
+  }, [draftTarget?.kind, isActive, backendApi])
 
   const {
     conn,
@@ -515,6 +535,7 @@ export function CanvasConversationSurface({
     reEnteringSession,
     refetchDetail,
     setSyncState,
+    useConversationRuntimeStore,
   ])
 
   // Streaming deltas → runtime store, keyed by the CONNECTION and written into
@@ -570,7 +591,7 @@ export function CanvasConversationSurface({
         })
       }
     },
-    [agentType, effectiveModes]
+    [agentType, effectiveModes, saveModePreference]
   )
 
   const handleSend = useCallback(
@@ -660,7 +681,7 @@ export function CanvasConversationSurface({
           let newId: number
           let sendFolderId: number
           if (draftTarget.kind === "chat") {
-            const res = await createChatConversation(
+            const res = await backendApi.createChatConversation(
               agentType,
               title || undefined,
               chatDirRef.current ?? undefined
@@ -671,7 +692,7 @@ export function CanvasConversationSurface({
             // next render without waiting for a workspace refresh.
             upsertFolder(res.folder)
           } else {
-            newId = await createConversation(
+            newId = await backendApi.createConversation(
               draftTarget.folderId,
               agentType,
               title || undefined
@@ -730,6 +751,7 @@ export function CanvasConversationSurface({
       t,
       tComposer,
       upsertFolder,
+      backendApi,
     ]
   )
 
@@ -771,7 +793,7 @@ export function CanvasConversationSurface({
       const connectionId = conn.connectionId
       if (!connectionId) return false
       try {
-        const stopped = await acpStopAsyncTask(connectionId, taskId)
+        const stopped = await backendApi.acpStopAsyncTask(connectionId, taskId)
         if (!stopped) {
           notify({
             level: "warning",
@@ -789,7 +811,7 @@ export function CanvasConversationSurface({
         return false
       }
     },
-    [conn.connectionId, tAsyncTasks]
+    [conn.connectionId, tAsyncTasks, backendApi]
   )
 
   /** Turn Claude Code's Remote Control off the way the user would: by sending
@@ -825,7 +847,7 @@ export function CanvasConversationSurface({
       userPromptHistory(
         getTimelineTurns(effectiveConversationId).map((entry) => entry.turn)
       ),
-    [effectiveConversationId]
+    [effectiveConversationId, getTimelineTurns]
   )
 
   const isDraft = dbConversationId == null
@@ -876,7 +898,9 @@ export function CanvasConversationSurface({
           agentType={agentType}
           availableCommands={connectionCommands ?? []}
           promptSuggestion={connIsForOtherAgent ? null : conn.promptSuggestion}
-          draftStorageKey={`canvas-draft:${contextKey}`}
+          draftStorageKey={backendStores.storage.key(
+            `canvas-draft:${contextKey}`
+          )}
           injectContent={composerHandBacks[0] ?? null}
           onInjectConsumed={handleComposerHandBackConsumed}
           getSentHistory={getSentHistory}

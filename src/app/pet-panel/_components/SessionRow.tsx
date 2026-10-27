@@ -1,7 +1,9 @@
 "use client"
 
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useTranslations } from "next-intl"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import { AgentIcon } from "@/components/agent-icon"
 import { closePetPanel, focusConversation } from "@/lib/pet/api"
 import type { PetSessionEntry } from "@/lib/pet/types"
@@ -24,6 +26,10 @@ const STATUS_DOT: Record<PetSessionStatusKind, string> = {
 }
 
 export function SessionRow({ session }: SessionRowProps) {
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Pet")
   const kind = sessionStatusKind(session)
   const parent = session.parent
@@ -36,9 +42,10 @@ export function SessionRow({ session }: SessionRowProps) {
     void focusConversation(
       target.folderId,
       target.conversationId,
-      target.agentType
+      target.agentType,
+      backendPlatform
     )
-      .then(() => closePetPanel())
+      .then(() => closePetPanel(backendPlatform))
       .catch((err) =>
         console.warn("[PetPanel] focus conversation failed:", err)
       )
@@ -63,7 +70,9 @@ export function SessionRow({ session }: SessionRowProps) {
       >
         <AgentIcon agentType={session.agentType} className="h-4 w-4 shrink-0" />
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate text-sm">{rowTitle(session)}</span>
+          <span className="truncate text-sm">
+            {rowTitle(session, getAgentLabel)}
+          </span>
           {parent ? (
             <span className="truncate text-2xs text-muted-foreground">
               {t("panel.subAgentOf")} ·{" "}
@@ -98,7 +107,10 @@ export function SessionRow({ session }: SessionRowProps) {
 
 /** The row's name: the conversation's title — after the assistant a
  *  sub-agent runs as, when it runs as one — or the agent's name. */
-function rowTitle(session: PetSessionEntry): string {
+function rowTitle(
+  session: PetSessionEntry,
+  getAgentLabel: (agentType: PetSessionEntry["agentType"]) => string
+): string {
   const title = formatConversationTitle(session.title)
   const assistant = session.assistantName
   if (assistant) return title ? `${assistant} · ${title}` : assistant

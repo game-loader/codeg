@@ -1,6 +1,11 @@
 "use client"
 
 import { memo, useCallback, useMemo, useState } from "react"
+import { useBackendApi } from "@/contexts/backend-client-context"
+import {
+  useBackendStoreSelection,
+  useBackendStores,
+} from "@/contexts/backend-stores-selection-context"
 import { Check, Plus, Settings2, Tags } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
@@ -8,7 +13,10 @@ import {
   toLocalizedErrorMessage,
   type AppErrorTranslator,
 } from "@/lib/app-error"
-import { changeConversationTags } from "@/lib/conversation-tag-assignment"
+import {
+  changeConversationTags as legacyChangeTags,
+  createConversationTagAssignment,
+} from "@/lib/conversation-tag-assignment"
 import {
   MAX_TAG_NAME_LENGTH,
   compareTags,
@@ -19,8 +27,11 @@ import {
 import { formatFolderLabelWithAlias } from "@/lib/folder-display"
 import type { ConversationTagDetail } from "@/lib/types"
 import { cn } from "@/lib/utils"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useConversationTagsStore } from "@/stores/conversation-tags-store"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import {
+  useConversationTagsStoreApi,
+  type ConversationTagsStore,
+} from "@/stores/conversation-tags-store"
 import { useBranchChip, useResolvedTags } from "@/hooks/use-conversation-tags"
 import {
   Command,
@@ -65,6 +76,10 @@ export function useTagChoices(
   folderId: number,
   assignedIds: readonly number[] | undefined
 ) {
+  const useConversationTagsStore = useConversationTagsStoreApi()
+  const { workspace: useAppWorkspaceStore } = useBackendStores({
+    workspace: legacyWorkspace,
+  })
   const tags = useConversationTagsStore((s) => s.tags)
   const folder = useAppWorkspaceStore((s) =>
     s.allFolders.find((f) => f.id === folderId)
@@ -116,8 +131,21 @@ function useTagErrorToast() {
   )
 }
 
+function useTagAssignment() {
+  const api = useBackendApi()
+  const stores = useBackendStoreSelection()
+  return useMemo(
+    () =>
+      stores
+        ? createConversationTagAssignment(api, stores.workspace)
+        : legacyChangeTags,
+    [api, stores]
+  )
+}
+
 /** Toggle one tag on a conversation, with the failure said out loud. */
 function useToggleTag(conversationId: number) {
+  const changeConversationTags = useTagAssignment()
   const reportError = useTagErrorToast()
   return useCallback(
     (tagId: number, on: boolean) => {
@@ -126,7 +154,7 @@ function useToggleTag(conversationId: number) {
         on ? { add: [tagId] } : { remove: [tagId] }
       ).catch((err) => reportError("toasts.assignFailed", err))
     },
-    [conversationId, reportError]
+    [conversationId, reportError, changeConversationTags]
   )
 }
 
@@ -139,14 +167,20 @@ function useToggleTag(conversationId: number) {
 async function createAndAssign(
   conversationId: number,
   values: TagFormValues,
-  onAssignError: (err: unknown) => void
+  onAssignError: (err: unknown) => void,
+  tagsStore: ConversationTagsStore,
+  changeConversationTags: typeof legacyChangeTags
 ): Promise<void> {
-  const tag = await useConversationTagsStore.getState().createTag({
+  const tag = await tagsStore.getState().createTag({
     folderId: values.folderId,
     name: values.name,
     color: values.color,
   })
-  changeConversationTags(conversationId, { add: [tag.id] }).catch(onAssignError)
+  if (!tagsStore.isDisposed()) {
+    changeConversationTags(conversationId, { add: [tag.id] }).catch(
+      onAssignError
+    )
+  }
 }
 
 function TagCheckRow({
@@ -193,6 +227,8 @@ function ConversationTagPickerPanel({
   onManage: () => void
 }) {
   const t = useTranslations("ConversationTags")
+  const tagsStore = useConversationTagsStoreApi()
+  const changeConversationTags = useTagAssignment()
   const [query, setQuery] = useState("")
   const [creating, setCreating] = useState(false)
   const choices = useTagChoices(folderId, assignedIds)
@@ -231,7 +267,9 @@ function ConversationTagPickerPanel({
         color: pickNextTagColor([...choices.global, ...choices.own]),
         folderId: folderScope,
       },
-      (err) => reportError("toasts.assignFailed", err)
+      (err) => reportError("toasts.assignFailed", err),
+      tagsStore,
+      changeConversationTags
     )
       .then(() => setQuery(""))
       .catch((err) => reportError("toasts.createFailed", err))
@@ -350,6 +388,7 @@ export const ConversationHeaderTags = memo(function ConversationHeaderTags({
   max: number
 }) {
   const t = useTranslations("ConversationTags")
+  const backendStores = useBackendStoreSelection()
   const [open, setOpen] = useState(false)
   const tags = useResolvedTags(tagIds)
   const branch = useBranchChip(gitBranch)
@@ -397,7 +436,11 @@ export const ConversationHeaderTags = memo(function ConversationHeaderTags({
             assignedIds={tagIds}
             onManage={() => {
               setOpen(false)
-              openConversationTagsManager({ folderId })
+              openConversationTagsManager(
+                backendStores
+                  ? { folderId, stores: backendStores }
+                  : { folderId }
+              )
             }}
           />
         </PopoverContent>
@@ -426,6 +469,7 @@ export function ConversationTagContextSubmenu({
   onNewTag: () => void
 }) {
   const t = useTranslations("ConversationTags")
+  const backendStores = useBackendStoreSelection()
   const choices = useTagChoices(folderId, tagIds)
   const toggle = useToggleTag(conversationId)
 
@@ -488,7 +532,11 @@ export function ConversationTagContextSubmenu({
           {t("newTag")}
         </ContextMenuItem>
         <ContextMenuItem
-          onSelect={() => openConversationTagsManager({ folderId })}
+          onSelect={() =>
+            openConversationTagsManager(
+              backendStores ? { folderId, stores: backendStores } : { folderId }
+            )
+          }
         >
           <Settings2 className="h-4 w-4" />
           {t("manageTags")}
@@ -514,6 +562,8 @@ export function NewConversationTagDialog({
   conversationId: number
   folderId: number
 }) {
+  const tagsStore = useConversationTagsStoreApi()
+  const changeConversationTags = useTagAssignment()
   const choices = useTagChoices(folderId, NO_IDS)
   const reportError = useTagErrorToast()
   const initialColor = pickNextTagColor([...choices.global, ...choices.own])
@@ -529,8 +579,12 @@ export function NewConversationTagDialog({
           : null
       }
       onSubmit={async (values) => {
-        await createAndAssign(conversationId, values, (err) =>
-          reportError("toasts.assignFailed", err)
+        await createAndAssign(
+          conversationId,
+          values,
+          (err) => reportError("toasts.assignFailed", err),
+          tagsStore,
+          changeConversationTags
         )
         onOpenChange(false)
       }}

@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useState, useEffect, useCallback } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -35,13 +36,7 @@ import {
   FieldDescription,
 } from "@/components/ui/field"
 import { closeCurrentWindow } from "@/lib/platform"
-import {
-  createHyperframesProject,
-  openFolderInWorkspace,
-  detectPackageManager,
-  detectHyperframesSkills,
-  installHyperframesSkills,
-} from "@/lib/api"
+
 import type { HyperframesSkillAgent } from "@/lib/types"
 import { extractAppCommandError, toErrorMessage } from "@/lib/app-error"
 import { joinFsPath } from "@/lib/path-utils"
@@ -61,6 +56,8 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 }
 
 export function HyperframesLauncher() {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("ProjectBoot")
 
   const [projectName, setProjectName] = useState("my-video")
@@ -85,21 +82,24 @@ export function HyperframesLauncher() {
   // step, so keep it out of the way of the core create flow above.
   const [skillsExpanded, setSkillsExpanded] = useState(false)
 
-  const checkPackageManager = useCallback(async (name: string) => {
-    setPmChecking(true)
-    setPmInstalled(null)
-    setPmVersion(null)
-    try {
-      const info = await detectPackageManager(name)
-      setPmInstalled(info.installed)
-      setPmVersion(info.version ?? null)
-    } catch {
-      setPmInstalled(false)
+  const checkPackageManager = useCallback(
+    async (name: string) => {
+      setPmChecking(true)
+      setPmInstalled(null)
       setPmVersion(null)
-    } finally {
-      setPmChecking(false)
-    }
-  }, [])
+      try {
+        const info = await backendApi.detectPackageManager(name)
+        setPmInstalled(info.installed)
+        setPmVersion(info.version ?? null)
+      } catch {
+        setPmInstalled(false)
+        setPmVersion(null)
+      } finally {
+        setPmChecking(false)
+      }
+    },
+    [backendApi]
+  )
 
   useEffect(() => {
     checkPackageManager(packageManager)
@@ -108,7 +108,7 @@ export function HyperframesLauncher() {
   const detectSkills = useCallback(async () => {
     setSkillsDetecting(true)
     try {
-      const res = await detectHyperframesSkills()
+      const res = await backendApi.detectHyperframesSkills()
       setSkillAgents(res)
       // Default-select the agents that don't have the skills yet, so the
       // obvious action installs where it's missing.
@@ -122,7 +122,7 @@ export function HyperframesLauncher() {
     } finally {
       setSkillsDetecting(false)
     }
-  }, [])
+  }, [backendApi])
 
   useEffect(() => {
     detectSkills()
@@ -144,7 +144,7 @@ export function HyperframesLauncher() {
   const handleInstallSkills = async () => {
     setSkillsInstalling(true)
     try {
-      await installHyperframesSkills([...selectedAgents])
+      await backendApi.installHyperframesSkills([...selectedAgents])
       toast.success(t("hyperframes.skillsInstalled"))
     } catch (err) {
       toast.error(t("hyperframes.skillsInstallFailed"), {
@@ -163,7 +163,7 @@ export function HyperframesLauncher() {
     setError(null)
     setCreating(true)
     try {
-      const projectPath = await createHyperframesProject({
+      const projectPath = await backendApi.createHyperframesProject({
         projectName,
         // Only the bundled "blank" example scaffolds reliably/offline; the
         // registry examples are remote downloads, so the launcher fixes blank.
@@ -179,7 +179,7 @@ export function HyperframesLauncher() {
       // and broadcasts it so the workspace window opens a draft tab) and close
       // this launcher — best-effort, must not surface as a creation failure.
       try {
-        await openFolderInWorkspace(projectPath)
+        await backendApi.openFolderInWorkspace(projectPath)
         await closeCurrentWindow()
       } catch (handoffErr) {
         console.error(

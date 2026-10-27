@@ -93,6 +93,7 @@ vi.mock("@/contexts/workspace-context", () => ({
     closeFileTab: mocks.closeFileTab,
     openBrowserTab: mocks.openBrowserTab,
   }),
+  useWorkspaceFileTabs: () => ({ fileTabs: [] }),
 }))
 
 import { resetDefaultAgentGrantForTests } from "@/lib/browser/browser-agent-grant"

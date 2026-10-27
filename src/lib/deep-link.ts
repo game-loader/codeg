@@ -1,4 +1,6 @@
-import { getTransport, isDesktop, isRemoteDesktopMode } from "@/lib/transport"
+import type { BackendPlatform } from "@/lib/backend/types"
+import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
+import { isDesktop } from "@/lib/transport"
 import type { AgentType } from "@/lib/types"
 
 /** A `codeg://` link the backend resolved before the workspace was listening. */
@@ -21,12 +23,14 @@ export interface PendingDeepLink {
  * OS scheme). Returns `null` for everything else, including failures — a
  * missing deep link is the overwhelmingly common case, not an error.
  */
-export async function takePendingDeepLink(): Promise<PendingDeepLink | null> {
-  if (!isDesktop() || isRemoteDesktopMode()) return null
+export async function takePendingDeepLink(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<PendingDeepLink | null> {
+  if (!isDesktop() || backendPlatform.isRemoteDesktopMode()) return null
   try {
-    const target = await getTransport().call<PendingDeepLink | null>(
-      "take_pending_deep_link"
-    )
+    const target = await backendPlatform
+      .getTransport()
+      .call<PendingDeepLink | null>("take_pending_deep_link")
     if (
       !target ||
       !Number.isFinite(target.folderId) ||

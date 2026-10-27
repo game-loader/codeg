@@ -6,6 +6,8 @@ import { BrowserScreenshotMarkupHost } from "@/components/browser/browser-screen
 import { BrowserServiceBridge } from "@/components/browser/browser-service-bridge"
 import { BrowserTabsPersistence } from "@/components/browser/browser-tabs-persistence"
 import { BrowserTabsSuspender } from "@/components/browser/browser-tabs-suspender"
+import { useOptionalBackendClient } from "@/contexts/backend-client-context"
+import { scopePanelId } from "@/lib/backend/resource-identity"
 import {
   Suspense,
   useMemo,
@@ -29,13 +31,18 @@ import { ConversationTagsManagerHost } from "@/components/conversations/conversa
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { TaskProvider } from "@/contexts/task-context"
 import { AlertProvider } from "@/contexts/alert-context"
-import {
-  AcpConnectionsProvider,
-  useAcpActions,
-} from "@/contexts/acp-connections-context"
+import { AcpConnectionsProvider } from "@/contexts/acp-connections-context"
 import { DelegationProvider } from "@/contexts/delegation-context"
 import { ConversationRuntimeProvider } from "@/contexts/conversation-runtime-context"
-import { TabProvider, useTabStore, useTabActions } from "@/contexts/tab-context"
+import {
+  TabProvider,
+  useTabStore as legacyUseTabStore,
+} from "@/contexts/tab-context"
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import {
+  TabKeysSync,
+  WorkbenchRouteConversationSync,
+} from "@/components/workspace/runtime-conversation-bridges"
 import { selectIsSplit } from "@/stores/tab-store"
 import { SidebarProvider, useSidebarContext } from "@/contexts/sidebar-context"
 import { SearchDialogProvider } from "@/contexts/search-dialog-context"
@@ -105,6 +112,11 @@ import { useIsMobile } from "@/hooks/use-mobile"
 import { usePlatform } from "@/hooks/use-platform"
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
 import { OverlayHostHiddenProvider } from "@/components/ui/overlay-host-hidden"
+import { useSearchParams } from "next/navigation"
+import { MultiHostWorkspace } from "@/components/workspace/multi-host-workspace"
+import { RuntimeBridge } from "@/components/workspace/backend-runtime"
+import { useWorkspaceRuntimeVisibility } from "@/contexts/workspace-runtime-visibility-context"
+import type { BackendRuntime } from "@/lib/backend/runtime"
 
 function WorkspaceDocumentTitle() {
   const { activeFolder } = useActiveFolder()
@@ -147,16 +159,6 @@ const PIXEL_LAYOUT_EPSILON = 0.01
 // (removing it mid-transition would snap the final pixels).
 const PANEL_SLIDE_MS = 240
 const PANEL_SLIDE_CLEANUP_MS = PANEL_SLIDE_MS + 60
-
-function TabKeysSync() {
-  const tabs = useTabStore((s) => s.tabs)
-  const { registerOpenTabKeys } = useAcpActions()
-  const keys = useMemo(() => new Set(tabs.map((t) => t.id)), [tabs])
-  useEffect(() => {
-    registerOpenTabKeys(keys)
-  }, [keys, registerOpenTabKeys])
-  return null
-}
 
 function isSameLayout(
   a: number[],
@@ -273,6 +275,11 @@ function KeptMountedSurface({
 }
 
 function WorkspaceContent({ children }: { children: React.ReactNode }) {
+  const stores = useBackendStoreSelection()
+  const useTabStore = stores?.tabs ?? legacyUseTabStore
+  const client = useOptionalBackendClient()
+  const panelId = (id: string) => scopePanelId(id, client?.key)
+  const { managed } = useWorkspaceRuntimeVisibility()
   const { mode, filesMaximized, conversationMaximized } = useWorkspaceView()
   const { setActivePane } = useWorkspaceActions()
   const panelGroupRef = useRef<ImperativePanelGroupHandle | null>(null)
@@ -352,8 +359,12 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
   // panel toggles. Each edge column just reserves the overlay's width so its
   // tabs never render underneath. The reserve scales with the app zoom so it
   // tracks the rem-sized overlay buttons (which grow with zoom).
-  const leftReserve = leftChromeReserve(isMac && isDesktop(), zoomLevel)
-  const rightReserve = rightChromeReserve(winLinuxControls, zoomLevel)
+  const leftReserve = managed
+    ? 0
+    : leftChromeReserve(isMac && isDesktop(), zoomLevel)
+  const rightReserve = managed
+    ? 0
+    : rightChromeReserve(winLinuxControls, zoomLevel)
   // A corner needs reserving only while no side panel covers it, and that
   // width slides in and out with the panel's own toggle (ChromeReserve).
   const leftCornerWidth = sidebarOpen ? 0 : leftReserve
@@ -381,13 +392,13 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
     <div className="relative h-full min-h-0 overflow-hidden">
       <KeptMountedSurface hidden={!isConversations}>
         <ResizablePanelGroup
-          id={WORKSPACE_PANEL_GROUP_ID}
+          id={panelId(WORKSPACE_PANEL_GROUP_ID)}
           ref={panelGroupRef}
           direction="horizontal"
           onLayout={handleLayout}
         >
           <ResizablePanel
-            id={WORKSPACE_CONVERSATION_PANEL_ID}
+            id={panelId(WORKSPACE_CONVERSATION_PANEL_ID)}
             order={1}
             defaultSize={56}
             minSize={mode === "fusion" ? 25 : 0}
@@ -438,7 +449,7 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                   strip whose tail spacer is a window-drag region, and the
                   TOP-edge strips re-create the corner reserves themselves (see
                   SplitStripCornerReserve in conversation-detail-panel). */}
-                {!isConvSplit && (
+                {!managed && !isConvSplit && (
                   <div className="flex h-10 shrink-0 items-stretch bg-muted ws-transparent-bg">
                     <ChromeReserve width={leftCornerWidth} />
                     <div className="flex min-w-0 flex-1 items-stretch">
@@ -503,7 +514,7 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
             )}
           />
           <ResizablePanel
-            id={WORKSPACE_FILES_PANEL_ID}
+            id={panelId(WORKSPACE_FILES_PANEL_ID)}
             order={2}
             defaultSize={44}
             minSize={mode === "fusion" ? 20 : 0}
@@ -559,13 +570,17 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                     hairline bottom border (ws-strip-line) sits under the reserves
                     and inactive tabs, arching over the active tab (the active
                     browser-tab-item's `::after`) — same as the conversation column. */}
-                <div className="flex h-10 shrink-0 items-stretch bg-muted ws-transparent-bg">
-                  {fileHoldsLeft && <ChromeReserve width={leftCornerWidth} />}
-                  <div className="flex min-w-0 flex-1 items-stretch">
-                    <FileWorkspaceTabBar />
+                {!managed && (
+                  <div className="flex h-10 shrink-0 items-stretch bg-muted ws-transparent-bg">
+                    {fileHoldsLeft && <ChromeReserve width={leftCornerWidth} />}
+                    <div className="flex min-w-0 flex-1 items-stretch">
+                      <FileWorkspaceTabBar />
+                    </div>
+                    {fileHoldsRight && (
+                      <ChromeReserve width={rightCornerWidth} />
+                    )}
                   </div>
-                  {fileHoldsRight && <ChromeReserve width={rightCornerWidth} />}
-                </div>
+                )}
                 {/* Pane activation on the file content + its detail header, not
                     the top bar (see the conversation section). */}
                 <div
@@ -779,14 +794,18 @@ function MobileFolderWorkspaceShell({
 }
 
 function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
+  const { managed } = useWorkspaceRuntimeVisibility()
+  const client = useOptionalBackendClient()
+  const panelId = (id: string) => scopePanelId(id, client?.key)
   const {
-    isOpen: sidebarOpen,
+    isOpen: sidebarOpenRequested,
     restored: sidebarRestored,
     width: sidebarWidth,
     minWidth: sidebarMinWidth,
     maxWidth: sidebarMaxWidth,
     setWidth: setSidebarWidth,
   } = useSidebarContext()
+  const sidebarOpen = !managed && sidebarOpenRequested
   const {
     isOpen: auxOpenRequested,
     restored: auxRestored,
@@ -1258,16 +1277,16 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
       className="flex flex-1 min-h-0 overflow-hidden"
     >
       <ResizablePanelGroup
-        id={FOLDER_SHELL_GROUP_ID}
+        id={panelId(FOLDER_SHELL_GROUP_ID)}
         ref={shellGroupRef}
         direction="horizontal"
         onLayout={handleShellLayout}
         className={shellSlideAnimating ? "panel-slide-animating" : undefined}
       >
         <ResizablePanel
-          id={FOLDER_SHELL_LEFT_PANEL_ID}
+          id={panelId(FOLDER_SHELL_LEFT_PANEL_ID)}
           order={1}
-          defaultSize={18}
+          defaultSize={managed ? 0 : 18}
           style={sidebarPanelStyle}
           minSize={sidebarOpen ? sidebarSizeRange.minSize : 0}
           maxSize={sidebarOpen ? sidebarSizeRange.maxSize : 0}
@@ -1278,7 +1297,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
               slide — an un-backed wrapper would show the root `bg-background`
               (white) through that gap. */}
           <div className="h-full min-h-0 overflow-hidden ws-surface-sidebar">
-            {sidebarElement}
+            {!managed && sidebarElement}
           </div>
         </ResizablePanel>
 
@@ -1291,9 +1310,9 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
         />
 
         <ResizablePanel
-          id={FOLDER_SHELL_MAIN_PANEL_ID}
+          id={panelId(FOLDER_SHELL_MAIN_PANEL_ID)}
           order={2}
-          defaultSize={64}
+          defaultSize={managed ? 82 : 64}
           minSize={10}
         >
           <main
@@ -1301,7 +1320,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
             className="flex h-full min-h-0 flex-col overflow-hidden"
           >
             <ResizablePanelGroup
-              id={FOLDER_MAIN_GROUP_ID}
+              id={panelId(FOLDER_MAIN_GROUP_ID)}
               ref={mainGroupRef}
               direction="vertical"
               onLayout={handleMainLayout}
@@ -1310,7 +1329,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
               }
             >
               <ResizablePanel
-                id={FOLDER_MAIN_WORKSPACE_PANEL_ID}
+                id={panelId(FOLDER_MAIN_WORKSPACE_PANEL_ID)}
                 order={1}
                 defaultSize={72}
                 minSize={15}
@@ -1341,7 +1360,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
               />
 
               <ResizablePanel
-                id={FOLDER_MAIN_TERMINAL_PANEL_ID}
+                id={panelId(FOLDER_MAIN_TERMINAL_PANEL_ID)}
                 order={2}
                 defaultSize={28}
                 style={terminalPanelStyle}
@@ -1365,7 +1384,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
         />
 
         <ResizablePanel
-          id={FOLDER_SHELL_RIGHT_PANEL_ID}
+          id={panelId(FOLDER_SHELL_RIGHT_PANEL_ID)}
           order={3}
           defaultSize={18}
           style={auxPanelStyle}
@@ -1389,6 +1408,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
 }
 
 function FolderLayoutShell({ children }: { children: React.ReactNode }) {
+  const { managed } = useWorkspaceRuntimeVisibility()
   const isMobile = useIsMobile()
   const { isWindows, isLinux } = usePlatform()
   const winLinuxControls = isDesktop() && (isWindows || isLinux)
@@ -1403,7 +1423,14 @@ function FolderLayoutShell({ children }: { children: React.ReactNode }) {
   const fillStyle = FILL_MODE_STYLE[workspaceBgFillMode]
 
   return (
-    <div className="fixed inset-0 flex flex-col overflow-hidden bg-background text-foreground pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]">
+    <div
+      className={cn(
+        "flex flex-col overflow-hidden bg-background text-foreground",
+        managed
+          ? "relative h-full min-h-0"
+          : "fixed inset-0 pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]"
+      )}
+    >
       {/* 用户背景图片：铺在整个工作区底层。根 div 是 fixed，已建立层叠上下文，故
           -z-10 绘于自身 bg-background 之上、所有流内容之下。遮罩是朝 --background 的
           面纱（明暗自适配），保证内容可读；结构性面板的半透明由 globals.css 的
@@ -1436,7 +1463,7 @@ function FolderLayoutShell({ children }: { children: React.ReactNode }) {
       {/* Global shortcuts + the search / remote-directory dialogs (formerly
           owned by the full-width FolderTitleBar). Mounted on both platforms. */}
       <WorkspaceChromeController />
-      {isMobile ? (
+      {isMobile && !managed ? (
         <>
           {/* Mobile keeps the visible full-width bar; desktop moved its buttons
               into fixed corner overlays (LeftEdgeChrome / RightEdgeChrome). */}
@@ -1454,7 +1481,7 @@ function FolderLayoutShell({ children }: { children: React.ReactNode }) {
           Windows/Linux caption buttons; then the caption buttons themselves
           (self-null on macOS/web). Each edge column reserves the matching width
           beneath these (see leftChromeReserve / rightChromeReserve). */}
-      {!isMobile && (
+      {!isMobile && !managed && (
         <>
           <div className="absolute left-0 top-0 z-50 h-10">
             <LeftEdgeChrome />
@@ -1470,11 +1497,13 @@ function FolderLayoutShell({ children }: { children: React.ReactNode }) {
           </div>
         </>
       )}
-      <AppToaster
-        position="bottom-right"
-        duration={TOAST_DURATION_MS}
-        closeButton
-      />
+      {!managed && (
+        <AppToaster
+          position="bottom-right"
+          duration={TOAST_DURATION_MS}
+          closeButton
+        />
+      )}
     </div>
   )
 }
@@ -1486,26 +1515,14 @@ function FolderLayoutShell({ children }: { children: React.ReactNode }) {
 // without patching each call site. Re-selecting the ALREADY-active tab does not
 // change activeTabId, so the interactive conversation pickers (sidebar list,
 // search dialog, run history) also call openConversations() directly.
-function WorkbenchRouteConversationSync() {
-  const activeTabId = useTabStore((s) => s.activeTabId)
-  const { consumeRemoteActivation } = useTabActions()
-  const { openConversations } = useWorkbenchRoute()
-  const prevRef = useRef(activeTabId)
-  useEffect(() => {
-    if (prevRef.current === activeTabId) return
-    prevRef.current = activeTabId
-    // A remote tab snapshot that mirrors another client's focus also changes
-    // activeTabId. That's not a local conversation activation, so don't hijack
-    // this window into the conversations route — doing so would unmount whatever
-    // non-conversation view it's on (e.g. the Automations editor + unsaved
-    // edits). Local activations leave the flag false and switch as before.
-    if (consumeRemoteActivation()) return
-    openConversations()
-  }, [activeTabId, openConversations, consumeRemoteActivation])
-  return null
-}
 
-function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
+function WorkspaceLayoutInner({
+  children,
+  runtime,
+}: {
+  children: React.ReactNode
+  runtime?: BackendRuntime
+}) {
   return (
     <AppWorkspaceProvider>
       <AlertProvider>
@@ -1526,7 +1543,7 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                 <ConversationRuntimeProvider>
                   <WorkspaceProvider>
                     <TabProvider>
-                      <WorkspaceDocumentTitle />
+                      {!runtime && <WorkspaceDocumentTitle />}
                       <TabKeysSync />
                       <BrowserEventsBridge />
                       {/* Beside the events bridge and not inside it: that one
@@ -1537,7 +1554,7 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                       {/* Mounted beside the bridge, not inside a tab: the tab
                           an agent asks to run code on is usually not the one
                           the person is looking at. */}
-                      <BrowserEvalConfirm />
+                      {!runtime && <BrowserEvalConfirm />}
                       {/* Here and not in the browser tab it is opened from:
                           only the tab on screen is mounted, and a tab opening
                           on its own would take the marks with it. */}
@@ -1545,24 +1562,34 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                       <BrowserTabsPersistence />
                       <BrowserTabsSuspender />
                       <HeavyPluginsWarmup />
-                      <DeepLinkBootstrap />
-                      <PetFocusBridge />
+                      {(!runtime || runtime.client.key === "local") && (
+                        <>
+                          <DeepLinkBootstrap />
+                          <PetFocusBridge />
+                        </>
+                      )}
                       <WorkspaceRestoreNotices />
                       {/* Always mounted: external-change conflicts must be
                             resolvable even with the aux file tree closed. */}
                       <ExternalConflictDialog />
-                      <SidebarProvider>
+                      <SidebarProvider embedded={!!runtime}>
                         <AuxPanelProvider>
                           <TerminalProvider>
                             <SearchDialogProvider>
                               <AutomationsViewProvider>
                                 <TasksViewProvider>
                                   <WorkbenchRouteProvider>
+                                    {runtime && (
+                                      <RuntimeBridge runtime={runtime} />
+                                    )}
                                     <WorkbenchRouteConversationSync />
                                     {/* Inside WorkbenchRouteProvider: the
                                           listener calls openConversations() to
                                           surface a launcher-opened folder. */}
-                                    <WorkspaceOpenFolderListener />
+                                    {(!runtime ||
+                                      runtime.client.key === "local") && (
+                                      <WorkspaceOpenFolderListener />
+                                    )}
                                     <FolderLayoutShell>
                                       {children}
                                     </FolderLayoutShell>
@@ -1585,6 +1612,36 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
   )
 }
 
+function WorkspaceLayoutEntry({ children }: { children: React.ReactNode }) {
+  const searchParams = useSearchParams()
+  const [desktop, setDesktop] = useState<boolean | null>(null)
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setDesktop(isDesktop()))
+    return () => cancelAnimationFrame(frame)
+  }, [])
+  if (desktop === null) return null
+  if (desktop && !searchParams.has("remoteConnectionId")) {
+    return (
+      <UpdateProvider>
+        <MultiHostWorkspace
+          renderWorkspace={(runtime) => (
+            <WorkspaceLayoutInner runtime={runtime}>
+              {children}
+            </WorkspaceLayoutInner>
+          )}
+        />
+      </UpdateProvider>
+    )
+  }
+  return (
+    <RemoteConnectionGate>
+      <UpdateProvider>
+        <WorkspaceLayoutInner>{children}</WorkspaceLayoutInner>
+      </UpdateProvider>
+    </RemoteConnectionGate>
+  )
+}
+
 export default function WorkspaceLayout({
   children,
 }: {
@@ -1592,11 +1649,7 @@ export default function WorkspaceLayout({
 }) {
   return (
     <Suspense>
-      <RemoteConnectionGate>
-        <UpdateProvider>
-          <WorkspaceLayoutInner>{children}</WorkspaceLayoutInner>
-        </UpdateProvider>
-      </RemoteConnectionGate>
+      <WorkspaceLayoutEntry>{children}</WorkspaceLayoutEntry>
     </Suspense>
   )
 }

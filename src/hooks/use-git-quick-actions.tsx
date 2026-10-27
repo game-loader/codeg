@@ -1,5 +1,8 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
@@ -8,16 +11,9 @@ import { StashDialog } from "@/components/layout/stash-dialog"
 import { useAlertContext } from "@/contexts/alert-context"
 import { useGitCredential } from "@/contexts/git-credential-context"
 import { useTaskContext } from "@/contexts/task-context"
-import {
-  gitFetch,
-  gitPull,
-  gitUpdateBranch,
-  openCommitWindow,
-  openPushWindow,
-  openStashWindow,
-} from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import type { GitConflictInfo } from "@/lib/types"
 
 const emitEvent = async (event: string, payload?: unknown) => {
@@ -95,6 +91,11 @@ export function useGitQuickActions({
   folderPath,
   onCompleted,
 }: UseGitQuickActionsOptions): GitQuickActions {
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.branchDropdown")
   const { addTask, updateTask, removeTask } = useTaskContext()
   const { pushAlert } = useAlertContext()
@@ -210,21 +211,28 @@ export function useGitQuickActions({
     void runGitTask(
       t("tasks.pullCode"),
       () =>
-        withCredentialRetry((creds) => gitPull(folderPath, creds), {
+        withCredentialRetry((creds) => backendApi.gitPull(folderPath, creds), {
           folderPath,
         }),
       describePullResult
     )
-  }, [describePullResult, folderPath, runGitTask, t, withCredentialRetry])
+  }, [
+    describePullResult,
+    folderPath,
+    runGitTask,
+    t,
+    withCredentialRetry,
+    backendApi,
+  ])
 
   const fetchAll = useCallback(() => {
     if (!folderPath) return
     void runGitTask(t("tasks.fetchInfo"), () =>
-      withCredentialRetry((creds) => gitFetch(folderPath, creds), {
+      withCredentialRetry((creds) => backendApi.gitFetch(folderPath, creds), {
         folderPath,
       })
     )
-  }, [folderPath, runGitTask, t, withCredentialRetry])
+  }, [folderPath, runGitTask, t, withCredentialRetry, backendApi])
 
   const updateBranch = useCallback(
     (fullName: string, isRemote: boolean) => {
@@ -233,13 +241,21 @@ export function useGitQuickActions({
         t("tasks.updateBranch", { branchName: fullName }),
         () =>
           withCredentialRetry(
-            (creds) => gitUpdateBranch(folderPath, fullName, isRemote, creds),
+            (creds) =>
+              backendApi.gitUpdateBranch(folderPath, fullName, isRemote, creds),
             { folderPath }
           ),
         describePullResult
       )
     },
-    [describePullResult, folderPath, runGitTask, t, withCredentialRetry]
+    [
+      describePullResult,
+      folderPath,
+      runGitTask,
+      t,
+      withCredentialRetry,
+      backendApi,
+    ]
   )
 
   // Window openers report their own failure — they don't touch the repo, so
@@ -257,22 +273,22 @@ export function useGitQuickActions({
   )
 
   const openCommit = useCallback(() => {
-    openWindow(openCommitWindow, t("toasts.openCommitWindowFailed"))
-  }, [openWindow, t])
+    openWindow(backendApi.openCommitWindow, t("toasts.openCommitWindowFailed"))
+  }, [openWindow, t, backendApi])
 
   const openPush = useCallback(
     (branch?: string) => {
       openWindow(
-        (id) => openPushWindow(id, branch),
+        (id) => backendApi.openPushWindow(id, branch),
         t("toasts.openPushWindowFailed")
       )
     },
-    [openWindow, t]
+    [openWindow, t, backendApi]
   )
 
   const openUnstash = useCallback(() => {
-    openWindow(openStashWindow, t("toasts.openStashWindowFailed"))
-  }, [openWindow, t])
+    openWindow(backendApi.openStashWindow, t("toasts.openStashWindowFailed"))
+  }, [openWindow, t, backendApi])
 
   const openStashDialog = useCallback(() => {
     if (!target) return

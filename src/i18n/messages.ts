@@ -54,6 +54,10 @@ export async function getMessagesForLocale(
   // Keep the other locales usable without copying English into their catalogs.
   const messages = {
     ...localized,
+    MultiHost: {
+      ...enMessages.MultiHost,
+      ...(typeof localized.MultiHost === "object" ? localized.MultiHost : {}),
+    },
     BarkNotificationSettings: {
       ...enMessages.BarkNotificationSettings,
       ...(typeof localized.BarkNotificationSettings === "object"

@@ -1,5 +1,13 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useForgeRefreshStore as legacyForgeRefresh } from "@/stores/forge-refresh-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendEventScope } from "@/hooks/use-runtime-event-scope"
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import {
   useCallback,
   useEffect,
@@ -74,15 +82,7 @@ import { ForgeNewIssueDialog } from "@/components/forge/forge-new-issue-dialog"
 import { ForgeSettingsDialog } from "@/components/forge/forge-settings-dialog"
 import { ForgeStartDialog } from "@/components/forge/forge-start-dialog"
 import { useIsMobile } from "@/hooks/use-mobile"
-import {
-  folderForgeRemote,
-  forgeListIssues,
-  forgeListLabels,
-  forgeSettingsGet,
-  forgeTabCount,
-  openSettingsWindow,
-  workTaskLookupBySource,
-} from "@/lib/api"
+
 import {
   extractAppCommandError,
   toLocalizedErrorMessage,
@@ -102,7 +102,7 @@ import {
 import { pageCount, pageSlots } from "@/lib/forge-pagination"
 import { rememberForgeProvider } from "@/lib/forge-provider-cache"
 import { effectiveForgeSettings } from "@/lib/forge-settings"
-import { openUrl, subscribe } from "@/lib/platform"
+import { openUrl } from "@/lib/platform"
 import { cn } from "@/lib/utils"
 import type {
   ForgeIssueList,
@@ -115,8 +115,6 @@ import type {
   ForgeSettingsStore,
   ForgeTaskLink,
 } from "@/lib/types"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useForgeRefreshStore } from "@/stores/forge-refresh-store"
 
 const WORK_TASK_CHANGED_EVENT = "task://changed"
 
@@ -525,12 +523,14 @@ export function ForgePageTitle() {
  * branches can drop in place — they already hold the translator.
  */
 function AddAccountButton({ label }: { label: string }) {
+  const backendApi = useBackendApi()
+
   return (
     <Button
       size="sm"
       variant="secondary"
       onClick={() => {
-        void openSettingsWindow("version-control").catch(() => {
+        void backendApi.openSettingsWindow("version-control").catch(() => {
           // Settings is a separate window; a failure to open it must not take
           // down the page that offered the button.
         })
@@ -580,6 +580,17 @@ export interface ForgePageEmbed {
 
 export function ForgePage({ embed }: { embed?: ForgePageEmbed } = {}) {
   const embedded = embed != null
+  const backendScope = useBackendEventScope()
+  const backendStores = useBackendStores({
+    workspace: legacyWorkspace,
+    forgeRefresh: legacyForgeRefresh,
+  })
+  const useAppWorkspaceStore = backendStores.workspace
+  const useForgeRefreshStore = backendStores.forgeRefresh
+
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Forge")
   // Root-scoped translator: backend errors carry FULL dotted keys
   // (`Forge.errors.noAccount`), which the namespaced `t` above cannot resolve.
@@ -711,7 +722,8 @@ export function ForgePage({ embed }: { embed?: ForgePageEmbed } = {}) {
     let cancelled = false
     setRemoteLoading(true)
     const resolving = effectiveFolderId
-    folderForgeRemote(resolving)
+    backendApi
+      .folderForgeRemote(resolving)
       .then((r) => {
         // Whoever names the aux panel's change-request tab learns the forge
         // from here too — see `forge-provider-cache.ts`.
@@ -727,7 +739,7 @@ export function ForgePage({ embed }: { embed?: ForgePageEmbed } = {}) {
     return () => {
       cancelled = true
     }
-  }, [effectiveFolderId, forgeCorrection])
+  }, [effectiveFolderId, forgeCorrection, backendApi])
 
   /**
    * The remote only when codeg can actually read it.
@@ -805,7 +817,7 @@ export function ForgePage({ embed }: { embed?: ForgePageEmbed } = {}) {
     setLoading(true)
     setError(null)
     try {
-      const result = await forgeListIssues(effectiveFolderId, {
+      const result = await backendApi.forgeListIssues(effectiveFolderId, {
         tab,
         state: stateFilter,
         assignedMe,
@@ -871,6 +883,7 @@ export function ForgePage({ embed }: { embed?: ForgePageEmbed } = {}) {
     sort,
     page,
     pageSize,
+    backendApi,
   ])
 
   /**
@@ -888,7 +901,7 @@ export function ForgePage({ embed }: { embed?: ForgePageEmbed } = {}) {
       probingRef.current[which] = `${scope}:${which}`
       setCountsInFlight((n) => n + 1)
       try {
-        const value = await forgeTabCount(effectiveFolderId, which, {
+        const value = await backendApi.forgeTabCount(effectiveFolderId, which, {
           state: stateFilter,
           assignedMe,
           labels: labelFilter,
@@ -918,6 +931,7 @@ export function ForgePage({ embed }: { embed?: ForgePageEmbed } = {}) {
       assignedMe,
       labelFilter,
       search,
+      backendApi,
     ]
   )
 
@@ -1020,7 +1034,8 @@ export function ForgePage({ embed }: { embed?: ForgePageEmbed } = {}) {
   // listening too would open a second settings dialog under the first.
   useEffect(() => {
     let cancelled = false
-    forgeSettingsGet()
+    backendApi
+      .forgeSettingsGet()
       .then((s) => {
         if (!cancelled) setSettings(s)
       })
@@ -1030,13 +1045,17 @@ export function ForgePage({ embed }: { embed?: ForgePageEmbed } = {}) {
         cancelled = true
       }
     }
-    const open = () => setSettingsOpen(true)
+    const open = (event: Event) => {
+      const detail = (event as CustomEvent<{ backendScope?: string }>).detail
+      if (detail?.backendScope !== backendScope) return
+      setSettingsOpen(true)
+    }
     window.addEventListener(OPEN_FORGE_SETTINGS_EVENT, open)
     return () => {
       cancelled = true
       window.removeEventListener(OPEN_FORGE_SETTINGS_EVENT, open)
     }
-  }, [embedded])
+  }, [embedded, backendApi, backendScope])
 
   // The typed text becomes a request only once typing stops. `search` is in the
   // dependency list so the settled value short-circuits the next run instead of
@@ -1073,7 +1092,8 @@ export function ForgePage({ embed }: { embed?: ForgePageEmbed } = {}) {
     let cancelled = false
     setLabelOptions([])
     setLabelsTruncated(false)
-    forgeListLabels(effectiveFolderId)
+    backendApi
+      .forgeListLabels(effectiveFolderId)
       .then((result) => {
         if (cancelled) return
         setLabelOptions(result.labels)
@@ -1085,7 +1105,7 @@ export function ForgePage({ embed }: { embed?: ForgePageEmbed } = {}) {
     return () => {
       cancelled = true
     }
-  }, [effectiveFolderId, readable])
+  }, [effectiveFolderId, readable, backendApi])
 
   /** Any change that redefines the result set puts you back on page 1 —
    *  otherwise a narrower filter lands on a page number that no longer
@@ -1415,30 +1435,32 @@ export function ForgePage({ embed }: { embed?: ForgePageEmbed } = {}) {
       return
     }
     try {
-      const found = await workTaskLookupBySource(keys)
+      const found = await backendApi.workTaskLookupBySource(keys)
       if (id !== linksReqRef.current) return
       setLinks(new Map(found.map((l) => [l.source_key, l])))
     } catch {
       // Chips are best-effort decoration; the list itself stays useful.
     }
-  }, [rows, detail, keyFor])
+  }, [rows, detail, keyFor, backendApi])
   useEffect(() => {
     void refreshLinks()
   }, [refreshLinks])
   useEffect(() => {
     let cancelled = false
     let unsub: (() => void) | undefined
-    void subscribe(WORK_TASK_CHANGED_EVENT, () => {
-      void refreshLinks()
-    }).then((u: () => void) => {
-      if (cancelled) u()
-      else unsub = u
-    })
+    void backendPlatform
+      .subscribe(WORK_TASK_CHANGED_EVENT, () => {
+        void refreshLinks()
+      })
+      .then((u: () => void) => {
+        if (cancelled) u()
+        else unsub = u
+      })
     return () => {
       cancelled = true
       unsub?.()
     }
-  }, [refreshLinks])
+  }, [refreshLinks, backendPlatform])
 
   const pickFolder = useCallback(
     (id: number) => {

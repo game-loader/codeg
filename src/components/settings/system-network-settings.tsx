@@ -1,6 +1,10 @@
 "use client"
 
 import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
+import {
   useCallback,
   useEffect,
   useMemo,
@@ -45,14 +49,8 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import {
-  getSystemAutostartSettings,
-  getSystemProxySettings,
-  updateSystemAutostartSettings,
-  updateSystemLanguageSettings,
-  updateSystemProxySettings,
-} from "@/lib/api"
-import { isLocalDesktop, openUrl } from "@/lib/platform"
+
+import { openUrl } from "@/lib/platform"
 import type { AppLocale } from "@/lib/types"
 import { readLastCheck } from "@/lib/update-check-storage"
 import { describeAppUpdateError, usesTauriUpdater } from "@/lib/updater"
@@ -106,6 +104,9 @@ function isAppLocale(value: string): value is AppLocale {
 type UpdateAction = "check" | "install"
 
 export function SystemNetworkSettings() {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("SystemSettings")
   const tLanguage = useTranslations("Language")
   const locale = useLocale()
@@ -125,7 +126,7 @@ export function SystemNetworkSettings() {
   // Launch at login registers *this* machine's executable with the OS, so it
   // only means something for a local Tauri shell — a remote workspace window
   // routes every call to a server that has no login items to speak of.
-  const autostartVisible = isLocalDesktop()
+  const autostartVisible = backendPlatform.isLocalDesktop()
   const [autostartEnabled, setAutostartEnabled] = useState(false)
   const [savingAutostart, setSavingAutostart] = useState(false)
   // Non-null when the OS refused to report the registration (no home dir, a
@@ -177,7 +178,7 @@ export function SystemNetworkSettings() {
     serverSelfUpdate &&
     serverRollbackAvailable &&
     selfUpdateBlocker?.code !== "permission_denied" &&
-    !usesTauriUpdater() &&
+    !usesTauriUpdater(backendPlatform) &&
     (updateState.status === "idle" || updateState.status === "error") &&
     (updateHydrated || !serverLiveProgress)
   // A determinate bar needs a known content length; the install phase (and a
@@ -257,11 +258,11 @@ export function SystemNetworkSettings() {
 
     try {
       const [proxySettings, autostart] = await Promise.all([
-        getSystemProxySettings(),
+        backendApi.getSystemProxySettings(),
         // Kept out of the shared rejection path: a machine that cannot report
         // its login items must not blank out the proxy and language cards.
         autostartVisible
-          ? getSystemAutostartSettings().then(
+          ? backendApi.getSystemAutostartSettings().then(
               (settings) => ({ settings, error: null }),
               (err) => {
                 console.error("[Settings] load autostart settings failed:", err)
@@ -286,7 +287,7 @@ export function SystemNetworkSettings() {
     } finally {
       setLoading(false)
     }
-  }, [autostartVisible])
+  }, [autostartVisible, backendApi])
 
   useEffect(() => {
     loadSettings().catch((err) => {
@@ -299,13 +300,13 @@ export function SystemNetworkSettings() {
     // checked (read from storage, not from provider state, which the provider
     // seeds in its own effect and therefore may not have applied yet), or the
     // last attempt failed, in which case opening this page is a natural retry.
-    if (!readLastCheck() || checkError) {
+    if (!readLastCheck(backendPlatform) || checkError) {
       checkNow({ silent: true }).catch((err) => {
         console.error("[Settings] auto check update failed:", err)
       })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [backendPlatform])
 
   const saveProxySettings = useCallback(
     async (nextEnabled: boolean, nextProxyUrl: string, nextNoProxy: string) => {
@@ -313,7 +314,7 @@ export function SystemNetworkSettings() {
 
       setSaving(true)
       try {
-        const next = await updateSystemProxySettings({
+        const next = await backendApi.updateSystemProxySettings({
           enabled: nextEnabled,
           proxy_url: nextProxyUrl.trim() || null,
           no_proxy: nextNoProxy.trim() || null,
@@ -328,7 +329,7 @@ export function SystemNetworkSettings() {
         setSaving(false)
       }
     },
-    [t]
+    [t, backendApi]
   )
 
   const saveAutostartSettings = useCallback(
@@ -338,7 +339,9 @@ export function SystemNetworkSettings() {
         // The backend answers with what the OS settled on, not with the
         // request — Windows can veto a Run entry through Task Manager, so the
         // switch has to follow the reply rather than the optimistic value.
-        const result = await updateSystemAutostartSettings({ enabled: next })
+        const result = await backendApi.updateSystemAutostartSettings({
+          enabled: next,
+        })
         setAutostartEnabled(result.enabled)
         setAutostartError(null)
       } catch (err) {
@@ -349,7 +352,7 @@ export function SystemNetworkSettings() {
         setSavingAutostart(false)
       }
     },
-    [t]
+    [t, backendApi]
   )
 
   const saveLanguage = useCallback(
@@ -357,7 +360,7 @@ export function SystemNetworkSettings() {
       setSavingLanguage(true)
 
       try {
-        const next = await updateSystemLanguageSettings({
+        const next = await backendApi.updateSystemLanguageSettings({
           mode: lang === "system" ? "system" : "manual",
           language: lang === "system" ? languageSettings.language : lang,
         })
@@ -370,7 +373,7 @@ export function SystemNetworkSettings() {
         setSavingLanguage(false)
       }
     },
-    [languageSettings.language, setLanguageSettings, t]
+    [languageSettings.language, setLanguageSettings, t, backendApi]
   )
 
   const formatUpdateError = useCallback(

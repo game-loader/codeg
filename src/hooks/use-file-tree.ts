@@ -1,7 +1,8 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useState, useEffect, useRef, useCallback } from "react"
-import { listWorkspaceFiles } from "@/lib/api"
+
 import type { WorkspaceFileEntry } from "@/lib/types"
 
 export interface FlatFileEntry {
@@ -43,6 +44,8 @@ export function useFileTree({
   folderPath,
   enabled,
 }: UseFileTreeOptions): UseFileTreeResult {
+  const backendApi = useBackendApi()
+
   const [allFiles, setAllFiles] = useState<FlatFileEntry[]>([])
   const [loading, setLoading] = useState(false)
   const loadedForPathRef = useRef<string | null>(null)
@@ -56,7 +59,7 @@ export function useFileTree({
 
     async function load() {
       try {
-        const files: WorkspaceFileEntry[] = await listWorkspaceFiles(
+        const files: WorkspaceFileEntry[] = await backendApi.listWorkspaceFiles(
           folderPath!
         )
         const flat: FlatFileEntry[] = files.map((f) => ({
@@ -82,7 +85,7 @@ export function useFileTree({
     return () => {
       canceled = true
     }
-  }, [enabled, folderPath])
+  }, [enabled, folderPath, backendApi])
 
   const reset = useCallback(() => {
     loadedForPathRef.current = null

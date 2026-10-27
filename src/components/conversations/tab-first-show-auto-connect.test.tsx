@@ -99,9 +99,11 @@ const liveMsg: LiveMessage = {
 function TabViewGate({
   visible,
   active,
+  runtimeVisible = true,
 }: {
   visible: boolean
   active: boolean
+  runtimeVisible?: boolean
 }) {
   // The panel's mount effect: claim the session and clear pendingCleanup —
   // which is what materializes a hidden tab's runtime session.
@@ -114,7 +116,7 @@ function TabViewGate({
   // made active; once a detail has been held, the view keeps fetching.
   const [heldDetail, setHeldDetail] = useState(false)
   const { detail, loading: detailLoading } = useConversationDetail(CID, {
-    enabled: visible || active || heldDetail,
+    enabled: heldDetail || (runtimeVisible && (visible || active)),
   })
   if (detail != null && !heldDetail) setHeldDetail(true)
   const runtimeExternalId = useConversationRuntimeStore(
@@ -127,7 +129,8 @@ function TabViewGate({
   useConnectionLifecycle({
     contextKey: "tab-1",
     agentType: "claude_code",
-    isActive: active && !awaitingHistoricalSessionId,
+    isActive:
+      active && !awaitingHistoricalSessionId && (runtimeVisible || heldDetail),
     workingDir: "/repo",
     sessionId: externalId,
     conversationId: CID,
@@ -145,6 +148,7 @@ function resetAll() {
   act(() => resetConversationRuntimeStore())
   mockGet.mockReset()
   stubs.connect.mockClear()
+  stubs.conn.disconnect.mockClear()
 }
 
 describe("a hidden tab's first show", () => {
@@ -286,7 +290,7 @@ describe("TabViewGate mirrors ConversationTabView", () => {
       "const [heldDetail, setHeldDetail] = useState(false)"
     )
     expect(panel).toMatch(
-      /useConversationDetail\(effectiveConversationId, \{\s+enabled: isVisible \|\| isActive \|\| heldDetail,\s+\}\)/
+      /useConversationDetail\(effectiveConversationId, \{\s+enabled: heldDetail \|\| \(runtimeVisible && \(isVisible \|\| isActive\)\),\s+\}\)/
     )
     expect(panel).toContain(
       "if (detail != null && !heldDetail) setHeldDetail(true)"
@@ -299,6 +303,49 @@ describe("TabViewGate mirrors ConversationTabView", () => {
       /const awaitingHistoricalSessionId =\s+hasPersistedConversation && selectedAgent !== "cline" && detailLoading/
     )
     expect(panel).toContain("!awaitingHistoricalSessionId &&")
+    expect(panel).toContain(
+      "(!hasPersistedConversation || runtimeVisible || heldDetail) &&"
+    )
     expect(panel).toContain("isActive: isActive && canAutoConnect,")
+  })
+})
+
+describe("a historical tab inside a hidden machine runtime", () => {
+  afterEach(resetAll)
+  it("waits for the machine to be revealed and resumes with its stored session id", async () => {
+    let land!: (detail: DbConversationDetail) => void
+    mockGet.mockImplementation(
+      () =>
+        new Promise<DbConversationDetail>((resolveFetch) => {
+          land = resolveFetch
+        })
+    )
+    const { rerender } = render(
+      <TabViewGate visible active runtimeVisible={false} />
+    )
+    await act(async () => {})
+    expect(mockGet).not.toHaveBeenCalled()
+    expect(stubs.connect).not.toHaveBeenCalled()
+    await act(async () => {
+      rerender(<TabViewGate visible active runtimeVisible />)
+    })
+    expect(mockGet).toHaveBeenCalledTimes(1)
+    expect(stubs.connect).not.toHaveBeenCalled()
+    await act(async () => {
+      land(storedDetail())
+    })
+    expect(stubs.connect).toHaveBeenCalledTimes(1)
+    expect(stubs.connect).toHaveBeenCalledWith(
+      "claude_code",
+      "/repo",
+      STORED_SESSION,
+      CID
+    )
+    await act(async () => {
+      rerender(<TabViewGate visible active runtimeVisible={false} />)
+    })
+    expect(mockGet).toHaveBeenCalledTimes(1)
+    expect(stubs.connect).toHaveBeenCalledTimes(1)
+    expect(stubs.conn.disconnect).not.toHaveBeenCalled()
   })
 })

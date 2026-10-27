@@ -15,6 +15,7 @@
  * anyone looking at it, or at a recording of it.
  */
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Square } from "lucide-react"
@@ -64,6 +65,8 @@ const ACTIONS: ReadonlySet<ComputerAction> = new Set([
 const TRANSPARENT = "html,body{background:transparent!important}"
 
 export function ComputerIndicator() {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("ComputerUse")
   const isMac = useIsMac()
   const { shared, sharedApps, sharedScreen, sharedKnown, activity } =
@@ -76,10 +79,10 @@ export function ComputerIndicator() {
   // Opened after something was shared: ask what, once.
   useEffect(() => {
     const mark = computerStoreMark()
-    computerSharedState()
+    computerSharedState(backendPlatform)
       .then((s) => setComputerStateSince(s, mark))
       .catch(() => {})
-  }, [])
+  }, [backendPlatform])
 
   // Tell the window how large the strip came out, whenever that changes. The
   // strip is as wide as its words (`w-max`), not as the window: a window
@@ -92,7 +95,8 @@ export function ComputerIndicator() {
       if (width > 0 && height > 0) {
         void computerIndicatorFit(
           Math.ceil(width) + MARGIN * 2,
-          Math.ceil(height) + MARGIN * 2
+          Math.ceil(height) + MARGIN * 2,
+          backendPlatform
         ).catch(() => {})
       }
     }
@@ -101,7 +105,7 @@ export function ComputerIndicator() {
     const observer = new ResizeObserver(fit)
     observer.observe(strip)
     return () => observer.disconnect()
-  }, [])
+  }, [backendPlatform])
 
   // The latest action that went through — a read that followed it is not
   // news here and must not take it down early.
@@ -123,7 +127,7 @@ export function ComputerIndicator() {
   const stop = async () => {
     setStopping(true)
     try {
-      await computerStop()
+      await computerStop(backendPlatform)
     } catch {
       // The popover in the main window says what went wrong; the strip
       // stays up while anything is still shared.

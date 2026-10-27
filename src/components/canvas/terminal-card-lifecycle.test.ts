@@ -66,7 +66,7 @@ describe("a terminal card crossing a route switch", () => {
     // process belongs to the CARD, so the same line would take a running
     // command down with a view switch.
     const view = read(VIEW)
-    expect(view).toContain("if (!attach) terminalKill(terminalId)")
+    expect(view).toContain("if (!attach) backendApi.terminalKill(terminalId)")
     // …and there is exactly one kill in the whole view, so no other path can
     // quietly reintroduce it.
     expect(view.match(/terminalKill\(/g)?.length ?? 0).toBe(1)

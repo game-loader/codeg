@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, type ReactNode } from "react"
 import { act, fireEvent, render, screen, within } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -94,7 +94,13 @@ const plan = (overrides: Partial<FolderLinkPlan> = {}): FolderLinkPlan => ({
   ...overrides,
 })
 
-function Harness({ manage }: { manage?: FolderDetail }) {
+function Harness({
+  manage,
+  renderMachinePicker,
+}: {
+  manage?: FolderDetail
+  renderMachinePicker?: (options: { disabled: boolean }) => ReactNode
+}) {
   const [open, setOpen] = useState(true)
   return (
     <NextIntlClientProvider locale="en" messages={enMessages}>
@@ -102,10 +108,17 @@ function Harness({ manage }: { manage?: FolderDetail }) {
         open={open}
         onOpenChange={setOpen}
         folder={manage ?? null}
+        renderMachinePicker={renderMachinePicker}
       />
     </NextIntlClientProvider>
   )
 }
+
+const machinePicker = ({ disabled }: { disabled: boolean }) => (
+  <select aria-label="Machine" disabled={disabled}>
+    <option>This machine</option>
+  </select>
+)
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -277,6 +290,45 @@ describe("WorkspaceFolderDialog — creation flow", () => {
       fireEvent.click(screen.getByRole("button", { name: "Next" }))
     })
     expect(openFolder).toHaveBeenLastCalledWith("/home/me/other")
+  })
+})
+
+describe("WorkspaceFolderDialog — machine picker", () => {
+  it("offers the host's picker before a root is chosen and locks it while opening", async () => {
+    api.listDirectoryEntries.mockResolvedValue([dir("root", "/home/me/root")])
+    let finish: (detail: FolderDetail) => void = () => {}
+    openFolder.mockImplementation(
+      () =>
+        new Promise<FolderDetail>((resolve) => {
+          finish = resolve
+        })
+    )
+    render(<Harness renderMachinePicker={machinePicker} />)
+    await screen.findByDisplayValue("/home/me")
+    expect(screen.getByRole("combobox", { name: "Machine" })).toBeEnabled()
+
+    fireEvent.click(screen.getByRole("button", { name: "root" }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Next" }))
+    })
+    // Switching now would remount under another machine mid-open.
+    expect(screen.getByRole("combobox", { name: "Machine" })).toBeDisabled()
+
+    await act(async () => {
+      finish(folder())
+    })
+    expect(await screen.findByText("/home/me/root")).toBeInTheDocument()
+    // The opened root belongs to one machine; links never move it.
+    expect(screen.queryByRole("combobox", { name: "Machine" })).toBeNull()
+  })
+
+  it("never offers a machine when managing an existing folder", async () => {
+    const picker = vi.fn(machinePicker)
+    render(<Harness manage={folder()} renderMachinePicker={picker} />)
+    fireEvent.click(await screen.findByRole("button", { name: /Add folders/ }))
+    await screen.findByRole("button", { name: "Go to parent directory" })
+    expect(picker).not.toHaveBeenCalled()
+    expect(screen.queryByRole("combobox", { name: "Machine" })).toBeNull()
   })
 })
 

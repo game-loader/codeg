@@ -17,15 +17,11 @@ import {
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useAutomationsView } from "@/contexts/automations-view-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useActiveProjectFolderId } from "@/hooks/use-active-project-folder"
 import { useIsMobile } from "@/hooks/use-mobile"
-import {
-  automationDelete,
-  automationRunNow,
-  automationSetEnabled,
-} from "@/lib/api"
 import type { Automation, FolderDetail } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import {
@@ -71,6 +67,7 @@ export function AutomationsAuxTab() {
   const { setRoute } = useWorkbenchRoute()
   const { setOpen } = useAuxPanelContext()
   const isMobile = useIsMobile()
+  const backendApi = useBackendApi()
 
   const foldersById = useMemo(
     () => new Map(allFolders.map((f) => [f.id, f])),
@@ -256,12 +253,18 @@ export function AutomationsAuxTab() {
                 // sitting beside it, so no row is ever the "selected" one.
                 selected={false}
                 onSelect={() => setSelectedId(a.id)}
-                onRunNow={() => void runAction(() => automationRunNow(a.id))}
+                onRunNow={() =>
+                  void runAction(() => backendApi.automationRunNow(a.id))
+                }
                 onToggleEnabled={() =>
-                  void runAction(() => automationSetEnabled(a.id, !a.enabled))
+                  void runAction(() =>
+                    backendApi.automationSetEnabled(a.id, !a.enabled)
+                  )
                 }
                 onEdit={() => openPage({ automation: a, intent: "edit" })}
-                onDelete={() => void runAction(() => automationDelete(a.id))}
+                onDelete={() =>
+                  void runAction(() => backendApi.automationDelete(a.id))
+                }
               />
             ))}
           </ul>

@@ -121,7 +121,10 @@ describe("ComputerUseSettings", () => {
     expect(toggle).not.toBeChecked()
     fireEvent.click(toggle)
     await waitFor(() =>
-      expect(api.setComputerToolsEnabled).toHaveBeenCalledWith(true)
+      expect(api.setComputerToolsEnabled).toHaveBeenCalledWith(
+        true,
+        expect.objectContaining({ getTransport: expect.any(Function) })
+      )
     )
     await waitFor(() => expect(toggle).toBeChecked())
   })
@@ -242,7 +245,8 @@ describe("ComputerUseSettings", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Grant…" }))
     await waitFor(() =>
       expect(api.computerRequestPermission).toHaveBeenCalledWith(
-        "screenRecording"
+        "screenRecording",
+        expect.objectContaining({ getTransport: expect.any(Function) })
       )
     )
     expect(

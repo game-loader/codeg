@@ -1,5 +1,12 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import {
   useCallback,
   useEffect,
@@ -39,21 +46,7 @@ import {
   Trash2,
   Undo2,
 } from "lucide-react"
-import {
-  workTaskArchive,
-  getFolderConversation,
-  workTaskChangedFiles,
-  workTaskCleanup,
-  workTaskDefer,
-  workTaskDelete,
-  workTaskDiff,
-  workTaskEvents,
-  workTaskMergeUnqueue,
-  workTaskRequeue,
-  workTaskRetry,
-  workTaskReturn,
-  workTaskStart,
-} from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import {
   canSubmitFollowUp,
@@ -64,14 +57,14 @@ import {
   type FollowUpIntent,
 } from "@/lib/task-follow-up"
 import { formatTokenCount } from "@/lib/token-format"
-import { onTransportReconnect, subscribe } from "@/lib/platform"
+
 import { UnifiedDiffPreview } from "@/components/diff/unified-diff-preview"
 import { MessageResponse } from "@/components/ai-elements/message"
 import { MarkdownImageProvider } from "@/components/ai-elements/markdown-local-image"
 import { AgentIcon } from "@/components/agent-icon"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import {
   canDefer,
   canDeliverToPr,
@@ -219,6 +212,14 @@ export function TaskDetailSheet({
   onEdit,
   onSchedule,
 }: TaskDetailSheetProps) {
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Tasks")
   // The upload-in-flight toast is the conversation composer's own message —
   // same box, same wording.
@@ -291,7 +292,8 @@ export function TaskDetailSheet({
       return
     }
     let cancelled = false
-    getFolderConversation(conversationId)
+    backendApi
+      .getFolderConversation(conversationId)
       .then((detail) => {
         if (cancelled) return
         setConvAgentType(detail.summary.agent_type ?? null)
@@ -313,15 +315,17 @@ export function TaskDetailSheet({
     return () => {
       cancelled = true
     }
-  }, [open, conversationId, taskStatus])
+  }, [open, conversationId, taskStatus, backendApi])
 
   const reload = useCallback(async () => {
     if (taskId == null) return
     const id = ++reqRef.current
     try {
       const [evs, fls] = await Promise.all([
-        workTaskEvents(taskId),
-        worktreeUsable ? workTaskChangedFiles(taskId) : Promise.resolve([]),
+        backendApi.workTaskEvents(taskId),
+        worktreeUsable
+          ? backendApi.workTaskChangedFiles(taskId)
+          : Promise.resolve([]),
       ])
       if (id === reqRef.current) {
         setEvents(evs)
@@ -330,7 +334,7 @@ export function TaskDetailSheet({
     } catch {
       // keep previous data on transient error
     }
-  }, [taskId, worktreeUsable])
+  }, [taskId, worktreeUsable, backendApi])
 
   useEffect(() => {
     if (!open || taskId == null) return
@@ -345,13 +349,15 @@ export function TaskDetailSheet({
     void reload()
     let unsub: (() => void) | undefined
     let cancelled = false
-    void subscribe(WORK_TASK_CHANGED_EVENT, () => {
-      void reload()
-    }).then((u: () => void) => {
-      if (cancelled) u()
-      else unsub = u
-    })
-    const offReconnect = onTransportReconnect(() => {
+    void backendPlatform
+      .subscribe(WORK_TASK_CHANGED_EVENT, () => {
+        void reload()
+      })
+      .then((u: () => void) => {
+        if (cancelled) u()
+        else unsub = u
+      })
+    const offReconnect = backendPlatform.onTransportReconnect(() => {
       void reload()
     })
     return () => {
@@ -359,7 +365,7 @@ export function TaskDetailSheet({
       unsub?.()
       offReconnect?.()
     }
-  }, [open, taskId, reload])
+  }, [open, taskId, reload, backendPlatform])
 
   const run = useCallback(async (fn: () => Promise<unknown>) => {
     setBusy(true)
@@ -415,7 +421,7 @@ export function TaskDetailSheet({
     if (!name) return null
     const model = snap?.config_labels?.model
     return model ? `${name} · ${model}` : name
-  }, [task, agentType])
+  }, [task, agentType, getAgentLabel])
 
   if (!task) return null
 
@@ -452,13 +458,13 @@ export function TaskDetailSheet({
       ? {
           icon: Inbox,
           label: t("actionUndefer"),
-          onClick: () => run(() => workTaskDefer(task.id, false)),
+          onClick: () => run(() => backendApi.workTaskDefer(task.id, false)),
         }
       : canDefer(task)
         ? {
             icon: Clock,
             label: t("actionDefer"),
-            onClick: () => run(() => workTaskDefer(task.id, true)),
+            onClick: () => run(() => backendApi.workTaskDefer(task.id, true)),
           }
         : null
   const isRestart =
@@ -494,7 +500,7 @@ export function TaskDetailSheet({
       zoneActions.push({
         icon: ListX,
         label: t("actionUnqueueMerge"),
-        onClick: () => run(() => workTaskMergeUnqueue(task.id)),
+        onClick: () => run(() => backendApi.workTaskMergeUnqueue(task.id)),
       })
     } else {
       // A task that changed nothing has no merge to offer — accepting it IS
@@ -569,7 +575,7 @@ export function TaskDetailSheet({
       icon: archived ? ArchiveRestore : Archive,
       label,
       filled,
-      onClick: () => run(() => workTaskArchive(task.id, !archived)),
+      onClick: () => run(() => backendApi.workTaskArchive(task.id, !archived)),
     })
     if (archived) {
       zoneActions.push(archive(t("actionUnarchive"), true))
@@ -580,7 +586,7 @@ export function TaskDetailSheet({
             icon: Play,
             label: t("actionStart"),
             filled: true,
-            onClick: () => run(() => workTaskStart(task.id)),
+            onClick: () => run(() => backendApi.workTaskStart(task.id)),
           })
           // Starting later is the same decision as starting now, so it sits
           // beside it rather than in the utility bar below.
@@ -664,7 +670,7 @@ export function TaskDetailSheet({
       if (submittingRef.current) return
       submittingRef.current = true
       try {
-        await workTaskReturn(task.id, feedback, intent, blocks)
+        await backendApi.workTaskReturn(task.id, feedback, intent, blocks)
       } finally {
         submittingRef.current = false
       }
@@ -695,9 +701,19 @@ export function TaskDetailSheet({
     return runRestart(async () => {
       try {
         if (task.status === "failed") {
-          await workTaskRetry(task.id, note, blocks, allowDuplicateSource)
+          await backendApi.workTaskRetry(
+            task.id,
+            note,
+            blocks,
+            allowDuplicateSource
+          )
         } else {
-          await workTaskRequeue(task.id, note, blocks, allowDuplicateSource)
+          await backendApi.workTaskRequeue(
+            task.id,
+            note,
+            blocks,
+            allowDuplicateSource
+          )
         }
         setRestartDuplicate(null)
         return true
@@ -1334,7 +1350,7 @@ export function TaskDetailSheet({
                   icon={FolderX}
                   label={t("actionRetryCleanup")}
                   busy={busy}
-                  onClick={() => run(() => workTaskCleanup(task.id))}
+                  onClick={() => run(() => backendApi.workTaskCleanup(task.id))}
                 />
               ) : null}
               <div className="flex-1" />
@@ -1409,7 +1425,7 @@ export function TaskDetailSheet({
             <AlertDialogAction
               onClick={() =>
                 run(async () => {
-                  await workTaskCleanup(task.id)
+                  await backendApi.workTaskCleanup(task.id)
                   setCleanupOpen(false)
                 })
               }
@@ -1443,7 +1459,10 @@ export function TaskDetailSheet({
             <AlertDialogAction
               onClick={() =>
                 run(async () => {
-                  await workTaskDelete(task.id, hasWorktree && deleteWorktree)
+                  await backendApi.workTaskDelete(
+                    task.id,
+                    hasWorktree && deleteWorktree
+                  )
                   setDeleteOpen(false)
                   onOpenChange(false)
                 })
@@ -1465,6 +1484,8 @@ function TaskDiffBody({
   taskId: number
   file: string | null
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Tasks")
   const [diff, setDiff] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -1474,7 +1495,8 @@ function TaskDiffBody({
     /* eslint-disable react-hooks/set-state-in-effect */
     setDiff(null)
     setError(null)
-    workTaskDiff(taskId, file)
+    backendApi
+      .workTaskDiff(taskId, file)
       .then((d) => {
         if (!cancelled) setDiff(d)
       })
@@ -1485,7 +1507,7 @@ function TaskDiffBody({
       cancelled = true
     }
     /* eslint-enable react-hooks/set-state-in-effect */
-  }, [taskId, file])
+  }, [taskId, file, backendApi])
 
   if (error) {
     return <p className="p-4 text-sm text-destructive">{error}</p>

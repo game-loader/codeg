@@ -1,10 +1,12 @@
 "use client"
 
+import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
+import { useConversationRuntimeActions as standaloneUseConversationRuntimeActions } from "@/stores/conversation-runtime-store"
+import { useConversationRuntimeStore as legacyConversationRuntime } from "@/stores/conversation-runtime-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useMemo, type ReactNode } from "react"
 import {
   selectTimelineTurns,
-  useConversationRuntimeActions,
-  useConversationRuntimeStore,
   type ConversationRuntimeContextValue,
 } from "@/stores/conversation-runtime-store"
 
@@ -46,6 +48,16 @@ export function ConversationRuntimeProvider({
 }
 
 export function useConversationRuntime(): ConversationRuntimeContextValue {
+  const backendStoreSelection = useBackendStoreSelection()
+
+  const backendStores = useBackendStores({
+    conversationRuntime: legacyConversationRuntime,
+  })
+  const useConversationRuntimeStore = backendStores.conversationRuntime
+  const useConversationRuntimeActions = backendStoreSelection
+    ? backendStores.conversationRuntime.useConversationRuntimeActions
+    : standaloneUseConversationRuntimeActions
+
   // Subscribe to exactly the two slices whose identity change drove the old
   // context value flip; the memo below rebuilds the api object (with getters
   // closing over the current maps) only when they change. Actions are a single

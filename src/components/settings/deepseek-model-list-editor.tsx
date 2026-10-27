@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -26,7 +27,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { loadDeepSeekModelCatalog, updateDeepSeekModelCatalog } from "@/lib/api"
+
 import type { DeepSeekCatalogModel, DeepSeekModelCatalog } from "@/lib/types"
 
 /** Launch default the agent starts every new session on when the raw env
@@ -219,6 +220,8 @@ export function DeepSeekModelListEditor({
   /** `DEEPSEEK_ACP_MODEL` from the agent's env, when it sets one. */
   launchModel?: string
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("DeepSeekModelEditor")
 
   const [catalog, setCatalog] = useState<DeepSeekModelCatalog | null>(null)
@@ -232,19 +235,20 @@ export function DeepSeekModelListEditor({
   // inherited defaults, so the rows on screen would otherwise differ from the
   // document a new session will read.
   const refresh = useCallback(async () => {
-    const next = await loadDeepSeekModelCatalog()
+    const next = await backendApi.loadDeepSeekModelCatalog()
     setCatalog(next)
     setDraft(next.models)
     // The rows are keyed by position, so an expanded index only means anything
     // against the list it was opened on — after a reseed (a restore especially)
     // it would point at a different row, or none.
     setExpanded(null)
-  }, [])
+  }, [backendApi])
 
   useEffect(() => {
     let alive = true
     setLoading(true)
-    void loadDeepSeekModelCatalog()
+    void backendApi
+      .loadDeepSeekModelCatalog()
       .then((next) => {
         if (!alive) return
         setCatalog(next)
@@ -259,7 +263,7 @@ export function DeepSeekModelListEditor({
     return () => {
       alive = false
     }
-  }, [])
+  }, [backendApi])
 
   const issue = useMemo(() => validateDeepSeekModels(draft), [draft])
   const changed = useMemo(
@@ -289,7 +293,7 @@ export function DeepSeekModelListEditor({
     if (!canSave) return
     setSaving(true)
     try {
-      await updateDeepSeekModelCatalog(draft.map(pruneEmpty))
+      await backendApi.updateDeepSeekModelCatalog(draft.map(pruneEmpty))
       await refresh()
       toast.success(t("toastSaved"))
     } catch (error) {
@@ -307,7 +311,7 @@ export function DeepSeekModelListEditor({
   const handleRestoreDefaults = async () => {
     setSaving(true)
     try {
-      await updateDeepSeekModelCatalog(null)
+      await backendApi.updateDeepSeekModelCatalog(null)
       await refresh()
       toast.success(t("toastRestored"))
     } catch (error) {

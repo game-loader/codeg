@@ -1,7 +1,8 @@
 "use client"
 
+import { useTabStore as legacyTabs } from "@/contexts/tab-context"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useActiveFolder } from "@/contexts/active-folder-context"
-import { useTabStore } from "@/contexts/tab-context"
 
 /**
  * True when the active conversation is folderless "chat mode" — either a bound
@@ -13,6 +14,9 @@ import { useTabStore } from "@/contexts/tab-context"
  * first send and beyond.
  */
 export function useIsActiveChatMode(): boolean {
+  const backendStores = useBackendStores({ tabs: legacyTabs })
+  const useTabStore = backendStores.tabs
+
   const { activeFolder } = useActiveFolder()
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)

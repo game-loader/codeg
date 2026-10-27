@@ -1,5 +1,8 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import {
   Fragment,
   useCallback,
@@ -11,11 +14,11 @@ import {
 } from "react"
 import { ChevronRight, MoreHorizontal } from "lucide-react"
 import { useTranslations } from "next-intl"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import { useWorkspaceActions } from "@/contexts/workspace-context"
 import { findOwningFolder } from "@/lib/file-open-target"
 import { joinFsPath } from "@/lib/path-utils"
-import { getFileTree } from "@/lib/api"
+
 import type { FileTreeNode } from "@/lib/types"
 import {
   Popover,
@@ -64,6 +67,9 @@ export function FilePathBreadcrumb({
   fileName: string
   isDirty: boolean
 }) {
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
 
   const model = useMemo(() => {
@@ -227,6 +233,8 @@ function DirectoryTree({
   selectedAbsPath: string
   onOpenFile: (fileAbs: string) => void
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Folder.fileWorkspace")
   const [childrenByDir, setChildrenByDir] = useState<
     Map<string, FileTreeNode[]>
@@ -238,23 +246,26 @@ function DirectoryTree({
   const loadedDirsRef = useRef<Set<string>>(new Set())
   const loadingDirsRef = useRef<Set<string>>(new Set())
 
-  const loadDir = useCallback(async (dirAbs: string) => {
-    if (loadedDirsRef.current.has(dirAbs)) return
-    if (loadingDirsRef.current.has(dirAbs)) return
-    loadingDirsRef.current.add(dirAbs)
-    try {
-      const nodes = await getFileTree(dirAbs, 1)
-      loadedDirsRef.current.add(dirAbs)
-      setChildrenByDir((prev) => new Map(prev).set(dirAbs, nodes))
-    } catch {
-      // Treat an unreadable directory as empty rather than surfacing an error
-      // in a lightweight breadcrumb popover.
-      loadedDirsRef.current.add(dirAbs)
-      setChildrenByDir((prev) => new Map(prev).set(dirAbs, []))
-    } finally {
-      loadingDirsRef.current.delete(dirAbs)
-    }
-  }, [])
+  const loadDir = useCallback(
+    async (dirAbs: string) => {
+      if (loadedDirsRef.current.has(dirAbs)) return
+      if (loadingDirsRef.current.has(dirAbs)) return
+      loadingDirsRef.current.add(dirAbs)
+      try {
+        const nodes = await backendApi.getFileTree(dirAbs, 1)
+        loadedDirsRef.current.add(dirAbs)
+        setChildrenByDir((prev) => new Map(prev).set(dirAbs, nodes))
+      } catch {
+        // Treat an unreadable directory as empty rather than surfacing an error
+        // in a lightweight breadcrumb popover.
+        loadedDirsRef.current.add(dirAbs)
+        setChildrenByDir((prev) => new Map(prev).set(dirAbs, []))
+      } finally {
+        loadingDirsRef.current.delete(dirAbs)
+      }
+    },
+    [backendApi]
+  )
 
   // Load the root level whenever the popover roots at a new directory.
   useEffect(() => {
@@ -263,7 +274,8 @@ function DirectoryTree({
     setExpanded(new Set())
     loadedDirsRef.current = new Set()
     loadingDirsRef.current = new Set()
-    getFileTree(rootAbsPath, 1)
+    backendApi
+      .getFileTree(rootAbsPath, 1)
       .then((nodes) => {
         if (cancelled) return
         loadedDirsRef.current.add(rootAbsPath)
@@ -280,7 +292,7 @@ function DirectoryTree({
     return () => {
       cancelled = true
     }
-  }, [rootAbsPath])
+  }, [rootAbsPath, backendApi])
 
   const handleExpandedChange = useCallback(
     (next: Set<string>) => {

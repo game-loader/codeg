@@ -35,8 +35,17 @@ import { tagScopeFolderId } from "@/lib/conversation-tags"
 import { excludeChatFolders, filterTopLevelFolders } from "@/lib/folder-display"
 import type { ConversationBranchTag } from "@/lib/types"
 import { cn } from "@/lib/utils"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useConversationTagsStore } from "@/stores/conversation-tags-store"
+import {
+  useBackendStoreSelection,
+  useBackendStores,
+} from "@/contexts/backend-stores-selection-context"
+import type { BackendStores } from "@/lib/backend/stores"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import {
+  useConversationTagsStoreApi,
+  useConversationTagsStore as legacyTags,
+  type ConversationTagsStore,
+} from "@/stores/conversation-tags-store"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
@@ -56,6 +65,8 @@ import { ConversationTagListEditor } from "./conversation-tag-list-editor"
 
 interface ManagerRequest {
   id: number
+  /** Exact resource identity also separates replacement generations. */
+  owner: ConversationTagsStore
   /** The folder the opener was about, as it knows it (a worktree's own id,
    *  say), or null for none. */
   folderId: number | null
@@ -63,6 +74,7 @@ interface ManagerRequest {
 
 let current: ManagerRequest | null = null
 let lastId = 0
+let offOwnerDispose: (() => void) | undefined
 const listeners = new Set<() => void>()
 
 function notify(): void {
@@ -87,34 +99,52 @@ function subscribe(listener: () => void): () => void {
  * in progress.
  */
 export function openConversationTagsManager(
-  options: { folderId?: number | null } = {}
+  options: { folderId?: number | null; stores?: BackendStores } = {}
 ): void {
-  if (current) return
+  const owner = options.stores?.conversationTags ?? legacyTags
+  if (current || owner.isDisposed()) return
   lastId += 1
-  current = { id: lastId, folderId: options.folderId ?? null }
+  const id = lastId
+  current = { id, folderId: options.folderId ?? null, owner }
+  offOwnerDispose = owner.onDispose(() => closeConversationTagsManager(id))
   notify()
 }
 
 /** Named by id, so a close from a dialog already gone is a no-op. */
 function closeConversationTagsManager(id: number): void {
   if (current?.id !== id) return
+  offOwnerDispose?.()
+  offOwnerDispose = undefined
   current = null
   notify()
 }
 
 export function resetConversationTagsManagerForTests(): void {
+  offOwnerDispose?.()
+  offOwnerDispose = undefined
   current = null
   notify()
 }
 
-/** Mounted once in the workspace; draws the manager while it is open. */
+/** Capture the opener before its popover/menu unmounts or selection changes. */
+export function useOpenConversationTagsManager() {
+  const stores = useBackendStoreSelection()
+  return useCallback(
+    (options: { folderId?: number | null } = {}) =>
+      openConversationTagsManager(stores ? { ...options, stores } : options),
+    [stores]
+  )
+}
+
+/** Mounted once in each runtime; draws the manager while it is open. */
 export function ConversationTagsManagerHost() {
+  const owner = useConversationTagsStoreApi()
   const request = useSyncExternalStore(
     subscribe,
     () => current,
     () => null
   )
-  if (!request) return null
+  if (!request || request.owner !== owner || owner.isDisposed()) return null
   return (
     <ConversationTagsManagerDialog
       // Each opening lands on its own folder, never the last one's pick.
@@ -173,6 +203,7 @@ const BRANCH_COLOR_SAVE_DELAY_MS = 300
  */
 function BranchTagSection() {
   const t = useTranslations("ConversationTags")
+  const useConversationTagsStore = useConversationTagsStoreApi()
   const branchTag = useConversationTagsStore((s) => s.branchTag)
   const loaded = useConversationTagsStore((s) => s.branchTagLoaded)
   const loadError = useConversationTagsStore((s) => s.branchTagLoadError)
@@ -185,6 +216,7 @@ function BranchTagSection() {
     (patch: Partial<ConversationBranchTag>) => {
       // From the store as it is NOW, not as this render saw it: another
       // window may have changed the other half since.
+      if (useConversationTagsStore.isDisposed()) return
       const store = useConversationTagsStore.getState()
       store.setBranchTag({ ...store.branchTag, ...patch }).catch((err) => {
         toast.error(t("toasts.branchTagFailed"), {
@@ -195,7 +227,7 @@ function BranchTagSection() {
         })
       })
     },
-    [t]
+    [t, useConversationTagsStore]
   )
 
   /** Take the colour still waiting to be saved, if any, off the timer. */
@@ -290,6 +322,10 @@ function ConversationTagsManagerDialog({
   onClose: () => void
 }) {
   const t = useTranslations("ConversationTags.manager")
+  const useConversationTagsStore = useConversationTagsStoreApi()
+  const { workspace: useAppWorkspaceStore } = useBackendStores({
+    workspace: legacyWorkspace,
+  })
   const tags = useConversationTagsStore((s) => s.tags)
   const tagsHydrated = useConversationTagsStore((s) => s.hydrated)
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
@@ -304,7 +340,7 @@ function ConversationTagsManagerDialog({
     const store = useConversationTagsStore.getState()
     if (!store.hydrated) void store.fetchTags()
     if (!store.branchTagLoaded) void store.fetchBranchTag()
-  }, [])
+  }, [useConversationTagsStore])
 
   // Only folders that can own tags: top-level, user-facing ones. A worktree's
   // conversations use its repo's tags, and chat folders have none of their own.

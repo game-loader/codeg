@@ -11700,6 +11700,18 @@ pub async fn acp_connect(
     // can prompt the user to install it from Agent Settings.
     verify_agent_installed(agent_type).await?;
 
+    // A resumed session restores its own last selectors over this client's
+    // per-device defaults (see `session_selector_service`).
+    let (preferred_mode_id, preferred_config_values) =
+        crate::db::service::session_selector_service::resolve_connect_prefs(
+            &db.conn,
+            agent_type,
+            session_id.as_deref(),
+            preferred_mode_id,
+            preferred_config_values.unwrap_or_default(),
+        )
+        .await;
+
     let emitter = EventEmitter::Tauri(app_handle);
     manager
         .spawn_agent(
@@ -11710,7 +11722,7 @@ pub async fn acp_connect(
             window.label().to_string(),
             emitter,
             preferred_mode_id,
-            preferred_config_values.unwrap_or_default(),
+            preferred_config_values,
         )
         .await
 }

@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -23,7 +24,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
-import { getGitBranch, gitListAllBranches } from "@/lib/api"
+
 import { cn } from "@/lib/utils"
 import type { GitBranchList } from "@/lib/types"
 
@@ -104,6 +105,8 @@ export function BranchPicker({
   allowRemote = true,
   defaultFollowsHead = false,
 }: BranchPickerProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("BranchPicker")
   const [open, setOpen] = useState(false)
   const [branchList, setBranchList] = useState<GitBranchList | null>(null)
@@ -129,14 +132,14 @@ export function BranchPicker({
     const id = ++reqRef.current
     setLoading(true)
     try {
-      const list = await gitListAllBranches(folderPath)
+      const list = await backendApi.gitListAllBranches(folderPath)
       if (id === reqRef.current) setBranchList(list)
     } catch {
       if (id === reqRef.current) setBranchList(EMPTY_LIST)
     } finally {
       if (id === reqRef.current) setLoading(false)
     }
-  }, [folderPath])
+  }, [folderPath, backendApi])
 
   const loadHead = useCallback(async () => {
     if (!defaultFollowsHead || !folderPath) return
@@ -145,12 +148,12 @@ export function BranchPicker({
     // commit tab, rather than a guess.
     let branch: string | null = null
     try {
-      branch = await getGitBranch(folderPath)
+      branch = await backendApi.getGitBranch(folderPath)
     } catch {
       // Keep the null.
     }
     if (id === headReqRef.current) setHead({ path: folderPath, branch })
-  }, [defaultFollowsHead, folderPath])
+  }, [defaultFollowsHead, folderPath, backendApi])
 
   useEffect(() => {
     if (!open) return

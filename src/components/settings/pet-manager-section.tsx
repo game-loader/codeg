@@ -1,5 +1,8 @@
 "use client"
 
+import { useBackendPlatform } from "@/contexts/backend-client-context"
+import type { BackendPlatform } from "@/lib/backend/types"
+import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -59,6 +62,8 @@ import { PetMarketplaceDialog } from "./pet-marketplace-dialog"
 const SPRITE_PREVIEW_CONCURRENCY = 4
 
 export function PetManagerSection() {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Pet.manager")
   const tMarket = useTranslations("Pet.marketplace")
   const [pets, setPets] = useState<PetSummary[]>([])
@@ -92,9 +97,11 @@ export function PetManagerSection() {
     setLoading(true)
     try {
       const [list, settings, importerAvail] = await Promise.all([
-        listPets(),
-        getPetSettings().catch(() => null),
-        isCodexImportAvailable().catch(() => ({ available: false })),
+        listPets(backendPlatform),
+        getPetSettings(backendPlatform).catch(() => null),
+        isCodexImportAvailable(backendPlatform).catch(() => ({
+          available: false,
+        })),
       ])
       if (!mountedRef.current || seq !== refreshSeqRef.current) return
       setPets(list)
@@ -104,7 +111,7 @@ export function PetManagerSection() {
       replaceSheetUrls({})
       setLoading(false)
 
-      void loadSpritePreviews(list).then((nextSheetUrls) => {
+      void loadSpritePreviews(list, backendPlatform).then((nextSheetUrls) => {
         if (!mountedRef.current || seq !== refreshSeqRef.current) {
           revokeSpriteUrlRecord(nextSheetUrls)
           return
@@ -117,7 +124,7 @@ export function PetManagerSection() {
         setLoading(false)
       }
     }
-  }, [replaceSheetUrls, t])
+  }, [replaceSheetUrls, t, backendPlatform])
 
   useEffect(() => {
     mountedRef.current = true
@@ -139,7 +146,7 @@ export function PetManagerSection() {
   const handleSetActive = useCallback(
     async (petId: string) => {
       try {
-        const next = await setActivePet(petId)
+        const next = await setActivePet(petId, backendPlatform)
         setActiveId(next.activePetId)
       } catch (err) {
         toast.error(t("errors.setActiveFailed"), {
@@ -147,7 +154,7 @@ export function PetManagerSection() {
         })
       }
     },
-    [t]
+    [t, backendPlatform]
   )
 
   const handleConfirmDelete = useCallback(async () => {
@@ -155,7 +162,7 @@ export function PetManagerSection() {
     const pet = deleteTarget
     setDeletingId(pet.id)
     try {
-      await deletePet(pet.id)
+      await deletePet(pet.id, backendPlatform)
       setDeleteTarget(null)
       await refresh()
     } catch (err) {
@@ -163,7 +170,7 @@ export function PetManagerSection() {
     } finally {
       setDeletingId(null)
     }
-  }, [deleteTarget, refresh, t])
+  }, [deleteTarget, refresh, t, backendPlatform])
 
   const openEditor = useCallback((target: PetSummary | null) => {
     setEditorTarget(target)
@@ -173,11 +180,11 @@ export function PetManagerSection() {
   const handleSummon = useCallback(async () => {
     if (!isDesktop()) return
     try {
-      await openPetWindow()
+      await openPetWindow(backendPlatform)
     } catch (err) {
       toast.error(t("errors.summonFailed"), { description: toMessage(err) })
     }
-  }, [t])
+  }, [t, backendPlatform])
 
   const summonDisabled = !isDesktop() || !activeId
 
@@ -456,7 +463,8 @@ export function PetManagerSection() {
   )
 }
 async function loadSpritePreviews(
-  pets: PetSummary[]
+  pets: PetSummary[],
+  backendPlatform: BackendPlatform = legacyBackendPlatform
 ): Promise<Record<string, string>> {
   const results: Array<readonly [string, string]> = []
   let nextIndex = 0
@@ -467,7 +475,7 @@ async function loadSpritePreviews(
       nextIndex += 1
       const pet = pets[index]
       if (!pet) continue
-      results.push(await loadSpritePreview(pet))
+      results.push(await loadSpritePreview(pet, backendPlatform))
     }
   }
 
@@ -500,10 +508,11 @@ function PetSheetThumbnail({ url }: { url: string }) {
 }
 
 async function loadSpritePreview(
-  pet: PetSummary
+  pet: PetSummary,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
 ): Promise<readonly [string, string]> {
   try {
-    const asset = await readPetSpritesheet(pet.id)
+    const asset = await readPetSpritesheet(pet.id, backendPlatform)
     return [pet.id, createPetSpriteObjectUrl(asset)] as const
   } catch {
     return [pet.id, ""] as const

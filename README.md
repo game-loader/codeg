@@ -29,6 +29,10 @@
   </picture>
 </p>
 
+## Fork workspace preview
+
+This fork combines upstream v0.35.1 with one-window multi-host navigation with a unified sidebar and combined logical-project session history across machines and worktrees. Execution remains bound to the original machine and path. See the [workspace guide](docs/logical-projects.md), [merge record](docs/upstream-0.35.1-multi-host-merge.md), and [preview installation notes](docs/preview-release.md).
+
 <table>
   <tr>
     <td width="50%" valign="top">🧩 <strong>One interface for every agent</strong><br/>Nineteen agents built in, and any ACP agent can join — all rendered as the same structured conversation, not a terminal.</td>

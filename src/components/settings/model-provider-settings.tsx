@@ -1,5 +1,7 @@
 "use client"
 
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Loader2, Pencil, Plus, Server, Trash2 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -25,17 +27,21 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { listModelProviders, deleteModelProvider } from "@/lib/api"
+
 import {
   MODEL_PROVIDER_AGENT_TYPES,
   type AgentType,
   type ModelProviderInfo,
 } from "@/lib/types"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import { AddModelProviderDialog } from "./add-model-provider-dialog"
 import { EditModelProviderDialog } from "./edit-model-provider-dialog"
 
 export function ModelProviderSettings() {
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("ModelProviderSettings")
   const [providers, setProviders] = useState<ModelProviderInfo[]>([])
   const [loading, setLoading] = useState(true)
@@ -48,14 +54,14 @@ export function ModelProviderSettings() {
 
   const loadProviders = useCallback(async () => {
     try {
-      const rows = await listModelProviders()
+      const rows = await backendApi.listModelProviders()
       setProviders(rows)
     } catch {
       toast.error(t("loadFailed"))
     } finally {
       setLoading(false)
     }
-  }, [t])
+  }, [t, backendApi])
 
   useEffect(() => {
     loadProviders().catch(console.error)
@@ -69,7 +75,7 @@ export function ModelProviderSettings() {
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return
     try {
-      await deleteModelProvider(deleteTarget.id)
+      await backendApi.deleteModelProvider(deleteTarget.id)
       toast.success(t("deleteSuccess"))
       setDeleteTarget(null)
       await loadProviders()
@@ -89,7 +95,7 @@ export function ModelProviderSettings() {
         toast.error(msg)
       }
     }
-  }, [deleteTarget, loadProviders, t])
+  }, [deleteTarget, loadProviders, t, backendApi])
 
   return (
     <ScrollArea className="h-full">

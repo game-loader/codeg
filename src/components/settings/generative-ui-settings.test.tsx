@@ -1,4 +1,11 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -35,6 +42,8 @@ vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }))
 
+import { BackendClientProvider } from "@/contexts/backend-client-context"
+import type { BackendClient } from "@/lib/backend/types"
 import { GenerativeUiBody } from "./generative-ui-settings"
 
 const t = enMessages.GenerativeUiSettings
@@ -232,4 +241,59 @@ describe("the UI tab", () => {
     expect(await screen.findByText("Show it as UI")).toBeInTheDocument()
     expect(readContent).toHaveBeenCalledTimes(1)
   })
+})
+
+it("reads and updates UI-render links on the original machine with identical skill ids", async () => {
+  const makeClient = (key: "remote:1" | "remote:2") => {
+    const api = {
+      generativeUiSkillInfo: vi.fn(async () => ({
+        id: "ui-render",
+        conflict: false,
+      })),
+      acpListAgents: vi.fn(async () => [agent("codex", "Codex")]),
+      generativeUiListAllInstallStatuses: vi.fn(async () => [
+        status("codex", "not_linked"),
+      ]),
+      generativeUiApplyLinks: vi.fn(async (ops: LinkOp[]) =>
+        ops.map((op) => ({
+          expertId: op.expertId,
+          agentType: op.agentType,
+          ok: true,
+          error: null,
+        }))
+      ),
+      generativeUiReadContent: vi.fn(async () => "skill content"),
+    }
+    return { client: { key, api } as unknown as BackendClient, api }
+  }
+  const a = makeClient("remote:1")
+  const b = makeClient("remote:2")
+  render(
+    <NextIntlClientProvider locale="en" messages={enMessages}>
+      <BackendClientProvider client={a.client}>
+        <section aria-label="machine A">
+          <GenerativeUiBody />
+        </section>
+      </BackendClientProvider>
+      <BackendClientProvider client={b.client}>
+        <section aria-label="machine B">
+          <GenerativeUiBody />
+        </section>
+      </BackendClientProvider>
+    </NextIntlClientProvider>
+  )
+  const machineB = within(screen.getByRole("region", { name: "machine B" }))
+  const switchB = await machineB.findByRole("switch")
+  await within(screen.getByRole("region", { name: "machine A" })).findByRole(
+    "switch"
+  )
+  await userEvent.click(switchB)
+  await waitFor(() =>
+    expect(b.api.generativeUiApplyLinks).toHaveBeenCalledTimes(1)
+  )
+  expect(a.api.generativeUiApplyLinks).not.toHaveBeenCalled()
+  expect(a.api.generativeUiSkillInfo).toHaveBeenCalledTimes(1)
+  expect(b.api.generativeUiSkillInfo).toHaveBeenCalledTimes(1)
+  expect(skillInfo).not.toHaveBeenCalled()
+  expect(applyLinks).not.toHaveBeenCalled()
 })

@@ -1,5 +1,7 @@
 "use client"
 
+import type { BackendApi } from "@/lib/backend/types"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -31,18 +33,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import {
-  acpInstallPiBinary,
-  acpPiListTrustEntries,
-  acpPiSetProjectTrust,
-  acpUninstallPiBinary,
-  acpUpdatePiConfig,
-  acpValidatePiCommand,
-  loadPiConfig,
-  listPiModelCapabilities,
-  type PiModelCatalog,
-  type PiTrustEntry,
-} from "@/lib/api"
+import { type PiModelCatalog, type PiTrustEntry } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import { useAgentInstallStream } from "@/hooks/use-agent-install-stream"
 import {
@@ -97,7 +88,7 @@ type PiRuntimeMode = "default" | "custom"
 
 /** A custom provider as `loadPiConfig` projects it out of `models.json`. */
 type PiCustomProvider = Awaited<
-  ReturnType<typeof loadPiConfig>
+  ReturnType<BackendApi["loadPiConfig"]>
 >["customProviders"][number]
 
 /** A model that has never declared reasoning — pi treats it as `["off"]` only. */
@@ -301,6 +292,8 @@ export function PiConfigPanel({
   onSaveEnv: (env: Record<string, string>, enabled: boolean) => Promise<unknown>
   onSaved: () => Promise<void>
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("AcpAgentSettings")
 
   // --- Credentials (pi's native ~/.pi/agent/{settings,auth,models}.json) ---
@@ -381,7 +374,8 @@ export function PiConfigPanel({
       setLoadingCreds(false)
       return
     }
-    loadPiConfig()
+    backendApi
+      .loadPiConfig()
       .then((cfg) => {
         if (cancelled) return
         setModel(cfg.defaultModel ?? "")
@@ -419,7 +413,7 @@ export function PiConfigPanel({
     return () => {
       cancelled = true
     }
-  }, [savedAgentDir, invalidSavedAgentDir])
+  }, [savedAgentDir, invalidSavedAgentDir, backendApi])
 
   useEffect(() => {
     let cancelled = false
@@ -430,7 +424,8 @@ export function PiConfigPanel({
       })
       return
     }
-    listPiModelCapabilities()
+    backendApi
+      .listPiModelCapabilities()
       .then((value) => {
         if (!cancelled) setCatalog({ source: catalogSource, value })
       })
@@ -451,6 +446,7 @@ export function PiConfigPanel({
     catalogRevision,
     invalidSavedAgentDir,
     invalidSavedCommand,
+    backendApi,
   ])
 
   const currentCatalog =
@@ -518,7 +514,7 @@ export function PiConfigPanel({
     const thinkingLevelMap = reasoningToMap(reasoning)
     setSavingCreds(true)
     try {
-      await acpUpdatePiConfig({
+      await backendApi.acpUpdatePiConfig({
         provider: effectiveProvider,
         model: trimmedModel,
         thinkingLevel: effectiveThinkingLevel || undefined,
@@ -593,6 +589,7 @@ export function PiConfigPanel({
     apiKey,
     onSaved,
     t,
+    backendApi,
   ])
 
   const providerHasKey =
@@ -653,14 +650,14 @@ export function PiConfigPanel({
   const detectPiBinary = useCallback(async () => {
     setCheckingPi(true)
     try {
-      setPiStatus(await acpValidatePiCommand("pi"))
+      setPiStatus(await backendApi.acpValidatePiCommand("pi"))
     } catch (error) {
       console.error("[Pi] detect binary failed", error)
       setPiStatus({ found: false, resolvedPath: null, version: null })
     } finally {
       setCheckingPi(false)
     }
-  }, [])
+  }, [backendApi])
 
   useEffect(() => {
     void detectPiBinary()
@@ -680,7 +677,7 @@ export function PiConfigPanel({
     setPiOp("install")
     await startPiInstall(taskId)
     try {
-      await acpInstallPiBinary(taskId)
+      await backendApi.acpInstallPiBinary(taskId)
       toast.success(t("toasts.piBinaryInstalled"))
       await detectPiBinary()
       setCatalogRevision((previous) => previous + 1)
@@ -690,14 +687,14 @@ export function PiConfigPanel({
     } finally {
       setPiOp(null)
     }
-  }, [startPiInstall, detectPiBinary, t])
+  }, [startPiInstall, detectPiBinary, t, backendApi])
 
   const handleUninstallPi = useCallback(async () => {
     const taskId = randomUUID()
     setPiOp("uninstall")
     await startPiInstall(taskId)
     try {
-      await acpUninstallPiBinary(taskId)
+      await backendApi.acpUninstallPiBinary(taskId)
       toast.success(t("toasts.piBinaryUninstalled"))
       await detectPiBinary()
       setCatalogRevision((previous) => previous + 1)
@@ -707,7 +704,7 @@ export function PiConfigPanel({
     } finally {
       setPiOp(null)
     }
-  }, [startPiInstall, detectPiBinary, t])
+  }, [startPiInstall, detectPiBinary, t, backendApi])
 
   // --- Runtime (bring-your-own-pi, persisted to env_json reserved keys) ---
   const [mode, setMode] = useState<PiRuntimeMode>(() =>
@@ -735,7 +732,8 @@ export function PiConfigPanel({
     }
     let cancelled = false
     setValidation(null)
-    acpValidatePiCommand(savedPiCommand)
+    backendApi
+      .acpValidatePiCommand(savedPiCommand)
       .then((result) => {
         if (!cancelled) setValidation(result)
       })
@@ -746,7 +744,7 @@ export function PiConfigPanel({
     return () => {
       cancelled = true
     }
-  }, [savedPiCommand, invalidSavedCommand, mode, command])
+  }, [savedPiCommand, invalidSavedCommand, mode, command, backendApi])
 
   // Project-trust decisions recorded in pi's `trust.json`, listed for review.
   const [trustEntries, setTrustEntries] = useState<PiTrustEntry[] | null>(null)
@@ -758,12 +756,12 @@ export function PiConfigPanel({
       return
     }
     try {
-      setTrustEntries(await acpPiListTrustEntries())
+      setTrustEntries(await backendApi.acpPiListTrustEntries())
     } catch (error) {
       console.error("[Pi] list project trust failed", error)
       setTrustEntries([])
     }
-  }, [invalidSavedAgentDir])
+  }, [invalidSavedAgentDir, backendApi])
 
   useEffect(() => {
     void loadTrustEntries()
@@ -773,7 +771,7 @@ export function PiConfigPanel({
     async (path: string) => {
       setRevoking(path)
       try {
-        await acpPiSetProjectTrust(path, null)
+        await backendApi.acpPiSetProjectTrust(path, null)
         await loadTrustEntries()
       } catch (error) {
         console.error("[Pi] revoke project trust failed", error)
@@ -782,7 +780,7 @@ export function PiConfigPanel({
         setRevoking(null)
       }
     },
-    [loadTrustEntries, t]
+    [loadTrustEntries, t, backendApi]
   )
 
   const handleValidate = useCallback(async () => {
@@ -791,14 +789,14 @@ export function PiConfigPanel({
     setValidating(true)
     setValidation(null)
     try {
-      setValidation(await acpValidatePiCommand(cmd))
+      setValidation(await backendApi.acpValidatePiCommand(cmd))
     } catch (error) {
       console.error("[Pi] validate command failed", error)
       setValidation({ found: false, resolvedPath: null, version: null })
     } finally {
       setValidating(false)
     }
-  }, [command])
+  }, [command, backendApi])
 
   const customIncomplete = mode === "custom" && !command.trim()
   const invalidEnteredCommand =

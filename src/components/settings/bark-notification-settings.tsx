@@ -1,5 +1,12 @@
 "use client"
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
+import type { BackendApi, BackendPlatform } from "@/lib/backend/types"
+import * as legacyBackendApi from "@/lib/api"
+import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
 import { useEffect, useRef, useState } from "react"
 import { BellRing, Eye, EyeOff } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -19,7 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { getWebServerStatus } from "@/lib/api"
+
 import { getRemoteWorkspaceConnection } from "@/lib/remote-workspace"
 import {
   getBarkNotificationSettings,
@@ -30,12 +37,7 @@ import {
   type BarkNotificationRegistration,
   type BarkNotificationSettings,
 } from "@/lib/bark-notifications"
-import {
-  getActiveRemoteConnectionId,
-  getServerBaseUrl,
-  getTransport,
-  isDesktop,
-} from "@/lib/transport"
+import { isDesktop } from "@/lib/transport"
 
 function httpUrl(value: string): string {
   try {
@@ -50,12 +52,15 @@ function httpUrl(value: string): string {
   }
 }
 
-async function suggestedServerUrl(): Promise<string> {
-  if (!isDesktop() || getActiveRemoteConnectionId() !== null) {
-    return httpUrl(getServerBaseUrl())
+async function suggestedServerUrl(
+  backendApi: BackendApi = legacyBackendApi,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<string> {
+  if (!isDesktop() || backendPlatform.getActiveRemoteConnectionId() !== null) {
+    return httpUrl(backendPlatform.getServerBaseUrl())
   }
   try {
-    const status = await getWebServerStatus()
+    const status = await backendApi.getWebServerStatus()
     return (
       status?.addresses.find((address) => {
         if (!httpUrl(address)) return false
@@ -71,10 +76,13 @@ async function suggestedServerUrl(): Promise<string> {
   }
 }
 
-async function suggestedDefaults() {
-  const remoteId = getActiveRemoteConnectionId()
+async function suggestedDefaults(
+  backendApi: BackendApi = legacyBackendApi,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+) {
+  const remoteId = backendPlatform.getActiveRemoteConnectionId()
   const [serverUrl, connection] = await Promise.all([
-    suggestedServerUrl(),
+    suggestedServerUrl(backendApi, backendPlatform),
     remoteId === null
       ? null
       : getRemoteWorkspaceConnection(remoteId).catch(() => null),
@@ -88,15 +96,20 @@ async function suggestedDefaults() {
 }
 
 export function BarkNotificationSettingsSection() {
+  const backendPlatform = useBackendPlatform()
+
   // Remote workspaces normally have separate windows. Also reset on an
   // identity change if this section is reused in a live workspace switcher.
-  const scope = `${getActiveRemoteConnectionId() ?? "local"}:${getServerBaseUrl()}`
+  const scope = `${backendPlatform.getActiveRemoteConnectionId() ?? "local"}:${backendPlatform.getServerBaseUrl()}`
   return <BarkSubscriptions key={scope} />
 }
 
 function BarkSubscriptions() {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("BarkNotificationSettings")
-  const [transport] = useState(getTransport)
+  const [transport] = useState(backendPlatform.getTransport)
   const [registrations, setRegistrations] = useState<
     BarkNotificationRegistration[] | null
   >(null)
@@ -107,19 +120,23 @@ function BarkSubscriptions() {
 
   useEffect(() => {
     let active = true
-    Promise.all([listBarkNotificationSettings(), suggestedDefaults()])
+    Promise.all([
+      listBarkNotificationSettings(backendPlatform),
+      suggestedDefaults(backendApi, backendPlatform),
+    ])
       .then(([entries, defaults]) => {
-        if (!active || getTransport() !== transport) return
+        if (!active || backendPlatform.getTransport() !== transport) return
         setRegistrations(entries)
         setSuggested(defaults)
       })
       .catch(() => {
-        if (active && getTransport() === transport) setLoadFailed(true)
+        if (active && backendPlatform.getTransport() === transport)
+          setLoadFailed(true)
       })
     return () => {
       active = false
     }
-  }, [attempt, transport])
+  }, [attempt, transport, backendPlatform, backendApi])
 
   return (
     <SettingsSection
@@ -203,8 +220,10 @@ function BarkSubscriptionForm({
   suggested: { serverUrl: string; sourceName: string }
   onSaved: (settings: BarkNotificationSettings) => void
 }) {
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("BarkNotificationSettings")
-  const [transport] = useState(getTransport)
+  const [transport] = useState(backendPlatform.getTransport)
   const [initiallyRegistered] = useState(registered)
   const active = useRef(false)
   const [draft, setDraft] = useState<BarkNotificationSettings | null>(null)
@@ -220,9 +239,9 @@ function BarkSubscriptionForm({
   useEffect(() => {
     let cancelled = false
     active.current = true
-    getBarkNotificationSettings(deviceId)
+    getBarkNotificationSettings(deviceId, backendPlatform)
       .then((settings) => {
-        if (cancelled || getTransport() !== transport) return
+        if (cancelled || backendPlatform.getTransport() !== transport) return
         setSaved(settings)
         setDraft(
           !initiallyRegistered && deviceId === SHARED_BARK_DEVICE_ID
@@ -235,13 +254,21 @@ function BarkSubscriptionForm({
         )
       })
       .catch(() => {
-        if (!cancelled && getTransport() === transport) setError("loadFailed")
+        if (!cancelled && backendPlatform.getTransport() === transport)
+          setError("loadFailed")
       })
     return () => {
       cancelled = true
       active.current = false
     }
-  }, [deviceId, initiallyRegistered, suggested, attempt, transport])
+  }, [
+    deviceId,
+    initiallyRegistered,
+    suggested,
+    attempt,
+    transport,
+    backendPlatform,
+  ])
 
   const dirty =
     draft !== null &&
@@ -261,31 +288,38 @@ function BarkSubscriptionForm({
 
   async function run(action: "save" | "test") {
     if (disabled || !draft || (action === "test" && !canTest)) return
-    if (getTransport() !== transport) return
+    if (backendPlatform.getTransport() !== transport) return
     setBusy(action)
     setError(null)
     setNotice(null)
     try {
       if (action === "save") {
-        const normalized = await setBarkNotificationSettings(deviceId, draft)
-        if (!active.current || getTransport() !== transport) return
+        const normalized = await setBarkNotificationSettings(
+          deviceId,
+          draft,
+          backendPlatform
+        )
+        if (!active.current || backendPlatform.getTransport() !== transport)
+          return
         setSaved(normalized)
         setDraft(normalized)
         onSaved(normalized)
         setNotice("saved")
       } else {
-        await testBarkNotification(deviceId)
-        if (!active.current || getTransport() !== transport) return
+        await testBarkNotification(deviceId, backendPlatform)
+        if (!active.current || backendPlatform.getTransport() !== transport)
+          return
         setNotice("testSent")
       }
     } catch {
       // Backend errors can contain the secret Bark URL. Only show fixed,
       // actionable messages, never interpolate or log the raw exception.
-      if (active.current && getTransport() === transport) {
+      if (active.current && backendPlatform.getTransport() === transport) {
         setError(action === "save" ? "saveFailed" : "testFailed")
       }
     } finally {
-      if (active.current && getTransport() === transport) setBusy(null)
+      if (active.current && backendPlatform.getTransport() === transport)
+        setBusy(null)
     }
   }
 

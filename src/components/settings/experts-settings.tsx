@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Loader2 } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
@@ -8,13 +9,7 @@ import {
   SkillAgentMatrix,
   type MatrixSkill,
 } from "@/components/settings/skill-agent-matrix"
-import {
-  acpListAgents,
-  expertsApplyLinks,
-  expertsList,
-  expertsListAllInstallStatuses,
-  expertsReadContent,
-} from "@/lib/api"
+
 import { invalidateAgentSkillsCache } from "@/hooks/use-agent-skills"
 import { useLatestCall } from "@/hooks/use-latest-call"
 import { piUsesCustomAgentDir } from "@/lib/pi-config"
@@ -37,6 +32,8 @@ export function ExpertsBody({
 }: {
   onRegisterRefresh?: (refresh: () => void) => void
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("ExpertsSettings")
   const locale = useLocale()
 
@@ -55,8 +52,8 @@ export function ExpertsBody({
     setLoadError(null)
     try {
       const [expertList, agentList] = await Promise.all([
-        expertsList(),
-        acpListAgents(),
+        backendApi.expertsList(),
+        backendApi.acpListAgents(),
       ])
       if (!current()) return
       setExperts(expertList)
@@ -76,7 +73,7 @@ export function ExpertsBody({
     } finally {
       if (current()) setLoading(false)
     }
-  }, [beginLoad])
+  }, [beginLoad, backendApi])
 
   useEffect(() => {
     refresh().catch((err) => {
@@ -185,11 +182,11 @@ export function ExpertsBody({
             categoryOrder={CATEGORY_SORT}
             translateCategory={translatedCategory}
             translateState={translatedState}
-            loadAllStatuses={expertsListAllInstallStatuses}
-            applyLinks={expertsApplyLinks}
-            loadContent={expertsReadContent}
+            loadAllStatuses={backendApi.expertsListAllInstallStatuses}
+            applyLinks={backendApi.expertsApplyLinks}
+            loadContent={backendApi.expertsReadContent}
             onApplied={(touched) =>
-              touched.forEach((a) => invalidateAgentSkillsCache(a))
+              touched.forEach((a) => invalidateAgentSkillsCache(a, backendApi))
             }
             searchPlaceholder={t("searchPlaceholder")}
           />

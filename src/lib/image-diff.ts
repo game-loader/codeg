@@ -1,4 +1,6 @@
-import { gitShowFileBase64, readFileBase64 } from "@/lib/api"
+import type { BackendApi } from "@/lib/backend/types"
+import * as legacyBackendApi from "@/lib/api"
+
 import { extractAppCommandError, toErrorMessage } from "@/lib/app-error"
 import { joinRootRel } from "@/lib/file-open-target"
 
@@ -84,11 +86,12 @@ export interface ImageDiffSides {
 async function loadSide(
   folderPath: string,
   file: string,
-  source: ImageDiffSource
+  source: ImageDiffSource,
+  backendApi: BackendApi = legacyBackendApi
 ): Promise<ImageDiffSide> {
   if (source.kind === "worktree") {
     try {
-      const base64 = await readFileBase64(
+      const base64 = await backendApi.readFileBase64(
         joinRootRel(folderPath, file),
         IMAGE_DIFF_MAX_BYTES
       )
@@ -109,7 +112,7 @@ async function loadSide(
   }
 
   try {
-    const blob = await gitShowFileBase64(
+    const blob = await backendApi.gitShowFileBase64(
       folderPath,
       file,
       source.ref,
@@ -146,11 +149,12 @@ export async function loadImageDiffSides(
   folderPath: string,
   file: string,
   original: ImageDiffSource,
-  modified: ImageDiffSource
+  modified: ImageDiffSource,
+  backendApi: BackendApi = legacyBackendApi
 ): Promise<ImageDiffSides> {
   const [originalSide, modifiedSide] = await Promise.all([
-    loadSide(folderPath, file, original),
-    loadSide(folderPath, file, modified),
+    loadSide(folderPath, file, original, backendApi),
+    loadSide(folderPath, file, modified, backendApi),
   ])
   return { original: originalSide, modified: modifiedSide }
 }

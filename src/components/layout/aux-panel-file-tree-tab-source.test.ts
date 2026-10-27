@@ -391,7 +391,7 @@ describe("workspace-context divergence-aware save guard", () => {
     // Files outside every registered folder have no live watcher, so
     // their saves must ALWAYS pre-verify (`unwatched`).
     expect(providerSource).toMatch(
-      /if \(\(tab\.stale \|\| unwatched\) && !options\?\.force\)[\s\S]{0,600}readFileForEdit\(io\.rootPath, io\.ioPath\)/
+      /if \(\(tab\.stale \|\| unwatched\) && !options\?\.force\)[\s\S]{0,800}backendApi\.readFileForEdit\(\s*io\.rootPath,\s*io\.ioPath\s*\)/
     )
     expect(providerSource).toMatch(
       /if \(\(tab\.stale \|\| unwatched\) && !options\?\.force\)[\s\S]{0,1200}enqueueExternalConflict/

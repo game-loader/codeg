@@ -142,7 +142,8 @@ describe("ComputerWindowPicker", () => {
     })
     expect(api.computerShareApp).toHaveBeenCalledWith(
       { targetId: "w1" },
-      "control"
+      "control",
+      expect.objectContaining({ getTransport: expect.any(Function) })
     )
     expect(app.getByRole("button", { name: "Act" })).toHaveAttribute(
       "aria-pressed",
@@ -170,7 +171,8 @@ describe("ComputerWindowPicker", () => {
     })
     expect(api.computerShareApp).toHaveBeenLastCalledWith(
       { appId: "a1" },
-      "none"
+      "none",
+      expect.objectContaining({ getTransport: expect.any(Function) })
     )
   })
 
@@ -199,7 +201,10 @@ describe("ComputerWindowPicker", () => {
     await act(async () => {
       fireEvent.click(card.getByRole("button", { name: "Read" }))
     })
-    expect(api.computerShareScreen).toHaveBeenCalledWith("read")
+    expect(api.computerShareScreen).toHaveBeenCalledWith(
+      "read",
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
     expect(card.getByRole("button", { name: "Read" })).toHaveAttribute(
       "aria-pressed",
       "true"
@@ -255,7 +260,11 @@ describe("ComputerWindowPicker", () => {
         screen.getByRole("menuitem", { name: "Let agents read all of them" })
       )
     })
-    expect(api.computerShareWindows).toHaveBeenCalledWith(["w3"], "read")
+    expect(api.computerShareWindows).toHaveBeenCalledWith(
+      ["w3"],
+      "read",
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
   })
 
   /** A window off the screen says why: minimized, or its application
@@ -308,7 +317,11 @@ describe("ComputerWindowPicker", () => {
       fireEvent.click(levels.getByRole("button", { name: "Read" }))
       await Promise.resolve()
     })
-    expect(api.computerShareWindow).toHaveBeenCalledWith("w1", "read")
+    expect(api.computerShareWindow).toHaveBeenCalledWith(
+      "w1",
+      "read",
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
   })
 
   /** The toolbar says how many of the windows are shared; each window's
@@ -356,7 +369,11 @@ describe("ComputerWindowPicker", () => {
       fireEvent.click(textEdit.getByRole("button", { name: "Act" }))
       await Promise.resolve()
     })
-    expect(api.computerShareWindow).toHaveBeenLastCalledWith("w1", "control")
+    expect(api.computerShareWindow).toHaveBeenLastCalledWith(
+      "w1",
+      "control",
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
     expect(textEdit.getByRole("button", { name: "Act" })).toHaveAttribute(
       "aria-pressed",
       "true"
@@ -365,7 +382,11 @@ describe("ComputerWindowPicker", () => {
       fireEvent.click(notes.getByRole("button", { name: "Off" }))
       await Promise.resolve()
     })
-    expect(api.computerShareWindow).toHaveBeenLastCalledWith("w2", "none")
+    expect(api.computerShareWindow).toHaveBeenLastCalledWith(
+      "w2",
+      "none",
+      expect.objectContaining({ getTransport: expect.any(Function) })
+    )
     expect(notes.getByRole("button", { name: "Off" })).toHaveAttribute(
       "aria-pressed",
       "true"
@@ -403,7 +424,8 @@ describe("ComputerWindowPicker", () => {
     })
     expect(api.computerShareWindows).toHaveBeenCalledWith(
       ["w1", "w2"],
-      "control"
+      "control",
+      expect.objectContaining({ getTransport: expect.any(Function) })
     )
   })
 
@@ -483,7 +505,8 @@ describe("ComputerWindowPicker", () => {
       await Promise.resolve()
     })
     expect(api.computerRequestPermission).toHaveBeenCalledWith(
-      "screenRecording"
+      "screenRecording",
+      expect.objectContaining({ getTransport: expect.any(Function) })
     )
   })
 

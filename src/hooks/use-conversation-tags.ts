@@ -2,7 +2,7 @@ import { useMemo } from "react"
 import { useShallow } from "zustand/react/shallow"
 import { resolveTags, type BranchChipView } from "@/lib/conversation-tags"
 import type { ConversationTagDetail } from "@/lib/types"
-import { useConversationTagsStore } from "@/stores/conversation-tags-store"
+import { useRuntimeConversationTagsStore } from "@/stores/conversation-tags-store"
 
 /**
  * A conversation's `tag_ids` resolved to the tags this window knows, in
@@ -17,7 +17,7 @@ import { useConversationTagsStore } from "@/stores/conversation-tags-store"
 export function useResolvedTags(
   tagIds: readonly number[] | undefined
 ): readonly ConversationTagDetail[] {
-  return useConversationTagsStore(
+  return useRuntimeConversationTagsStore(
     useShallow((s) => resolveTags(tagIds, s.tagsById))
   )
 }
@@ -31,8 +31,8 @@ export function useResolvedTags(
 export function useBranchChip(
   gitBranch: string | null | undefined
 ): BranchChipView | null {
-  const enabled = useConversationTagsStore((s) => s.branchTag.enabled)
-  const color = useConversationTagsStore((s) => s.branchTag.color)
+  const enabled = useRuntimeConversationTagsStore((s) => s.branchTag.enabled)
+  const color = useRuntimeConversationTagsStore((s) => s.branchTag.color)
   return useMemo(
     () => (enabled && gitBranch ? { name: gitBranch, color } : null),
     [enabled, gitBranch, color]

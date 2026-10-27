@@ -1,11 +1,13 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { CircleDot, GitPullRequest, Info, MessageSquare } from "lucide-react"
 
-import { forgeSettingsGet, forgeSettingsSet } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import {
   DEFAULT_FORGE_AUTO_SETTINGS,
@@ -45,7 +47,6 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import {
   ForgeAutoActivity,
   ForgeAutoSettingsSection,
@@ -129,6 +130,9 @@ function ForgeSettingsBody({
   onClose: () => void
   onSaved?: (store: ForgeSettingsStore) => void
 }) {
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
   const t = useTranslations("Forge")
   const folders = useAppWorkspaceStore((s) => s.folders)
   const projectFolders = useMemo(
@@ -172,6 +176,8 @@ function ForgeSettingsScope({
   onSaved?: (store: ForgeSettingsStore) => void
   t: ReturnType<typeof useTranslations<"Forge">>
 }) {
+  const backendApi = useBackendApi()
+
   const isGlobal = scope === FORGE_GLOBAL_SCOPE
   const [store, setStore] = useState<ForgeSettingsStore | null>(null)
   // Folder scope only: whether this folder follows the global row or has its
@@ -191,7 +197,8 @@ function ForgeSettingsScope({
 
   useEffect(() => {
     let cancelled = false
-    forgeSettingsGet()
+    backendApi
+      .forgeSettingsGet()
       .then((loaded) => {
         if (cancelled) return
         const own = ownForgeSettings(loaded, isGlobal ? null : scope)
@@ -219,7 +226,7 @@ function ForgeSettingsScope({
     return () => {
       cancelled = true
     }
-  }, [scope, isGlobal])
+  }, [scope, isGlobal, backendApi])
 
   // The form is live for the global scope and for a folder editing its own
   // settings; while a folder follows the global row there is nothing here to
@@ -256,7 +263,7 @@ function ForgeSettingsScope({
     setSaving(true)
     try {
       // "Use global defaults" saves by dropping the folder's own row.
-      const stored = await forgeSettingsSet(
+      const stored = await backendApi.forgeSettingsSet(
         isGlobal ? null : scope,
         !isGlobal && source === "global"
           ? null

@@ -1,10 +1,14 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useEffect, useMemo, useRef, useState } from "react"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import { ArrowLeft, Globe, Wand2 } from "lucide-react"
 import { useTranslations } from "next-intl"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
 import { AgentSelector } from "@/components/chat/agent-selector"
 import {
   RichComposer,
@@ -33,7 +37,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { FolderSelect } from "@/components/shared/folder-select"
 import { cn } from "@/lib/utils"
-import { automationComputeNextRun } from "@/lib/api"
+
 import type {
   AgentType,
   Automation,
@@ -81,6 +85,13 @@ export function AutomationEditor({
   onBackToTemplates,
   defaultFolderId = null,
 }: AutomationEditorProps) {
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendApi = useBackendApi()
+
   const t = useTranslations("Automations")
   const folders = useAppWorkspaceStore((s) => s.folders)
 
@@ -194,7 +205,8 @@ export function AutomationEditor({
     }
     let cancelled = false
     const handle = setTimeout(() => {
-      automationComputeNextRun(cron.trim(), timezone)
+      backendApi
+        .automationComputeNextRun(cron.trim(), timezone)
         .then((r) => {
           if (!cancelled) setNextRun(r)
         })
@@ -206,7 +218,7 @@ export function AutomationEditor({
       cancelled = true
       clearTimeout(handle)
     }
-  }, [cron, timezone, trigger])
+  }, [cron, timezone, trigger, backendApi])
 
   // Backfill the default folder once the workspace folders finish hydrating — a
   // new (or template-seeded) automation opened before they load would otherwise

@@ -44,13 +44,8 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
-import {
-  deleteCommitMessageSettings,
-  getCommitMessageSettings,
-  listOpenFolderDetails,
-  setCommitMessageSettings,
-} from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import { getAgentLabel } from "@/lib/custom-agents"
 import type {
@@ -134,13 +129,15 @@ function CommitMessageSettingsScoped({
  *  be saved for. A window without the workspace loaded (the commit window)
  *  asks for them. */
 function useProjectFolders(): FolderDetail[] {
+  const backendApi = useBackendApi()
   const workspaceFolders = useAppWorkspaceStore((s) => s.folders)
   const [fetched, setFetched] = useState<FolderDetail[] | null>(null)
   const fetchNeeded = workspaceFolders.length === 0
   useEffect(() => {
     if (!fetchNeeded) return
     let cancelled = false
-    listOpenFolderDetails()
+    backendApi
+      .listOpenFolderDetails()
       .then((folders) => {
         if (!cancelled) setFetched(folders)
       })
@@ -148,7 +145,7 @@ function useProjectFolders(): FolderDetail[] {
     return () => {
       cancelled = true
     }
-  }, [fetchNeeded])
+  }, [fetchNeeded, backendApi])
   return useMemo(
     () =>
       (fetchNeeded ? (fetched ?? []) : workspaceFolders).filter(
@@ -172,6 +169,7 @@ function CommitMessageSettingsBody({
   const tm = useTranslations("AcpAgentSettings.multiAgent")
   const ta = useTranslations("AcpAgentSettings.multiAgent.assistants")
   const { agents } = useAcpAgents()
+  const backendApi = useBackendApi()
   const projectFolders = useProjectFolders()
   const isGlobal = folderId === GLOBAL_SCOPE
 
@@ -201,8 +199,10 @@ function CommitMessageSettingsBody({
   useEffect(() => {
     let cancelled = false
     Promise.all([
-      isGlobal ? Promise.resolve(null) : getCommitMessageSettings(folderId),
-      getCommitMessageSettings(null),
+      isGlobal
+        ? Promise.resolve(null)
+        : backendApi.getCommitMessageSettings(folderId),
+      backendApi.getCommitMessageSettings(null),
     ])
       .then(([own, global]) => {
         if (cancelled) return
@@ -224,7 +224,7 @@ function CommitMessageSettingsBody({
     return () => {
       cancelled = true
     }
-  }, [folderId, isGlobal, t])
+  }, [folderId, isGlobal, t, backendApi])
 
   // The form is live for the global scope and for a folder with settings of
   // its own; a folder following the global ones shows none, and probes none.
@@ -383,9 +383,9 @@ function CommitMessageSettingsBody({
     setSaving(true)
     try {
       if (follow) {
-        await deleteCommitMessageSettings(folderId)
+        await backendApi.deleteCommitMessageSettings(folderId)
       } else {
-        await setCommitMessageSettings(isGlobal ? null : folderId, {
+        await backendApi.setCommitMessageSettings(isGlobal ? null : folderId, {
           agent: picked?.ok ? picked.agent : null,
           instructions: instructions.trim(),
           auto_commit: autoCommit,

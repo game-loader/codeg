@@ -35,8 +35,10 @@ pub use conversation::{
     SelectedSessionKey, SessionStats, SidebarData,
 };
 pub use folder::{
-    FolderCommandInfo, FolderDetail, FolderGroupDetail, FolderHistoryEntry, OpenedTab,
-    OpenedTabsSnapshot, SaveTabsOutcome, SidebarEntryKind, SidebarLayoutEntry,
+    FolderCommandInfo, FolderDetail, FolderGroupDetail, FolderHistoryEntry, GitWorktreeInfo,
+    OpenedTab, OpenedTabsSnapshot, RepositoryProjectIdentity, RepositoryProjectIdentityEntry,
+    RepositoryProjectIdentityStatus, RepositoryProjectProvider, SaveTabsOutcome, SidebarEntryKind,
+    SidebarLayoutEntry,
 };
 pub use message::{
     AgentExecutionStats, AgentTimelineEntry, AgentToolCall, ContentBlock, ImageData, MessageRole,

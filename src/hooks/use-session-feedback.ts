@@ -26,12 +26,13 @@
  * tombstones reconcile a consume event that races ahead of hydration.
  */
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 
 import { useAcpEvent } from "@/contexts/acp-connections-context"
-import { acpGetSessionSnapshot, submitSessionFeedback } from "@/lib/api"
+
 import { toErrorMessage } from "@/lib/app-error"
 import { notify } from "@/lib/notify"
 import { isNoActiveTurnRejection } from "@/lib/turn-busy"
@@ -136,6 +137,8 @@ export function useSessionFeedback({
   steeredMessageIds,
   onResendAsPrompt,
 }: UseSessionFeedbackArgs): UseSessionFeedback {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("LiveFeedback")
   const [notes, setNotes] = useState<FeedbackItem[]>([])
   const [submitting, setSubmitting] = useState(false)
@@ -212,7 +215,8 @@ export function useSessionFeedback({
     if (!connectionId) return
     let cancelled = false
     const startGen = turnGenRef.current
-    void acpGetSessionSnapshot(connectionId)
+    void backendApi
+      .acpGetSessionSnapshot(connectionId)
       .then((snap) => {
         if (cancelled || !snap) return
         // Tool availability is fixed at launch and only ever upgrades to true.
@@ -242,7 +246,7 @@ export function useSessionFeedback({
     return () => {
       cancelled = true
     }
-  }, [connectionId])
+  }, [connectionId, backendApi])
 
   // Self-heal capability flags. The hydrate above is keyed on `connectionId`,
   // which appears the moment a NEW conversation's connection is created — while
@@ -255,7 +259,8 @@ export function useSessionFeedback({
     if (!connectionId || (toolAvailable && nativeSteering)) return
     if (connStatus !== "connected" && connStatus !== "prompting") return
     let cancelled = false
-    void acpGetSessionSnapshot(connectionId)
+    void backendApi
+      .acpGetSessionSnapshot(connectionId)
       .then((snap) => {
         if (cancelled) return
         // Monotonic upgrade only (see hydrate effect) — no downgrade, no flicker.
@@ -268,7 +273,7 @@ export function useSessionFeedback({
     return () => {
       cancelled = true
     }
-  }, [connectionId, connStatus, toolAvailable, nativeSteering])
+  }, [connectionId, connStatus, toolAvailable, nativeSteering, backendApi])
 
   // Build the note list from the live event stream, scoped to this connection.
   useAcpEvent(
@@ -357,7 +362,8 @@ export function useSessionFeedback({
       }
       const cid = connectionId
       if (!cid) return
-      void acpGetSessionSnapshot(cid)
+      void backendApi
+        .acpGetSessionSnapshot(cid)
         .then((snap) => {
           // Explicit `false` only — an older server omits the field entirely
           // (undefined), which must not read as a downgrade.
@@ -372,7 +378,7 @@ export function useSessionFeedback({
         })
         .catch(() => {})
     },
-    [nativeSteering, connectionId, t]
+    [nativeSteering, connectionId, t, backendApi]
   )
 
   const submit = useCallback(
@@ -389,7 +395,7 @@ export function useSessionFeedback({
       }
       setSubmitting(true)
       try {
-        const item = await submitSessionFeedback(connectionId, text)
+        const item = await backendApi.submitSessionFeedback(connectionId, text)
         reconcileChannel(item)
         // Optimistically add; the broadcast event dedups against this by id.
         setNotes((prev) =>
@@ -424,6 +430,7 @@ export function useSessionFeedback({
       onResendAsPrompt,
       reconcileChannel,
       t,
+      backendApi,
     ]
   )
 
@@ -441,7 +448,11 @@ export function useSessionFeedback({
       if (!text || !connectionId) {
         throw new Error("nothing to steer")
       }
-      const item = await submitSessionFeedback(connectionId, text, blocks)
+      const item = await backendApi.submitSessionFeedback(
+        connectionId,
+        text,
+        blocks
+      )
       // A resolution that landed after a connection switch must not touch the
       // new connection's channel state or note list (reconcileChannel guards
       // itself too; the append needs the same protection).
@@ -454,7 +465,7 @@ export function useSessionFeedback({
       }
       return item
     },
-    [connectionId, reconcileChannel]
+    [connectionId, reconcileChannel, backendApi]
   )
 
   const openDialog = useCallback(() => setDialogOpen(true), [])

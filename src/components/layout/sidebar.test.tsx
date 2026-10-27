@@ -90,6 +90,7 @@ const academicTransport = vi.hoisted(() => ({
 }))
 vi.mock("@/components/conversations/conversation-tags-manager", () => ({
   openConversationTagsManager: spies.openConversationTagsManager,
+  useOpenConversationTagsManager: () => spies.openConversationTagsManager,
 }))
 vi.mock("@/contexts/sidebar-context", () => ({
   useSidebarContext: () => ({ isOpen: true, toggle: vi.fn() }),

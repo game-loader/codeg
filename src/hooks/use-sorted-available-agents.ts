@@ -1,5 +1,6 @@
 "use client"
 
+import { useOptionalBackendClient } from "@/contexts/backend-client-context"
 import { useEffect, useMemo } from "react"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { AGENT_DISPLAY_ORDER, type AgentType } from "@/lib/types"
@@ -13,10 +14,10 @@ const STORAGE_KEY = "workspace:sorted-available-agents"
 // the source. Gate the seed read on this set.
 const VALID_AGENT_TYPES = new Set<string>(AGENT_DISPLAY_ORDER)
 
-function readSeed(): AgentType[] {
+function readSeed(storageKey = STORAGE_KEY): AgentType[] {
   if (typeof window === "undefined") return []
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
+    const raw = window.localStorage.getItem(storageKey)
     if (!raw) return []
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
@@ -28,10 +29,10 @@ function readSeed(): AgentType[] {
   }
 }
 
-function writeSeed(types: AgentType[]): void {
+function writeSeed(types: AgentType[], storageKey = STORAGE_KEY): void {
   if (typeof window === "undefined") return
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(types))
+    window.localStorage.setItem(storageKey, JSON.stringify(types))
   } catch {
     // Quota exceeded or storage disabled — ignore.
   }
@@ -67,6 +68,14 @@ export interface UseSortedAvailableAgentsResult {
  */
 export function useSortedAvailableAgents(): UseSortedAvailableAgentsResult {
   const { agents, fresh, refresh } = useAcpAgents()
+  const client = useOptionalBackendClient()
+  const storageKey = client
+    ? `${STORAGE_KEY}:backend:${client.key}`
+    : STORAGE_KEY
+  const seed = useMemo(
+    () => (client ? readSeed(storageKey) : initialSeed),
+    [client, storageKey]
+  )
 
   const liveSortedTypes = useMemo(
     () =>
@@ -78,12 +87,12 @@ export function useSortedAvailableAgents(): UseSortedAvailableAgentsResult {
   // resolve a sensible default without waiting on the API. Once fresh,
   // the live list takes over even if it temporarily shrinks (e.g. user
   // disabled an agent).
-  const sortedTypes = fresh ? liveSortedTypes : initialSeed
+  const sortedTypes = fresh ? liveSortedTypes : seed
 
   useEffect(() => {
     if (!fresh) return
-    writeSeed(liveSortedTypes)
-  }, [fresh, liveSortedTypes])
+    writeSeed(liveSortedTypes, storageKey)
+  }, [fresh, liveSortedTypes, storageKey])
 
   return { sortedTypes, fresh, refresh }
 }

@@ -1,5 +1,10 @@
 "use client"
 
+import type { BackendApi } from "@/lib/backend/types"
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import {
   useCallback,
   useEffect,
@@ -37,7 +42,7 @@ import {
 } from "lucide-react"
 import { parse as parseTomlDocument } from "smol-toml"
 import { isDesktop, openUrl } from "@/lib/platform"
-import { getActiveRemoteConnectionId } from "@/lib/transport"
+
 import { toast } from "sonner"
 import {
   customAgentId,
@@ -88,30 +93,7 @@ import {
   ComboboxList,
 } from "@/components/ui/combobox"
 import { cn, copyTextToClipboard, randomUUID } from "@/lib/utils"
-import {
-  acpClearBinaryCache,
-  acpDetectAgentLocalVersion,
-  acpDownloadAgentBinary,
-  acpFetchAgentLatestRelease,
-  acpUpdateSystemAgent,
-  acpInstallUvTool,
-  acpGetAgentStatus,
-  acpListAgents,
-  acpPreflight,
-  acpPrepareNpxAgent,
-  acpReorderAgents,
-  acpDeleteCustomAgent,
-  acpUninstallAgent,
-  acpUpdateAgentConfig,
-  acpUpdateAgentEnv,
-  acpUpdateHermesConfig,
-  acpRevealHermesHome,
-  acpOpenHermesSetupTerminal,
-  codexPollDeviceCode,
-  codexRequestDeviceCode,
-  listModelProviders,
-  opencodeProviderCatalog,
-} from "@/lib/api"
+
 import type {
   AcpAgentInfo,
   AdapterInfo,
@@ -387,13 +369,14 @@ function acpText(
  * surfaces — the settings window fetches its own list, so without this every
  * custom agent here falls back to the initial-letter glyph.
  */
-function publishAgentDisplay(list: AcpAgentInfo[]): void {
+function publishAgentDisplay(list: AcpAgentInfo[], api: BackendApi): void {
   setCustomAgentDisplay(
     list.map((agent) => ({
       agentType: agent.agent_type,
       name: agent.name,
       iconUrl: agent.icon_url,
-    }))
+    })),
+    api
   )
 }
 
@@ -4762,6 +4745,9 @@ function AgentReorderItem({
 }
 
 export function AcpAgentSettings() {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const ime = useImeGuard()
   const locale = useLocale()
   const t = useTranslations("AcpAgentSettings")
@@ -4928,11 +4914,11 @@ export function AcpAgentSettings() {
     setLoadingError(null)
     try {
       const [next, providers] = await Promise.all([
-        acpListAgents(),
-        listModelProviders().catch(() => [] as ModelProviderInfo[]),
+        backendApi.acpListAgents(),
+        backendApi.listModelProviders().catch(() => [] as ModelProviderInfo[]),
       ])
       setAgents(next)
-      publishAgentDisplay(next)
+      publishAgentDisplay(next, backendApi)
       setModelProviders(providers)
       setDrafts((prev) => {
         const updated = { ...prev }
@@ -4971,7 +4957,7 @@ export function AcpAgentSettings() {
     } finally {
       setLoadingAgents(false)
     }
-  }, [])
+  }, [backendApi])
 
   const runPreflight = useCallback(
     async (agentType: AgentType, forceRefresh?: boolean) => {
@@ -4979,9 +4965,9 @@ export function AcpAgentSettings() {
       try {
         const [resultState, versionState, statusState] =
           await Promise.allSettled([
-            acpPreflight(agentType, forceRefresh),
-            acpDetectAgentLocalVersion(agentType),
-            acpGetAgentStatus(agentType),
+            backendApi.acpPreflight(agentType, forceRefresh),
+            backendApi.acpDetectAgentLocalVersion(agentType),
+            backendApi.acpGetAgentStatus(agentType),
           ])
 
         if (versionState.status === "fulfilled") {
@@ -5039,7 +5025,7 @@ export function AcpAgentSettings() {
         setChecking((prev) => ({ ...prev, [agentType]: false }))
       }
     },
-    []
+    [backendApi]
   )
 
   const runAllPreflight = useCallback(
@@ -5153,7 +5139,8 @@ export function AcpAgentSettings() {
     setVisitLatestRelease(null)
     if (!latestLookupTarget) return
     let current = true
-    acpFetchAgentLatestRelease(latestLookupTarget)
+    backendApi
+      .acpFetchAgentLatestRelease(latestLookupTarget)
       .then((release) => {
         if (current && release) {
           setVisitLatestRelease({ agentType: latestLookupTarget, release })
@@ -5165,7 +5152,7 @@ export function AcpAgentSettings() {
     return () => {
       current = false
     }
-  }, [latestLookupTarget])
+  }, [latestLookupTarget, backendApi])
 
   // A settings save (env or native config) only takes effect on the NEXT agent
   // start, so any running session of that agent stays on its launch-time config
@@ -5207,7 +5194,7 @@ export function AcpAgentSettings() {
       const parsedEnv = parseEnvText(envText)
       setSavingEnv((prev) => ({ ...prev, [agentType]: true }))
       try {
-        const affected = await acpUpdateAgentEnv(agentType, {
+        const affected = await backendApi.acpUpdateAgentEnv(agentType, {
           enabled,
           env: parsedEnv,
           modelProviderId: modelProviderId ?? null,
@@ -5264,7 +5251,7 @@ export function AcpAgentSettings() {
         setSavingEnv((prev) => ({ ...prev, [agentType]: false }))
       }
     },
-    [reportAffectedSessions]
+    [reportAffectedSessions, backendApi]
   )
 
   const persistConfig = useCallback(
@@ -5314,7 +5301,7 @@ export function AcpAgentSettings() {
       }
       setSavingConfig((prev) => ({ ...prev, [agentType]: true }))
       try {
-        const affected = await acpUpdateAgentConfig(agentType, {
+        const affected = await backendApi.acpUpdateAgentConfig(agentType, {
           config_json: configForPersist || null,
           opencode_auth_json:
             typeof options?.openCodeAuthJsonText === "string"
@@ -5394,7 +5381,7 @@ export function AcpAgentSettings() {
         setSavingConfig((prev) => ({ ...prev, [agentType]: false }))
       }
     },
-    [agents, reportAffectedSessions]
+    [agents, reportAffectedSessions, backendApi]
   )
 
   // After a Grok save, re-read the merged on-disk config and rebuild the Grok
@@ -5402,21 +5389,27 @@ export function AcpAgentSettings() {
   // drafts (to preserve in-progress edits), so without this the collapsed raw
   // editor and the structured dropdowns could drift out of sync with disk (the
   // structured merge and the raw editor each write keys the other doesn't echo).
-  const reseedAgentDraft = useCallback(async (agentType: AgentType) => {
-    try {
-      const fresh = await acpListAgents()
-      setAgents(fresh)
-      publishAgentDisplay(fresh)
-      const agent = fresh.find((a) => a.agent_type === agentType)
-      if (agent) {
-        setDrafts((prev) => ({ ...prev, [agentType]: buildAgentDraft(agent) }))
+  const reseedAgentDraft = useCallback(
+    async (agentType: AgentType) => {
+      try {
+        const fresh = await backendApi.acpListAgents()
+        setAgents(fresh)
+        publishAgentDisplay(fresh, backendApi)
+        const agent = fresh.find((a) => a.agent_type === agentType)
+        if (agent) {
+          setDrafts((prev) => ({
+            ...prev,
+            [agentType]: buildAgentDraft(agent),
+          }))
+        }
+      } catch (err) {
+        // Non-fatal: the save already committed, and the agents-updated
+        // subscription will resync shortly — never surface this as a save failure.
+        console.error(`[Settings] reseed ${agentType} draft failed:`, err)
       }
-    } catch (err) {
-      // Non-fatal: the save already committed, and the agents-updated
-      // subscription will resync shortly — never surface this as a save failure.
-      console.error(`[Settings] reseed ${agentType} draft failed:`, err)
-    }
-  }, [])
+    },
+    [backendApi]
+  )
 
   const reseedGrokDraft = useCallback(
     () => reseedAgentDraft("grok"),
@@ -5454,15 +5447,15 @@ export function AcpAgentSettings() {
       await installStream.start(taskId)
       try {
         if (clearCache) {
-          await acpClearBinaryCache(agent.agent_type)
+          await backendApi.acpClearBinaryCache(agent.agent_type)
         }
-        await acpDownloadAgentBinary(
+        await backendApi.acpDownloadAgentBinary(
           agent.agent_type,
           taskId,
           versionOverride ?? null
         )
         await runPreflight(agent.agent_type)
-        const detectedVersion = await acpDetectAgentLocalVersion(
+        const detectedVersion = await backendApi.acpDetectAgentLocalVersion(
           agent.agent_type
         )
         setAgents((prev) =>
@@ -5499,7 +5492,9 @@ export function AcpAgentSettings() {
           // have removed the previously working binary — resync local state so
           // the UI doesn't keep showing a phantom version.
           try {
-            const detected = await acpDetectAgentLocalVersion(agent.agent_type)
+            const detected = await backendApi.acpDetectAgentLocalVersion(
+              agent.agent_type
+            )
             setAgents((prev) =>
               prev.map((item) =>
                 item.agent_type === agent.agent_type
@@ -5525,7 +5520,7 @@ export function AcpAgentSettings() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [runPreflight, t, installStream.start]
+    [runPreflight, t, installStream.start, backendApi]
   )
 
   const runNpxAction = useCallback(
@@ -5563,7 +5558,7 @@ export function AcpAgentSettings() {
       setStreamAgentType(agent.agent_type)
       await installStream.start(taskId)
       try {
-        const installedVersion = await acpPrepareNpxAgent(
+        const installedVersion = await backendApi.acpPrepareNpxAgent(
           agent.agent_type,
           agent.registry_version,
           taskId,
@@ -5578,7 +5573,7 @@ export function AcpAgentSettings() {
           )
         )
         await runPreflight(agent.agent_type)
-        const detectedVersion = await acpDetectAgentLocalVersion(
+        const detectedVersion = await backendApi.acpDetectAgentLocalVersion(
           agent.agent_type
         )
         if (detectedVersion && detectedVersion !== installedVersion) {
@@ -5618,7 +5613,9 @@ export function AcpAgentSettings() {
           // Clean reinstall may have removed the old install before failing —
           // resync local state so the UI doesn't keep showing a phantom version.
           try {
-            const detected = await acpDetectAgentLocalVersion(agent.agent_type)
+            const detected = await backendApi.acpDetectAgentLocalVersion(
+              agent.agent_type
+            )
             setAgents((prev) =>
               prev.map((item) =>
                 item.agent_type === agent.agent_type
@@ -5644,7 +5641,7 @@ export function AcpAgentSettings() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [runPreflight, t, installStream.start]
+    [runPreflight, t, installStream.start, backendApi]
   )
 
   /**
@@ -5662,7 +5659,7 @@ export function AcpAgentSettings() {
       if (!id) return
       setRemovingCustomAgent(true)
       try {
-        await acpDeleteCustomAgent(id, false)
+        await backendApi.acpDeleteCustomAgent(id, false)
         toast.success(t("customAgentRemoved", { name: agent.name }))
         setSelectedAgentType(null)
         await refreshAgents()
@@ -5672,7 +5669,7 @@ export function AcpAgentSettings() {
         setRemovingCustomAgent(false)
       }
     },
-    [refreshAgents, t]
+    [refreshAgents, t, backendApi]
   )
 
   const runUninstallAction = useCallback(
@@ -5691,7 +5688,7 @@ export function AcpAgentSettings() {
       setStreamAgentType(agent.agent_type)
       await installStream.start(taskId)
       try {
-        await acpUninstallAgent(agent.agent_type, taskId)
+        await backendApi.acpUninstallAgent(agent.agent_type, taskId)
         setAgents((prev) =>
           prev.map((item) =>
             item.agent_type === agent.agent_type
@@ -5720,7 +5717,7 @@ export function AcpAgentSettings() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [runPreflight, t, installStream.start]
+    [runPreflight, t, installStream.start, backendApi]
   )
 
   // Install ONLY the uv runtime (uvx) — separate from preparing a uvx agent's
@@ -5741,7 +5738,7 @@ export function AcpAgentSettings() {
       setStreamAgentType(agent.agent_type)
       await installStream.start(taskId)
       try {
-        await acpInstallUvTool(taskId)
+        await backendApi.acpInstallUvTool(taskId)
         await runPreflight(agent.agent_type)
         toast.success(
           t("toasts.agentActionCompleted", { name: "uv", action: actionLabel })
@@ -5763,7 +5760,7 @@ export function AcpAgentSettings() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [runPreflight, t, installStream.start]
+    [runPreflight, t, installStream.start, backendApi]
   )
 
   // Upgrade an agent Codeg does not install (Kiro CLI) through its own
@@ -5785,7 +5782,10 @@ export function AcpAgentSettings() {
       setStreamAgentType(agent.agent_type)
       await installStream.start(taskId)
       try {
-        const version = await acpUpdateSystemAgent(agent.agent_type, taskId)
+        const version = await backendApi.acpUpdateSystemAgent(
+          agent.agent_type,
+          taskId
+        )
         setAgents((prev) =>
           prev.map((item) =>
             item.agent_type === agent.agent_type
@@ -5958,7 +5958,7 @@ export function AcpAgentSettings() {
       if (order.length === 0) return
       setReordering(true)
       try {
-        await acpReorderAgents(order)
+        await backendApi.acpReorderAgents(order)
       } catch (err) {
         console.error("[Settings] reorder agents failed:", err)
         const message = toErrorMessage(err)
@@ -5970,7 +5970,7 @@ export function AcpAgentSettings() {
         setReordering(false)
       }
     },
-    [refreshAgents, t]
+    [refreshAgents, t, backendApi]
   )
 
   const handleReorder = useCallback((next: AcpAgentInfo[]) => {
@@ -6205,7 +6205,7 @@ export function AcpAgentSettings() {
         null)
       : null
   const hermesCanUseNativeSetup =
-    isDesktop() && getActiveRemoteConnectionId() === null
+    isDesktop() && backendPlatform.getActiveRemoteConnectionId() === null
   const selectedOpenCodeConfig = useMemo(() => {
     if (selectedAgentKind !== "open_code" || !locale) return null
     return extractOpenCodeConfigValues(
@@ -6274,7 +6274,8 @@ export function AcpAgentSettings() {
     if (openCodeCatalogRequestedRef.current) return
     openCodeCatalogRequestedRef.current = true
     setOpenCodeCatalogLoading(true)
-    opencodeProviderCatalog()
+    backendApi
+      .opencodeProviderCatalog()
       .then((list) => {
         setOpenCodeCatalog(list)
       })
@@ -6286,7 +6287,7 @@ export function AcpAgentSettings() {
         setOpenCodeCatalogLoading(false)
         setOpenCodeCatalogReady(true)
       })
-  }, [selectedAgentKind])
+  }, [selectedAgentKind, backendApi])
 
   const selectedLatestRelease =
     selectedAgent && visitLatestRelease?.agentType === selectedAgent.agent_type
@@ -7127,7 +7128,7 @@ export function AcpAgentSettings() {
       )
       setSavingConfig((prev) => ({ ...prev, [agentType]: true }))
       try {
-        await acpUpdateHermesConfig(
+        await backendApi.acpUpdateHermesConfig(
           mode === "raw"
             ? {
                 provider: draft.hermesProvider,
@@ -7167,7 +7168,7 @@ export function AcpAgentSettings() {
         setSavingConfig((prev) => ({ ...prev, [agentType]: false }))
       }
     },
-    [selectedAgent, selectedDraft, refreshAgents, t]
+    [selectedAgent, selectedDraft, refreshAgents, t, backendApi]
   )
 
   // Hermes's interactive setup (`--setup` / `hermes model`) needs a real TTY +
@@ -7176,10 +7177,11 @@ export function AcpAgentSettings() {
   // command (web / remote, or if the launch fails).
   const runHermesSetupCommand = useCallback(
     async (kind: "setup" | "model", displayCommand: string) => {
-      const native = isDesktop() && getActiveRemoteConnectionId() === null
+      const native =
+        isDesktop() && backendPlatform.getActiveRemoteConnectionId() === null
       if (native) {
         try {
-          await acpOpenHermesSetupTerminal(kind)
+          await backendApi.acpOpenHermesSetupTerminal(kind)
           return
         } catch (err) {
           console.error("[Settings] open hermes setup terminal failed:", err)
@@ -7190,17 +7192,17 @@ export function AcpAgentSettings() {
         if (ok) toast.success(t("hermes.commandCopied"))
       }
     },
-    [t]
+    [t, backendPlatform, backendApi]
   )
 
   const handleRevealHermesHome = useCallback(async () => {
     try {
-      await acpRevealHermesHome()
+      await backendApi.acpRevealHermesHome()
     } catch (err) {
       console.error("[Settings] reveal hermes home failed:", err)
       toast.error(toErrorMessage(err))
     }
-  }, [])
+  }, [backendApi])
 
   const handleClineFieldChange = useCallback(
     (
@@ -7387,7 +7389,7 @@ export function AcpAgentSettings() {
   const handleOpenCodeRefreshCatalog = useCallback(async () => {
     setOpenCodeCatalogLoading(true)
     try {
-      const list = await opencodeProviderCatalog(true)
+      const list = await backendApi.opencodeProviderCatalog(true)
       setOpenCodeCatalog(list)
       openCodeCatalogRequestedRef.current = true
       toast.success(t("toasts.catalogRefreshed", { count: list.length }))
@@ -7399,7 +7401,7 @@ export function AcpAgentSettings() {
     } finally {
       setOpenCodeCatalogLoading(false)
     }
-  }, [t])
+  }, [t, backendApi])
 
   const handleOpenCodeRemoveProvider = useCallback(
     (providerId: string) => {
@@ -8140,7 +8142,7 @@ export function AcpAgentSettings() {
     setCodexDeviceCode(null)
     codexPollCancelledRef.current = false
     try {
-      const resp = await codexRequestDeviceCode()
+      const resp = await backendApi.codexRequestDeviceCode()
       setCodexDeviceCode(resp)
       setCodexLoginStatus("polling")
     } catch (err) {
@@ -8148,7 +8150,7 @@ export function AcpAgentSettings() {
       setCodexLoginError(msg)
       setCodexLoginStatus("error")
     }
-  }, [])
+  }, [backendApi])
 
   const cancelCodexDeviceLogin = useCallback(() => {
     codexPollCancelledRef.current = true
@@ -8174,7 +8176,7 @@ export function AcpAgentSettings() {
         return
       }
       try {
-        const result = await codexPollDeviceCode({
+        const result = await backendApi.codexPollDeviceCode({
           deviceAuthId: codexDeviceCode.deviceAuthId,
           userCode: codexDeviceCode.userCode,
         })
@@ -8266,6 +8268,7 @@ export function AcpAgentSettings() {
     persistEnv,
     updateSelectedDraft,
     t,
+    backendApi,
   ])
 
   useEffect(() => {

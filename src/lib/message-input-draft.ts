@@ -59,6 +59,13 @@ export function hasMessageInputDraftContent(draftKey: string): boolean {
   return loadMessageInputDraftV2(draftKey) !== null
 }
 
+/** Scoped keys share storage ownership with the backend facade. Persist them
+ * before clear/move/sweep can run, and read their authoritative value rather
+ * than resurrecting a cached or deferred copy after a tab closes. */
+function isBackendDraftKey(key: string): boolean {
+  return key.startsWith("backend:") || key.includes(":backend:")
+}
+
 function storageKeyForDraftKey(draftKey: string): string {
   return `${STORAGE_PREFIX}:${draftKey}`
 }
@@ -249,6 +256,9 @@ export function sweepOrphanDraftKeys(
           const head = `${prefix}:${NEW_CONVERSATION_DRAFT_PREFIX}`
           if (!key.startsWith(head)) continue
           const tabId = key.slice(head.length)
+          // Scoped runtimes own these keys; a queued default sweep cannot
+          // infer which machine owns an otherwise identical draft tab.
+          if (tabId.includes(":backend:")) continue
           if (liveDraftTabIds.has(tabId)) continue
           stale.push({
             storageKey: key,
@@ -275,7 +285,9 @@ export function sweepOrphanDraftKeys(
 }
 
 export function loadMessageInputDraft(draftKey: string): string | null {
-  const cached = draftTextCache.get(draftKey)
+  const cached = isBackendDraftKey(draftKey)
+    ? undefined
+    : draftTextCache.get(draftKey)
   if (typeof cached === "string") return cached
   if (typeof window === "undefined") return null
 
@@ -284,7 +296,7 @@ export function loadMessageInputDraft(draftKey: string): string | null {
     if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<PersistedDraftState>
     if (typeof parsed.text !== "string") return null
-    draftTextCache.set(draftKey, parsed.text)
+    if (!isBackendDraftKey(draftKey)) draftTextCache.set(draftKey, parsed.text)
     return parsed.text
   } catch {
     return null
@@ -297,6 +309,19 @@ export function saveMessageInputDraft(draftKey: string, text: string): void {
     return
   }
 
+  if (isBackendDraftKey(draftKey)) {
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem(
+          storageKeyForDraftKey(draftKey),
+          JSON.stringify({ text })
+        )
+      } catch {
+        /* storage unavailable */
+      }
+    }
+    return
+  }
   if (draftTextCache.get(draftKey) === text) return
   draftTextCache.set(draftKey, text)
   if (typeof window === "undefined") return
@@ -334,7 +359,9 @@ export type LoadedDraftV2 =
  * so an unedited migration is never lost.
  */
 export function loadMessageInputDraftV2(draftKey: string): LoadedDraftV2 {
-  const cached = draftDocCache.get(draftKey)
+  const cached = isBackendDraftKey(draftKey)
+    ? undefined
+    : draftDocCache.get(draftKey)
   if (cached) return { kind: "doc", doc: cached }
 
   if (typeof window !== "undefined") {
@@ -348,7 +375,7 @@ export function loadMessageInputDraftV2(draftKey: string): LoadedDraftV2 {
           // silently discard the WHOLE doc (losing the user's text and badges).
           // A draft already in the plain-text schema passes through untouched.
           const doc = sanitizeComposerDraftDoc(parsed.doc)
-          draftDocCache.set(draftKey, doc)
+          if (!isBackendDraftKey(draftKey)) draftDocCache.set(draftKey, doc)
           return { kind: "doc", doc }
         }
       }
@@ -375,6 +402,20 @@ export function saveMessageInputDraftV2(
   draftKey: string,
   doc: JSONContent
 ): void {
+  if (isBackendDraftKey(draftKey)) {
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem(
+          storageKeyForDraftKeyV2(draftKey),
+          JSON.stringify({ doc })
+        )
+        localStorage.removeItem(storageKeyForDraftKey(draftKey))
+      } catch {
+        /* retain the previous saved draft */
+      }
+    }
+    return
+  }
   draftDocCache.set(draftKey, doc)
   if (typeof window === "undefined") return
 

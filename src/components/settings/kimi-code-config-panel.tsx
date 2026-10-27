@@ -1,5 +1,9 @@
 "use client"
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { useImeGuard } from "@/hooks/use-ime-guard"
@@ -29,8 +33,7 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
-import { acpFetchKimiModels, acpUpdateKimiCodeConfig } from "@/lib/api"
-import { isLocalDesktop, revealItemInDir } from "@/lib/platform"
+
 import type { AcpAgentInfo } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -472,6 +475,9 @@ export function KimiCodeConfigPanel({
   agent: AcpAgentInfo
   onSaved: () => Promise<void>
 }) {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("AcpAgentSettings")
   const ime = useImeGuard()
   const config = useMemo(
@@ -626,10 +632,12 @@ export function KimiCodeConfigPanel({
   )
 
   const runSave = useCallback(
-    async (params: Parameters<typeof acpUpdateKimiCodeConfig>[0]) => {
+    async (
+      params: Parameters<typeof backendApi.acpUpdateKimiCodeConfig>[0]
+    ) => {
       setSaving(true)
       try {
-        await acpUpdateKimiCodeConfig(params)
+        await backendApi.acpUpdateKimiCodeConfig(params)
         await onSaved()
         toast.success(t("toasts.kimiCodeSaved"))
       } catch (error) {
@@ -645,7 +653,7 @@ export function KimiCodeConfigPanel({
         if (mountedRef.current) setSaving(false)
       }
     },
-    [onSaved, t]
+    [onSaved, t, backendApi]
   )
 
   const handleSave = useCallback(() => {
@@ -694,7 +702,10 @@ export function KimiCodeConfigPanel({
     }
     setFetchingModels(true)
     try {
-      const list = await acpFetchKimiModels({ baseUrl: url, apiKey: key })
+      const list = await backendApi.acpFetchKimiModels({
+        baseUrl: url,
+        apiKey: key,
+      })
       if (!mountedRef.current) return
       setProbe({ ...against, kind: "ok", count: list.length, models: list })
     } catch (error) {
@@ -708,7 +719,7 @@ export function KimiCodeConfigPanel({
     } finally {
       if (mountedRef.current) setFetchingModels(false)
     }
-  }, [effectiveBaseUrl, draft.apiKey, t])
+  }, [effectiveBaseUrl, draft.apiKey, t, backendApi])
 
   // A verdict only speaks for the credentials it was measured against; once the
   // endpoint or key moves it is dropped rather than left standing as a stale
@@ -730,7 +741,7 @@ export function KimiCodeConfigPanel({
     !activeProbe.models.includes(draft.model.trim())
 
   const configPath = agent.config_file_path
-  const canReveal = configPath != null && isLocalDesktop()
+  const canReveal = configPath != null && backendPlatform.isLocalDesktop()
 
   // next-intl only accepts literal message keys, so the rule-key union is
   // resolved through an explicit table rather than a template literal.
@@ -831,7 +842,7 @@ export function KimiCodeConfigPanel({
             {canReveal && (
               <Button
                 className="h-6 gap-1 px-2 text-2xs"
-                onClick={() => void revealItemInDir(configPath)}
+                onClick={() => void backendPlatform.revealItemInDir(configPath)}
                 size="sm"
                 type="button"
                 variant="ghost"

@@ -15,6 +15,25 @@ pub struct FolderIdParams {
     pub folder_id: i32,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryProjectIdentityParams {
+    pub folder_ids: Vec<i32>,
+}
+
+pub async fn list_repository_project_identities(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<RepositoryProjectIdentityParams>,
+) -> Result<Json<Vec<RepositoryProjectIdentityEntry>>, AppCommandError> {
+    Ok(Json(
+        crate::commands::project_catalog::list_repository_project_identities_core(
+            &state.db,
+            params.folder_ids,
+        )
+        .await?,
+    ))
+}
+
 pub async fn load_folder_history(
     Extension(state): Extension<Arc<AppState>>,
 ) -> Result<Json<Vec<FolderHistoryEntry>>, AppCommandError> {
@@ -36,7 +55,12 @@ pub async fn get_folder(
     Json(params): Json<FolderIdParams>,
 ) -> Result<Json<FolderDetail>, AppCommandError> {
     Ok(Json(
-        folder_commands::get_folder_core(&state.db, params.folder_id).await?,
+        folder_commands::get_folder_core(&state.db, params.folder_id)
+            .await
+            .map_err(|error| match error {
+                crate::db::error::DbError::NotFound(message) => AppCommandError::not_found(message),
+                error => AppCommandError::db(error),
+            })?,
     ))
 }
 
@@ -80,12 +104,8 @@ pub async fn open_worktree_folder(
     Json(params): Json<OpenWorktreeFolderParams>,
 ) -> Result<Json<FolderDetail>, AppCommandError> {
     Ok(Json(
-        folder_commands::open_worktree_folder_core(
-            &state.db,
-            params.path,
-            params.source_folder_id,
-        )
-        .await?,
+        folder_commands::open_worktree_folder_core(&state.db, params.path, params.source_folder_id)
+            .await?,
     ))
 }
 
@@ -152,12 +172,8 @@ pub async fn remove_folder_from_workspace(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<FolderIdParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    folder_commands::remove_folder_from_workspace_core(
-        &state.emitter,
-        &state.db,
-        params.folder_id,
-    )
-    .await?;
+    folder_commands::remove_folder_from_workspace_core(&state.emitter, &state.db, params.folder_id)
+        .await?;
     Ok(Json(()))
 }
 

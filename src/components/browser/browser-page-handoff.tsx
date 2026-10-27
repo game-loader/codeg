@@ -1,5 +1,7 @@
 "use client"
 
+import { useTabStore as legacyTabs } from "@/contexts/tab-context"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 
 import {
@@ -12,6 +14,7 @@ import {
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
+import { useBackendEventScope } from "@/hooks/use-runtime-event-scope"
 
 import {
   DropdownMenu,
@@ -20,7 +23,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { useTabStore } from "@/contexts/tab-context"
+
 import type { BrowserWorkspaceTab } from "@/contexts/workspace-context"
 import {
   browserPageCapture,
@@ -59,6 +62,9 @@ import { FIELD_BTN, FIELD_PILL } from "./browser-toolbar-buttons"
  *  and silently picking a conversation they closed ten minutes ago would put
  *  their page somewhere they never see it. */
 function useTargetConversation(): string | null {
+  const backendStores = useBackendStores({ tabs: legacyTabs })
+  const useTabStore = backendStores.tabs
+
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
   const active = tabs.find((tab) => tab.id === activeTabId)
@@ -89,6 +95,7 @@ export function BrowserSendToChatControl({
 }) {
   const t = useTranslations("Browser.handoff")
   const backendId = browserTabBackendId(tab.id)
+  const backendScope = useBackendEventScope()
   const conversationTabId = useTargetConversation()
   const marked = useBrowserConsoleErrors(tab.id)
   const [picking, setPicking] = useState(false)
@@ -115,7 +122,12 @@ export function BrowserSendToChatControl({
   )
 
   const deliver = useCallback(
-    (handoff: PageHandoff, label: string, fileName: string) => {
+    (
+      handoff: PageHandoff,
+      label: string,
+      fileName: string,
+      scope: string | undefined
+    ) => {
       if (!conversationTabId) return
       if (handoff.cancelled) return
       // The conversation this was started for, not whichever is active now —
@@ -125,6 +137,7 @@ export function BrowserSendToChatControl({
       // nowhere.
       const accepted = emitAttachPageToSession({
         tabId: conversationTabId,
+        backendScope: scope,
         label: handoff.label || label,
         text: handoff.text,
         uri: handoff.url,
@@ -148,12 +161,13 @@ export function BrowserSendToChatControl({
 
   const pick = useCallback(() => {
     if (!backendId || !conversationTabId) return
+    const scope = backendScope
     setPicking(true)
     void browserPickElement(backendId)
-      .then((handoff) => deliver(handoff, t("chipElement"), "element"))
+      .then((handoff) => deliver(handoff, t("chipElement"), "element", scope))
       .catch(failed)
       .finally(() => setPicking(false))
-  }, [backendId, conversationTabId, deliver, failed, t])
+  }, [backendId, backendScope, conversationTabId, deliver, failed, t])
 
   const stopPicking = useCallback(() => {
     if (!backendId) return
@@ -184,10 +198,13 @@ export function BrowserSendToChatControl({
 
   const screenshot = useCallback(() => {
     if (!backendId || !conversationTabId) return
+    const scope = backendScope
     void browserPageCapture(backendId)
-      .then((handoff) => deliver(handoff, t("chipScreenshot"), "screenshot"))
+      .then((handoff) =>
+        deliver(handoff, t("chipScreenshot"), "screenshot", scope)
+      )
       .catch(failed)
-  }, [backendId, conversationTabId, deliver, failed, t])
+  }, [backendId, backendScope, conversationTabId, deliver, failed, t])
 
   // The picture is taken first and marked up after, so what the person draws
   // on is the page as it was when they asked for it — the dialog covers the
@@ -197,11 +214,12 @@ export function BrowserSendToChatControl({
   const markUp = useCallback(() => {
     if (!backendId || !conversationTabId) return
     const target = conversationTabId
+    const scope = backendScope
     void browserPageCapture(backendId)
       .then((handoff) => {
         // Nothing to draw on — send what there is, as the plain entry would.
         if (!handoff.image) {
-          deliver(handoff, t("chipScreenshot"), "screenshot")
+          deliver(handoff, t("chipScreenshot"), "screenshot", scope)
           return
         }
         openScreenshotMarkup({
@@ -209,23 +227,30 @@ export function BrowserSendToChatControl({
           text: handoff.text,
           uri: handoff.url,
           conversationTabId: target,
+          backendScope: scope,
         })
       })
       .catch(failed)
-  }, [backendId, conversationTabId, deliver, failed, t])
+  }, [backendId, backendScope, conversationTabId, deliver, failed, t])
 
   const sendConsole = useCallback(() => {
     if (!backendId || !conversationTabId) return
+    const scope = backendScope
     void browserPageConsole(backendId, true)
       .then((handoff) => {
         if (handoff.count === 0) {
           toast.info(t("noConsoleErrors"))
           return
         }
-        deliver(handoff, t("chipConsole", { count: handoff.count }), "console")
+        deliver(
+          handoff,
+          t("chipConsole", { count: handoff.count }),
+          "console",
+          scope
+        )
       })
       .catch(failed)
-  }, [backendId, conversationTabId, deliver, failed, t])
+  }, [backendId, backendScope, conversationTabId, deliver, failed, t])
 
   // While a pick is armed every press inside the page belongs to the picker,
   // so the way out has to be outside it. The control becomes that way out —

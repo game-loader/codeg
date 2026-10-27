@@ -1,5 +1,7 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { memo, useCallback } from "react"
 import { type Node, type NodeProps } from "@xyflow/react"
 import { Minimize2, X } from "lucide-react"
@@ -19,7 +21,6 @@ import {
 } from "../canvas-model"
 import { useCanvasView } from "../canvas-view-context"
 import { CARD_HEADER_BUTTON_CLASS, CardFrame } from "./card-frame"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 
 export type ConversationDetailFlowNode = Node<
   ConversationCardData,
@@ -144,6 +145,9 @@ export const ConversationDraftNode = memo(function ConversationDraftNode({
   data,
   selected,
 }: NodeProps<ConversationDraftFlowNode>) {
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
   const t = useTranslations("Canvas")
   const {
     dismissDraft,

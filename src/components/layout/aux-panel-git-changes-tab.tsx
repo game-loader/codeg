@@ -1,5 +1,9 @@
 "use client"
 
+import { defaultBackendStoreStorage as legacyStorage } from "@/stores/backend-store-storage"
+import { useTabStore as legacyTabs } from "@/contexts/tab-context"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendApi } from "@/contexts/backend-client-context"
 import {
   type ReactElement,
   useCallback,
@@ -62,7 +66,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useActiveFolder } from "@/contexts/active-folder-context"
-import { useTabStore } from "@/contexts/tab-context"
+
 import { useWorkspaceActions } from "@/contexts/workspace-context"
 import { useWorkspaceStateStore } from "@/hooks/use-workspace-state-store"
 import { useGitQuickActions } from "@/hooks/use-git-quick-actions"
@@ -77,14 +81,7 @@ import { CommitMessageSettingsDialog } from "@/components/layout/commit-message-
 import { CommitUntrackedFilesDialog } from "@/components/layout/commit-untracked-files-dialog"
 import { GIT_TOOLBAR_ICON_BUTTON_CLASS } from "@/components/layout/git-toolbar-controls"
 import { WorkspaceDegradedBanner } from "@/components/layout/workspace-degraded-banner"
-import {
-  deleteFileTreeEntry,
-  gitAddFiles,
-  gitCommit,
-  gitRollbackFile,
-  gitStatus,
-  openCommitWindow,
-} from "@/lib/api"
+
 import { joinFsPath } from "@/lib/path-utils"
 import { emitAttachFileToSession } from "@/lib/session-attachment-events"
 import type { GitStatusEntry } from "@/lib/types"
@@ -503,6 +500,14 @@ function canOpenFile(status: string): boolean {
 }
 
 export function GitChangesTab() {
+  const backendStores = useBackendStores({
+    storage: legacyStorage,
+    tabs: legacyTabs,
+  })
+  const useTabStore = backendStores.tabs
+
+  const backendApi = useBackendApi()
+
   const ime = useImeGuard()
   const t = useTranslations("Folder.gitChangesTab")
   const tCommon = useTranslations("Folder.common")
@@ -782,13 +787,13 @@ export function GitChangesTab() {
 
   const handleOpenCommitWindow = useCallback(() => {
     if (!folder) return
-    openCommitWindow(folder.id).catch((error) => {
+    backendApi.openCommitWindow(folder.id).catch((error) => {
       const message = toErrorMessage(error)
       toast.error(t("toasts.openCommitWindowFailed"), {
         description: message,
       })
     })
-  }, [folder, t])
+  }, [folder, t, backendApi])
 
   // Pull / fetch / push / stash for the toolbar's "more" menu, sharing the
   // branch selector's task tracking, credential retry and conflict dialog.
@@ -876,7 +881,12 @@ export function GitChangesTab() {
 
       setCommitting(true)
       try {
-        const result = await gitCommit(folder.path, message, files, folder.id)
+        const result = await backendApi.gitCommit(
+          folder.path,
+          message,
+          files,
+          folder.id
+        )
         setCommitMessage("")
         // The next commit is asked about its untracked files afresh.
         setIncludedUntracked([])
@@ -902,7 +912,7 @@ export function GitChangesTab() {
         setCommitting(false)
       }
     },
-    [folder, t, tBranch, workspaceState]
+    [folder, t, tBranch, workspaceState, backendApi]
   )
   const handleQuickCommit = useCallback(async () => {
     if (committing) return
@@ -983,11 +993,12 @@ export function GitChangesTab() {
     (relativePath: string) => {
       if (!activeSessionTabId || !folder?.path) return
       emitAttachFileToSession({
+        backendKey: backendStores.storage.backendKey,
         tabId: activeSessionTabId,
         path: joinFsPath(folder.path, relativePath),
       })
     },
-    [activeSessionTabId, folder?.path]
+    [activeSessionTabId, folder?.path, backendStores]
   )
 
   const resetDirectoryGitActionDialog = useCallback(() => {
@@ -1013,7 +1024,7 @@ export function GitChangesTab() {
       setDirectoryGitLoading(true)
 
       try {
-        const statusEntries = await gitStatus(folder.path, true)
+        const statusEntries = await backendApi.gitStatus(folder.path, true)
         // Bail if the folder switched while this request was in flight — writing
         // now would clobber (or, on an empty result, close) a dialog reopened
         // under the new folder.
@@ -1051,7 +1062,7 @@ export function GitChangesTab() {
         if (gen === loadGenRef.current) setDirectoryGitLoading(false)
       }
     },
-    [folder?.path, resetDirectoryGitActionDialog, t]
+    [folder?.path, resetDirectoryGitActionDialog, t, backendApi]
   )
 
   const handleRequestRollback = useCallback(
@@ -1074,7 +1085,7 @@ export function GitChangesTab() {
 
       if (!folder?.path) return
       try {
-        await gitAddFiles(folder.path, [target.path])
+        await backendApi.gitAddFiles(folder.path, [target.path])
         toast.success(t("toasts.addedToVcs", { name: target.name }))
         await workspaceState.requestResync("git_action:add")
       } catch (error) {
@@ -1082,7 +1093,7 @@ export function GitChangesTab() {
         toast.error(t("toasts.addToVcsFailed"), { description: message })
       }
     },
-    [folder?.path, openDirectoryGitActionDialog, t, workspaceState]
+    [folder?.path, openDirectoryGitActionDialog, t, workspaceState, backendApi]
   )
 
   const handleRollbackConfirm = useCallback(async () => {
@@ -1090,7 +1101,7 @@ export function GitChangesTab() {
 
     setRollingBack(true)
     try {
-      await gitRollbackFile(folder.path, rollbackTarget.path)
+      await backendApi.gitRollbackFile(folder.path, rollbackTarget.path)
       toast.success(t("toasts.rolledBack", { name: rollbackTarget.name }))
       setRollbackTarget(null)
       await workspaceState.requestResync("git_action:rollback")
@@ -1100,7 +1111,7 @@ export function GitChangesTab() {
     } finally {
       setRollingBack(false)
     }
-  }, [folder?.path, rollbackTarget, t, workspaceState])
+  }, [folder?.path, rollbackTarget, t, workspaceState, backendApi])
 
   const handleRequestDelete = useCallback(
     (target: GitActionTarget, scope: "tracked" | "untracked") => {
@@ -1121,7 +1132,7 @@ export function GitChangesTab() {
 
     setDeleting(true)
     try {
-      await deleteFileTreeEntry(folder.path, deleteTarget.path)
+      await backendApi.deleteFileTreeEntry(folder.path, deleteTarget.path)
       toast.success(t("toasts.deleted", { name: deleteTarget.name }))
       setDeleteTarget(null)
       await workspaceState.requestResync("git_action:delete")
@@ -1131,7 +1142,7 @@ export function GitChangesTab() {
     } finally {
       setDeleting(false)
     }
-  }, [deleteTarget, folder?.path, t, workspaceState])
+  }, [deleteTarget, folder?.path, t, workspaceState, backendApi])
 
   const directoryGitAllFilePaths = useMemo(
     () => directoryGitCandidates.map((entry) => entry.path),
@@ -1182,7 +1193,7 @@ export function GitChangesTab() {
 
     try {
       if (directoryGitActionType === "add") {
-        await gitAddFiles(folder.path, selectedPaths)
+        await backendApi.gitAddFiles(folder.path, selectedPaths)
         toast.success(
           t("toasts.addedFilesToVcs", {
             count: selectedPaths.length,
@@ -1190,7 +1201,7 @@ export function GitChangesTab() {
         )
       } else if (isDeleteAction(directoryGitActionType)) {
         for (const filePath of selectedPaths) {
-          await deleteFileTreeEntry(folder.path, filePath)
+          await backendApi.deleteFileTreeEntry(folder.path, filePath)
         }
         toast.success(
           t("toasts.deletedFiles", {
@@ -1199,7 +1210,7 @@ export function GitChangesTab() {
         )
       } else {
         for (const filePath of selectedPaths) {
-          await gitRollbackFile(folder.path, filePath)
+          await backendApi.gitRollbackFile(folder.path, filePath)
         }
         toast.success(
           t("toasts.rolledBackFiles", {
@@ -1233,6 +1244,7 @@ export function GitChangesTab() {
     resetDirectoryGitActionDialog,
     t,
     workspaceState,
+    backendApi,
   ])
 
   // Close in-panel dialogs the instant the ACTIVE folder changes (keyed on the

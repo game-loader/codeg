@@ -44,6 +44,7 @@ pub mod deep_link;
 pub mod folder_links;
 pub mod forge;
 pub mod git_credential;
+pub mod git_remote_identity;
 pub mod git_repo;
 pub mod intern;
 pub mod keyring_store;
@@ -120,6 +121,7 @@ mod tauri_app {
         folder_links, local_command, office_tools as office_tools_commands, open_in,
         folders, logging as logging_commands, machines as machines_commands, mcp as mcp_commands,
         model_provider as model_provider_commands, notification, pet as pet_commands, project_boot,
+        project_catalog,
         question as question_commands, quick_messages as quick_messages_commands,
         remote_proxy as remote_proxy_commands,
         remote_workspace as remote_workspace_commands, science as science_commands,
@@ -1888,6 +1890,7 @@ mod tauri_app {
                 folders::get_folder,
                 folders::list_open_folder_details,
                 folders::list_all_folder_details,
+                project_catalog::list_repository_project_identities,
                 folders::open_folder,
                 folders::open_worktree_folder,
                 folders::resolve_worktree_folder,
@@ -1973,6 +1976,8 @@ mod tauri_app {
                 folders::git_rebase,
                 folders::git_delete_branch,
                 folders::git_remove_worktree,
+                folders::git_list_worktrees,
+                folders::git_remove_worktree_path,
                 folders::git_delete_remote_branch,
                 folders::git_list_conflicts,
                 folders::git_conflict_file_versions,

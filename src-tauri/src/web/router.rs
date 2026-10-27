@@ -342,6 +342,10 @@ pub fn build_router_with_proxy_auth(
         )
         // ─── Folders ───
         .route(
+            "/list_repository_project_identities",
+            post(handlers::folders::list_repository_project_identities),
+        )
+        .route(
             "/load_folder_history",
             post(handlers::folders::load_folder_history),
         )
@@ -726,6 +730,14 @@ pub fn build_router_with_proxy_auth(
         )
         .route("/git_fetch_remote", post(handlers::git::git_fetch_remote))
         .route("/git_delete_branch", post(handlers::git::git_delete_branch))
+        .route(
+            "/git_list_worktrees",
+            post(handlers::git::git_list_worktrees),
+        )
+        .route(
+            "/git_remove_worktree_path",
+            post(handlers::git::git_remove_worktree_path),
+        )
         .route(
             "/git_remove_worktree",
             post(handlers::git::git_remove_worktree),

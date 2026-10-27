@@ -15,6 +15,7 @@
  * the add dialog's fields only cover the manual form.
  */
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { FolderCog, Loader2, Sparkles } from "lucide-react"
@@ -24,11 +25,7 @@ import { SettingCard, SettingRow } from "@/components/shared/setting-card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
-import {
-  acpListCustomAgents,
-  acpPatchCustomAgent,
-  type CustomAgentInfo,
-} from "@/lib/api"
+import { type CustomAgentInfo } from "@/lib/api"
 
 const SHARED_STORE_SWITCH_ID = "custom-agent-skills-shared-store"
 const SKILLS_DIR_INPUT_ID = "custom-agent-skills-dir"
@@ -40,6 +37,8 @@ interface CustomAgentSkillsToggleProps {
 export function CustomAgentSkillsToggle({
   registryId,
 }: CustomAgentSkillsToggleProps) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("AcpAgentSettings")
   const [info, setInfo] = useState<CustomAgentInfo | null>(null)
   const [saving, setSaving] = useState(false)
@@ -52,7 +51,8 @@ export function CustomAgentSkillsToggle({
   useEffect(() => {
     mountedRef.current = true
     let cancelled = false
-    acpListCustomAgents()
+    backendApi
+      .acpListCustomAgents()
       .then((list) => {
         if (cancelled) return
         const found = list.find((a) => a.registryId === registryId) ?? null
@@ -67,7 +67,7 @@ export function CustomAgentSkillsToggle({
       cancelled = true
       mountedRef.current = false
     }
-  }, [registryId])
+  }, [registryId, backendApi])
 
   // Each handler patches ONLY the declaration it owns. `acpPatchCustomAgent`
   // re-reads the definition and carries the rest across, so this card can
@@ -84,7 +84,9 @@ export function CustomAgentSkillsToggle({
       // and snaps back on failure.
       setInfo({ ...info, skillsSharedStore: next })
       try {
-        await acpPatchCustomAgent(info.registryId, { skillsSharedStore: next })
+        await backendApi.acpPatchCustomAgent(info.registryId, {
+          skillsSharedStore: next,
+        })
       } catch (err) {
         if (mountedRef.current) {
           setInfo({ ...info, skillsSharedStore: !next })
@@ -94,7 +96,7 @@ export function CustomAgentSkillsToggle({
         if (mountedRef.current) setSaving(false)
       }
     },
-    [info]
+    [info, backendApi]
   )
 
   const handleSaveDir = useCallback(async () => {
@@ -102,10 +104,10 @@ export function CustomAgentSkillsToggle({
     const next = dirDraft.trim() || null
     setSaving(true)
     try {
-      await acpPatchCustomAgent(info.registryId, { skillsDir: next })
+      await backendApi.acpPatchCustomAgent(info.registryId, { skillsDir: next })
       // The backend may have normalized the path (`~` expansion); re-read so
       // the card shows what was actually stored.
-      const list = await acpListCustomAgents()
+      const list = await backendApi.acpListCustomAgents()
       if (mountedRef.current) {
         const found = list.find((a) => a.registryId === info.registryId) ?? info
         setInfo(found)
@@ -117,7 +119,7 @@ export function CustomAgentSkillsToggle({
     } finally {
       if (mountedRef.current) setSaving(false)
     }
-  }, [dirDraft, info])
+  }, [dirDraft, info, backendApi])
 
   if (!info) return null
 

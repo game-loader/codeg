@@ -1,5 +1,6 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
@@ -30,13 +31,6 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import {
-  acpAntigravityLoginCancel,
-  acpAntigravityLoginFinish,
-  acpAntigravityLoginStart,
-  acpAntigravitySignOut,
-  acpReclaimLeakedTemp,
-  acpScanLeakedTemp,
-  acpSyncAntigravitySettings,
   type AntigravityLoginOutcome,
   type AntigravityLoginStart,
   type AntigravitySyncReport,
@@ -251,6 +245,8 @@ function HeadlessSignIn({
    *  only fail at license resolution afterwards. */
   needsSave: boolean
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("AcpAgentSettings")
   const [pending, setPending] = useState<PendingLogin | null>(null)
   const [redirect, setRedirect] = useState("")
@@ -281,12 +277,12 @@ function HeadlessSignIn({
       const abandoned = pendingRef.current
       pendingRef.current = null
       if (!abandoned) return
-      void acpAntigravityLoginCancel(abandoned.handle).catch(() => {
+      void backendApi.acpAntigravityLoginCancel(abandoned.handle).catch(() => {
         // Best-effort: the attempt times out on its own, and by here there is
         // no surface left to report a failed cancel to.
       })
     }
-  }, [method])
+  }, [method, backendApi])
 
   // Kept out of the cleanup above so the reset does not also run on unmount,
   // where a state update would be pointless.
@@ -320,7 +316,7 @@ function HeadlessSignIn({
     setOutcome(null)
     setRedirect("")
     try {
-      const started = await acpAntigravityLoginStart(startedFor)
+      const started = await backendApi.acpAntigravityLoginStart(startedFor)
       if (!stillOurs(startedFor)) {
         // The panel closed, or the user picked a different method, while the
         // agent was starting up. The handle never reached state, so neither
@@ -329,7 +325,9 @@ function HeadlessSignIn({
         // worse still: the link authenticates the OLD method while the form
         // says the new one.
         if (!started.alreadySignedIn) {
-          void acpAntigravityLoginCancel(started.handle).catch(() => {})
+          void backendApi
+            .acpAntigravityLoginCancel(started.handle)
+            .catch(() => {})
         }
         return
       }
@@ -360,14 +358,17 @@ function HeadlessSignIn({
     } finally {
       if (mountedRef.current) setBusy(false)
     }
-  }, [method, stillOurs, t])
+  }, [method, stillOurs, t, backendApi])
 
   const finish = useCallback(async () => {
     if (!pending) return
     const startedFor = method
     setBusy(true)
     try {
-      const result = await acpAntigravityLoginFinish(pending.handle, redirect)
+      const result = await backendApi.acpAntigravityLoginFinish(
+        pending.handle,
+        redirect
+      )
       // No cancel needed on the late path, unlike `start`: the backend takes
       // and kills the attempt on every outcome, so there is nothing left to
       // strand — only a verdict that no longer describes what is on screen.
@@ -401,7 +402,7 @@ function HeadlessSignIn({
     } finally {
       if (mountedRef.current) setBusy(false)
     }
-  }, [method, pending, redirect, stillOurs, t])
+  }, [method, pending, redirect, stillOurs, t, backendApi])
 
   const cancel = useCallback(async () => {
     if (!pending) return
@@ -412,8 +413,8 @@ function HeadlessSignIn({
     setPending(null)
     setRedirect("")
     setOutcome(null)
-    await acpAntigravityLoginCancel(handle).catch(() => {})
-  }, [pending])
+    await backendApi.acpAntigravityLoginCancel(handle).catch(() => {})
+  }, [pending, backendApi])
 
   const copyLink = useCallback(async () => {
     if (!pending) return
@@ -609,6 +610,8 @@ function SignOut({
    *  can raise its standing notice when that file could not be rewritten. */
   onSignedOut: (report: AntigravitySyncReport) => void
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("AcpAgentSettings")
   const [busy, setBusy] = useState(false)
   const mountedRef = useRef(true)
@@ -622,7 +625,7 @@ function SignOut({
   const signOut = useCallback(async () => {
     setBusy(true)
     try {
-      const report = await acpAntigravitySignOut()
+      const report = await backendApi.acpAntigravitySignOut()
       if (!mountedRef.current) return
       onSignedOut(report)
       if (report.status === "skipped") {
@@ -638,7 +641,7 @@ function SignOut({
     } finally {
       if (mountedRef.current) setBusy(false)
     }
-  }, [onSignedOut, t])
+  }, [onSignedOut, t, backendApi])
 
   return (
     <div className="flex items-start justify-between gap-2 rounded-md border border-dashed p-2.5">
@@ -702,6 +705,8 @@ function formatBytes(bytes: number): string {
  * them is the user's call, not codeg's.
  */
 function LeakedTempSection() {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("AcpAgentSettings")
   const [scan, setScan] = useState<LeakedTempScan | null>(null)
   /** Paths the user has explicitly opted in. Starts empty — see the render. */
@@ -713,7 +718,7 @@ function LeakedTempSection() {
   const runScan = useCallback(async () => {
     setBusy(true)
     try {
-      setScan(await acpScanLeakedTemp())
+      setScan(await backendApi.acpScanLeakedTemp())
       // A new scan is a new set of paths; carrying ticks across would let a
       // path the user never looked at arrive pre-approved.
       setSelected(new Set())
@@ -723,7 +728,7 @@ function LeakedTempSection() {
     } finally {
       setBusy(false)
     }
-  }, [])
+  }, [backendApi])
 
   const chosen = useMemo(
     () => scan?.entries.filter((entry) => selected.has(entry.path)) ?? [],
@@ -736,7 +741,9 @@ function LeakedTempSection() {
     if (chosen.length === 0) return
     setBusy(true)
     try {
-      const result = await acpReclaimLeakedTemp(chosen.map((e) => e.path))
+      const result = await backendApi.acpReclaimLeakedTemp(
+        chosen.map((e) => e.path)
+      )
       toast.success(
         t("antigravity.tempReclaimed", {
           count: result.removed,
@@ -746,14 +753,14 @@ function LeakedTempSection() {
       // Every failure, not just the first: "removed 3 of 5" with three
       // unexplained survivors is the report that wastes the next hour.
       setFailed(result.failed)
-      setScan(await acpScanLeakedTemp())
+      setScan(await backendApi.acpScanLeakedTemp())
       setSelected(new Set())
     } catch (err) {
       toast.error(toErrorMessage(err))
     } finally {
       setBusy(false)
     }
-  }, [chosen, t])
+  }, [chosen, t, backendApi])
 
   const toggle = useCallback((path: string, on: boolean) => {
     setSelected((prev) => {
@@ -935,6 +942,8 @@ export function AntigravityConfigPanel({
   onSaveEnv: (env: Record<string, string>, enabled: boolean) => Promise<unknown>
   onSaved: () => void
 }) {
+  const backendApi = useBackendApi()
+
   const t = useTranslations("AcpAgentSettings")
 
   const [method, setMethod] = useState<AntigravityAuthMethod>(() =>
@@ -1059,7 +1068,7 @@ export function AntigravityConfigPanel({
       // it believes it is using. Ask, and say so while the user is still here.
       let report: AntigravitySyncReport | null = null
       try {
-        report = await acpSyncAntigravitySettings()
+        report = await backendApi.acpSyncAntigravitySettings()
       } catch {
         // The sync is a report, not the save. A transport failure leaves the
         // row stored and the launch-time sync still to come, so it must not
@@ -1080,7 +1089,7 @@ export function AntigravityConfigPanel({
     } finally {
       if (mountedRef.current) setSavingForm(false)
     }
-  }, [agent.enabled, agent.env, onSaveEnv, onSaved, t])
+  }, [agent.enabled, agent.env, onSaveEnv, onSaved, t, backendApi])
 
   // A sign-out clears `auth.type` on its way out and the backend writes the
   // saved method straight back, so its report lands in the same standing notice

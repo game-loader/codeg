@@ -21,9 +21,13 @@ vi.mock("@/lib/api", () => ({
 }))
 
 const api = await import("@/lib/api")
-const { resetAppWorkspaceStore, useAppWorkspaceStore } =
-  await import("@/stores/app-workspace-store")
-const { changeConversationTags } = await import("./conversation-tag-assignment")
+const {
+  createAppWorkspaceStore,
+  resetAppWorkspaceStore,
+  useAppWorkspaceStore,
+} = await import("@/stores/app-workspace-store")
+const { createConversationTagAssignment, changeConversationTags } =
+  await import("./conversation-tag-assignment")
 
 function summary(
   overrides: Partial<DbConversationSummary> & { id: number }
@@ -237,5 +241,45 @@ describe("changeConversationTags", () => {
     await expect(second).rejects.toThrow()
     // Without the re-read the row would be left on [7]; the server holds [].
     await vi.waitFor(() => expect(row(1)?.tag_ids ?? []).toEqual([]))
+  })
+})
+
+describe("conversation tag assignment — runtime lifecycle", () => {
+  it("keeps a failed write and its delayed recovery on the original host", async () => {
+    const { createBackendStoreStorage } =
+      await import("@/stores/backend-store-storage")
+    const storageA = createBackendStoreStorage("remote:101")
+    const storageB = createBackendStoreStorage("remote:102")
+    const a = createAppWorkspaceStore(api, storageA)
+    const b = createAppWorkspaceStore(api, storageB)
+    for (const store of [a, b]) {
+      store.getState().applyConversationUpsert(summary({ id: 1, tag_ids: [1] }))
+    }
+    let recover!: (rows: DbConversationSummary[]) => void
+    const boundApi = {
+      updateConversationTags: vi.fn(async () => {
+        throw new Error("lost reply")
+      }),
+      listAllConversations: vi.fn(
+        () =>
+          new Promise<DbConversationSummary[]>((resolve) => {
+            recover = resolve
+          })
+      ),
+    }
+    const change = createConversationTagAssignment(boundApi, a)
+    await expect(change(1, { add: [2] })).rejects.toThrow("lost reply")
+    expect(a.getState().conversations[0].tag_ids).toEqual([1])
+    expect(b.getState().conversations[0].tag_ids).toEqual([1])
+    a.dispose()
+    recover([summary({ id: 1, tag_ids: [2] })])
+    await Promise.resolve()
+    expect(a.getState().conversations).toEqual([])
+    expect(b.getState().conversations[0].tag_ids).toEqual([1])
+    await expect(change(1, { add: [2] })).rejects.toThrow("no longer active")
+    expect(boundApi.updateConversationTags).toHaveBeenCalledTimes(1)
+    b.dispose()
+    storageA.dispose()
+    storageB.dispose()
   })
 })

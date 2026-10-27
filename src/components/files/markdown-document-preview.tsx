@@ -1,8 +1,9 @@
 "use client"
 
+import { useBackendApi } from "@/contexts/backend-client-context"
 import { useEffect, useState } from "react"
 import { Streamdown } from "streamdown"
-import { readFileBase64 } from "@/lib/api"
+
 import { normalizeMathDelimiters } from "@/components/ai-elements/message"
 import { scrollportComponents } from "@/components/ai-elements/markdown-scrollport"
 import { mermaidComponents } from "@/components/ai-elements/mermaid-block"
@@ -144,6 +145,8 @@ function useLocalImageSrc(
   src: string | undefined,
   fileDir: string | null
 ): string | undefined {
+  const backendApi = useBackendApi()
+
   const [dataUrl, setDataUrl] = useState<string | undefined>(undefined)
 
   // Protocol-relative "//host/…" srcs are REMOTE (the browser resolves them
@@ -166,7 +169,8 @@ function useLocalImageSrc(
     const ext = absPath.split(".").pop()?.toLowerCase() ?? ""
     const mime = MIME_BY_EXT[ext] ?? "image/png"
 
-    readFileBase64(absPath)
+    backendApi
+      .readFileBase64(absPath)
       .then((b64) => {
         if (!cancelled) {
           setDataUrl(`data:${mime};base64,${b64}`)
@@ -181,7 +185,7 @@ function useLocalImageSrc(
     return () => {
       cancelled = true
     }
-  }, [isLocal, src, fileDir])
+  }, [isLocal, src, fileDir, backendApi])
 
   if (!isLocal) return src
   return dataUrl

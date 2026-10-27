@@ -1,5 +1,9 @@
 "use client"
 
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
+import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendPlatform } from "@/contexts/backend-client-context"
 import { useMemo, useState } from "react"
 import { useReactFlow } from "@xyflow/react"
 import {
@@ -32,13 +36,13 @@ import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { useFileTree } from "@/hooks/use-file-tree"
 import type { CreateCanvasNodeInput } from "@/lib/api"
 import { formatConversationTitle } from "@/lib/conversation-title"
-import { getAgentLabel } from "@/lib/custom-agents"
+
 import { rankFileMatches } from "@/lib/file-search-match"
 import { joinRootRel, normalizeAbsPath } from "@/lib/file-open-target"
 import { formatFolderLabelWithAlias } from "@/lib/folder-display"
-import { openFileDialog } from "@/lib/platform"
-import { isDesktop, isRemoteDesktopMode } from "@/lib/transport"
-import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+
+import { isDesktop } from "@/lib/transport"
+
 import {
   CARD_HEIGHT,
   CARD_WIDTH,
@@ -90,6 +94,11 @@ export function AddNodeMenu({
   triggerClassName,
   side = "bottom",
 }: AddNodeMenuProps) {
+  const { getAgentLabel } = useAgentDisplay()
+
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
   const t = useTranslations("Canvas")
   const { screenToFlowPosition } = useReactFlow()
   const folders = useAppWorkspaceStore((s) => s.folders)
@@ -376,6 +385,11 @@ const FILE_RESULT_LIMIT = 20
  * for the listing.
  */
 function AddFileSubmenu({ onPick }: { onPick: (absPath: string) => void }) {
+  const backendStores = useBackendStores({ workspace: legacyWorkspace })
+  const useAppWorkspaceStore = backendStores.workspace
+
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Canvas")
   const folders = useAppWorkspaceStore((s) => s.folders)
   const activeFolderId = useAppWorkspaceStore((s) => s.activeFolderId)
@@ -434,12 +448,12 @@ function AddFileSubmenu({ onPick }: { onPick: (absPath: string) => void }) {
   // A native dialog picks a path on THIS machine; a desktop window driving a
   // remote backend would hand the server a path it cannot read, and the web
   // fallback only ever learns a bare file name. Both get the search instead.
-  const canBrowse = isDesktop() && !isRemoteDesktopMode()
+  const canBrowse = isDesktop() && !backendPlatform.isRemoteDesktopMode()
 
   const browse = async () => {
-    const picked = await openFileDialog({ title: t("addFileCard") }).catch(
-      () => null
-    )
+    const picked = await backendPlatform
+      .openFileDialog({ title: t("addFileCard") })
+      .catch(() => null)
     const path = Array.isArray(picked) ? picked[0] : picked
     if (path) onPick(normalizeAbsPath(path))
   }

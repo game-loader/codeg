@@ -91,13 +91,17 @@ const SESSION_DETAILS_ONLY: AuxTabOrder = ["session_details"]
  * the Session Details tab. `effectiveTab` keeps the rendered selection
  * valid even when the stored `activeTab` is a now-hidden folder tab, avoiding a
  * one-frame flash before the reconciling effect corrects the stored value.
+ * An explicit, still-current folder-tool context exposes the folder tabs while
+ * leaving an unrelated chat composer in its original mode.
  */
 export function resolveAuxTabView(
   activeTab: AuxPanelTab,
   activeFolderId: number | null,
-  isChatMode: boolean
+  isChatMode: boolean,
+  hasFolderToolContext = false
 ): { showFolderTabs: boolean; effectiveTab: AuxPanelTab } {
-  const showFolderTabs = activeFolderId != null && !isChatMode
+  const showFolderTabs =
+    activeFolderId != null && (hasFolderToolContext || !isChatMode)
   return {
     showFolderTabs,
     effectiveTab: showFolderTabs ? activeTab : "session_details",
@@ -110,7 +114,8 @@ export function AuxPanel() {
   const tAutomations = useTranslations("Automations")
   const tTasks = useTranslations("Tasks")
   const tForge = useTranslations("Forge")
-  const { isOpen, activeTab, setActiveTab, setOpen } = useAuxPanelContext()
+  const { isOpen, activeTab, setActiveTab, setOpen, folderToolContext } =
+    useAuxPanelContext()
   const { activeFolderId } = useActiveFolder()
   const isChatMode = useIsActiveChatMode()
   const isMobile = useIsMobile()
@@ -124,7 +129,8 @@ export function AuxPanel() {
   const { showFolderTabs, effectiveTab } = resolveAuxTabView(
     activeTab,
     activeFolderId,
-    isChatMode
+    isChatMode,
+    folderToolContext != null
   )
   // GitLab calls them merge requests, GitHub and Gitea pull requests: the tab
   // is named for the forge the project's remote is on, as the repository

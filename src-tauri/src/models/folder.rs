@@ -4,6 +4,38 @@ use serde::{Deserialize, Serialize};
 use super::agent::AgentType;
 use crate::db::entities::folder::FolderKind;
 
+/// Safe source metadata, independent of every execution/resource binding.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RepositoryProjectIdentity {
+    pub project_key: String,
+    pub provider: RepositoryProjectProvider,
+    pub host: String,
+    pub repository_path: String,
+    pub remote_name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepositoryProjectProvider {
+    Github,
+    Git,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepositoryProjectIdentityStatus {
+    Resolved,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct RepositoryProjectIdentityEntry {
+    pub folder_id: i32,
+    pub path: Option<String>,
+    pub status: RepositoryProjectIdentityStatus,
+    pub identity: Option<RepositoryProjectIdentity>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FolderHistoryEntry {
     pub id: i32,
@@ -120,4 +152,18 @@ pub struct FolderCommandInfo {
     pub run_local: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// Git's authoritative worktree inventory. Absent reasons and empty reasons
+/// differ: `Some("")` represents a locked/prunable flag without a reason.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitWorktreeInfo {
+    pub path: String,
+    pub head: Option<String>,
+    pub branch: Option<String>,
+    pub is_main: bool,
+    pub detached: bool,
+    pub bare: bool,
+    pub locked: Option<String>,
+    pub prunable: Option<String>,
 }

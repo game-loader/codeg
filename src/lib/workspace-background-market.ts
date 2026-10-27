@@ -3,7 +3,9 @@
 // through getTransport().call(...) so one code path serves Tauri (invoke) and
 // standalone-server (fetch) modes.
 
-import { getTransport } from "@/lib/transport"
+import type { BackendPlatform } from "@/lib/backend/types"
+import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
+
 import {
   MAX_WORKSPACE_BG_BYTES,
   MAX_WORKSPACE_BG_PIXELS,
@@ -85,12 +87,15 @@ export type MarketSearchResult = {
 
 // ─── Transport bindings ───
 
-export async function searchWorkspaceBgMarket(input: {
-  query: string
-  category: MarketCategory
-  page: number
-}): Promise<MarketSearchResult> {
-  return getTransport().call("background_market_search", {
+export async function searchWorkspaceBgMarket(
+  input: {
+    query: string
+    category: MarketCategory
+    page: number
+  },
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<MarketSearchResult> {
+  return backendPlatform.getTransport().call("background_market_search", {
     query: input.query,
     category: input.category,
     page: input.page,
@@ -98,16 +103,18 @@ export async function searchWorkspaceBgMarket(input: {
 }
 
 export async function fetchWorkspaceBgMarketAsset(
-  url: string
+  url: string,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
 ): Promise<BackgroundAsset> {
-  return getTransport().call("background_market_asset", { url })
+  return backendPlatform.getTransport().call("background_market_asset", { url })
 }
 
 export async function downloadWorkspaceBgMarket(
   url: string,
-  sourceUrl: string
+  sourceUrl: string,
+  backendPlatform: BackendPlatform = legacyBackendPlatform
 ): Promise<void> {
-  return getTransport().call("background_market_download", {
+  return backendPlatform.getTransport().call("background_market_download", {
     url,
     sourceUrl,
   })

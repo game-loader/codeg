@@ -11,7 +11,9 @@
 // matching must agree byte-for-byte, so they all funnel through
 // `normalizeAbsPath` / `joinRootRel` in this module.
 
-import { getHomeDirectory } from "@/lib/api"
+import type { BackendApi } from "@/lib/backend/types"
+import * as legacyBackendApi from "@/lib/api"
+
 import { isAbsoluteFilePath, normalizeSlashPath } from "@/lib/file-path-display"
 
 const WINDOWS_DRIVE_PREFIX = /^[a-zA-Z]:/
@@ -192,21 +194,25 @@ export function findOwningFolder(
 // lookup clears the cache (retry-able) and the input passes through
 // unchanged — callers surface the eventual "does not exist" IO error instead
 // of us throwing here.
-let homeDirPromise: Promise<string> | null = null
+let homeDirPromises = new WeakMap<BackendApi, Promise<string>>()
 
 /** Test-only: drop the cached home-directory promise. */
 export function resetHomeDirCacheForTests(): void {
-  homeDirPromise = null
+  homeDirPromises = new WeakMap()
 }
 
-function fetchHomeDir(): Promise<string> {
-  if (!homeDirPromise) {
-    homeDirPromise = getHomeDirectory().catch((error) => {
-      homeDirPromise = null
+function fetchHomeDir(
+  backendApi: BackendApi = legacyBackendApi
+): Promise<string> {
+  let promise = homeDirPromises.get(backendApi)
+  if (!promise) {
+    promise = backendApi.getHomeDirectory().catch((error) => {
+      homeDirPromises.delete(backendApi)
       throw error
     })
+    homeDirPromises.set(backendApi, promise)
   }
-  return homeDirPromise
+  return promise
 }
 
 /** True when the path is `~` or starts with `~/` (or `~\`). */
@@ -217,10 +223,13 @@ export function isHomeRelativePath(path: string): boolean {
   )
 }
 
-export async function expandHomePath(path: string): Promise<string> {
+export async function expandHomePath(
+  path: string,
+  backendApi: BackendApi = legacyBackendApi
+): Promise<string> {
   if (!isHomeRelativePath(path)) return path
   try {
-    const home = await fetchHomeDir()
+    const home = await fetchHomeDir(backendApi)
     const trimmed = path.trim()
     const remainder = trimmed === "~" ? "" : trimmed.slice(2)
     return joinRootRel(home, remainder)

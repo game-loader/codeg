@@ -1,20 +1,14 @@
 "use client"
 
+import {
+  useBackendApi,
+  useBackendPlatform,
+} from "@/contexts/backend-client-context"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { FileWarning, Loader2 } from "lucide-react"
 
-import {
-  renewOfficeWatch,
-  startOfficeWatch,
-  stopOfficeWatch,
-  openSettingsWindow,
-} from "@/lib/api"
-import {
-  isDesktop,
-  isRemoteDesktopMode,
-  getServerBaseUrl,
-} from "@/lib/transport"
+import { isDesktop } from "@/lib/transport"
 import { extractAppCommandError } from "@/lib/app-error"
 
 // Machine code the backend stamps into `i18n_params.watchCode` for a missing
@@ -91,6 +85,9 @@ export function OfficePreview({
   // the page also hears of it, to let go of its live connection while hidden.
   active?: boolean
 }) {
+  const backendApi = useBackendApi()
+  const backendPlatform = useBackendPlatform()
+
   const t = useTranslations("Folder.fileWorkspacePanel")
   const [port, setPort] = useState<number | null>(null)
   const [cap, setCap] = useState<string>("")
@@ -146,13 +143,13 @@ export function OfficePreview({
 
   // True only for a local desktop window: it loads the watch's loopback URL
   // directly. Web windows go through the proxy.
-  const loopbackDirect = isDesktop() && !isRemoteDesktopMode()
+  const loopbackDirect = isDesktop() && !backendPlatform.isRemoteDesktopMode()
   // A Tauri window bound to a remote server can't load the preview at all: its
   // webview is a secure context that mixed-content-blocks the remote `http://`
   // proxy URL, and (unlike JSON calls) a raw iframe can't be tunnelled through
   // Rust. Rather than spawn a remote watch nobody can see, we show a hint to
   // open the preview in the server's web UI instead.
-  const remoteDesktop = isDesktop() && isRemoteDesktopMode()
+  const remoteDesktop = isDesktop() && backendPlatform.isRemoteDesktopMode()
 
   // Start the watch server on mount (and on retry); stop it on unmount. The
   // component is keyed by tab id upstream, so a different file remounts fresh.
@@ -173,12 +170,15 @@ export function OfficePreview({
     const root = rootPath ?? ""
     // Don't spawn a watch we can't display (remote-desktop, see above).
     if (!root || !path || remoteDesktop) return
-    startOfficeWatch(root, path)
+    backendApi
+      .startOfficeWatch(root, path)
       .then((res) => {
         acquired = { cap: res.cap, hold: res.hold }
         if (cancelled) {
           // Unmounted before start resolved — release the ref we just took.
-          void stopOfficeWatch(root, path, res.cap, res.hold).catch(() => {})
+          void backendApi
+            .stopOfficeWatch(root, path, res.cap, res.hold)
+            .catch(() => {})
           return
         }
         setPort(res.port)
@@ -196,10 +196,10 @@ export function OfficePreview({
       cancelled = true
       if (acquired !== null) {
         const { cap, hold } = acquired
-        void stopOfficeWatch(root, path, cap, hold).catch(() => {})
+        void backendApi.stopOfficeWatch(root, path, cap, hold).catch(() => {})
       }
     }
-  }, [path, rootPath, retryKey, remoteDesktop])
+  }, [path, rootPath, retryKey, remoteDesktop, backendApi])
 
   // Shown again: is the watch this page talks to still the one serving the
   // file? The backend stops watches whose tab is still open — when the folder
@@ -212,7 +212,8 @@ export function OfficePreview({
     const root = rootPath ?? ""
     if (!aliveCheck || !active || !root || !path) return
     let stale = false
-    renewOfficeWatch(root, path, aliveCheck.cap, aliveCheck.hold)
+    backendApi
+      .renewOfficeWatch(root, path, aliveCheck.cap, aliveCheck.hold)
       .then((alive) => {
         if (!stale && !alive) setGoneCap(aliveCheck.cap)
       })
@@ -220,7 +221,7 @@ export function OfficePreview({
     return () => {
       stale = true
     }
-  }, [aliveCheck, active, rootPath, path])
+  }, [aliveCheck, active, rootPath, path, backendApi])
 
   // Renew the hold on the watch while there is one, shown or not. In a browser
   // window this is what keeps a hidden preview's watch, which it holds no live
@@ -232,7 +233,8 @@ export function OfficePreview({
     if (port == null || !cap || !root || !path) return
     let stale = false
     const timer = setInterval(() => {
-      renewOfficeWatch(root, path, cap, hold)
+      backendApi
+        .renewOfficeWatch(root, path, cap, hold)
         .then((alive) => {
           if (!stale && !alive) setGoneCap(cap)
         })
@@ -242,7 +244,7 @@ export function OfficePreview({
       stale = true
       clearInterval(timer)
     }
-  }, [port, cap, hold, rootPath, path])
+  }, [port, cap, hold, rootPath, path, backendApi])
 
   const watchUrl = useMemo(() => {
     if (port == null) return null
@@ -253,9 +255,9 @@ export function OfficePreview({
     }
     // Web: route through the reverse proxy on the server that backs this
     // window, carrying the per-watch capability the proxy validates.
-    const base = getServerBaseUrl()
+    const base = backendPlatform.getServerBaseUrl()
     return `${base}/api/office-watch-proxy/${port}/?cap=${encodeURIComponent(cap)}`
-  }, [port, cap, loopbackDirect])
+  }, [port, cap, loopbackDirect, backendPlatform])
 
   // In a browser window, tell the page whether it is in sight. Out of sight it
   // lets go of its live connection to the watch (the proxy's shim does that),
@@ -313,7 +315,7 @@ export function OfficePreview({
             <button
               type="button"
               onClick={() => {
-                openSettingsWindow().catch(() => {})
+                backendApi.openSettingsWindow().catch(() => {})
               }}
               className="mt-1 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-primary/8"
             >

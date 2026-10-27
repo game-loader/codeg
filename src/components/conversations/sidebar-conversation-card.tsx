@@ -1,5 +1,8 @@
 "use client"
 
+import { defaultBackendStoreStorage as legacyStorage } from "@/stores/backend-store-storage"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useTabStore as legacyTabs } from "@/contexts/tab-context"
 import {
   memo,
   useState,
@@ -24,7 +27,7 @@ import {
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useImeGuard } from "@/hooks/use-ime-guard"
-import { useTabStore } from "@/contexts/tab-context"
+import type { BackendStores } from "@/lib/backend/stores"
 import { emitAttachSessionToSession } from "@/lib/session-attachment-events"
 import type { DbConversationSummary, ConversationStatus } from "@/lib/types"
 import { STATUS_ORDER } from "@/lib/types"
@@ -133,8 +136,8 @@ export function SubsessionAncestorRails({ depth }: { depth: number }) {
  * Deliberately no self-mention guard: the composer's own `@` panel lists every
  * session including the one being typed in, so the sidebar matches it.
  */
-function resolveAttachTabId(): string | null {
-  const { tabs, activeTabId } = useTabStore.getState()
+function resolveAttachTabId(store: BackendStores["tabs"]): string | null {
+  const { tabs, activeTabId } = store.getState()
   const activeTab = tabs.find((tab) => tab.id === activeTabId)
   if (!activeTab || activeTab.kind !== "conversation") return null
   return activeTab.id
@@ -223,6 +226,10 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   expanded = false,
   onToggleExpand,
 }: SidebarConversationCardProps) {
+  const backendStores = useBackendStores({
+    storage: legacyStorage,
+    tabs: legacyTabs,
+  })
   const t = useTranslations("Folder.conversationCard")
   const ime = useImeGuard()
   const tSidebar = useTranslations("Folder.sidebar")
@@ -273,13 +280,16 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   // subscription — and a re-render on every tab switch — to each of them for a
   // value only the context menu reads. This snapshot drives the DISABLED STATE
   // only; the click re-resolves (see `handleAttachToSession`).
-  const handleMenuOpenChange = useCallback((open: boolean) => {
-    if (!open) return
-    // The context menu takes the row over; drop the details bubble so the two
-    // don't stack on the same spot.
-    setHoverOpen(false)
-    setAttachTabId(resolveAttachTabId())
-  }, [])
+  const handleMenuOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open) return
+      // The context menu takes the row over; drop the details bubble so the two
+      // don't stack on the same spot.
+      setHoverOpen(false)
+      setAttachTabId(resolveAttachTabId(backendStores.tabs))
+    },
+    [backendStores]
+  )
 
   // See `isKeyboardFocus`: suppress Radix's open-on-focus unless the focus
   // really came from the keyboard, so clicking a row doesn't pop the bubble.
@@ -294,10 +304,14 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
     // tab really can change under an open menu. Posting to the stale id would
     // drop the badge into a closed (or now-background) composer and read to the
     // user as "nothing happened".
-    const tabId = resolveAttachTabId()
+    const tabId = resolveAttachTabId(backendStores.tabs)
     if (!tabId) return
-    emitAttachSessionToSession({ tabId, conversation })
-  }, [conversation])
+    emitAttachSessionToSession({
+      tabId,
+      conversation,
+      backendKey: backendStores.storage.backendKey,
+    })
+  }, [conversation, backendStores])
 
   const handleRenameOpen = useCallback(() => {
     setRenameValue(conversation.title || "")

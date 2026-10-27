@@ -1,8 +1,6 @@
-import {
-  getShellTransport,
-  isDesktop,
-  isRemoteDesktopMode,
-} from "@/lib/transport"
+import type { BackendPlatform } from "@/lib/backend/types"
+import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
+import { getShellTransport, isDesktop } from "@/lib/transport"
 
 /**
  * Sent to the local workspace window when a remote workspace that was open at
@@ -28,10 +26,10 @@ export interface WorkspaceRestoreFailure {
  * targets a `codeg-server`, which reopens no windows, and the web build has
  * none. Returns `[]` for everything else, including failures.
  */
-export async function takeWorkspaceRestoreFailures(): Promise<
-  WorkspaceRestoreFailure[]
-> {
-  if (!isDesktop() || isRemoteDesktopMode()) return []
+export async function takeWorkspaceRestoreFailures(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<WorkspaceRestoreFailure[]> {
+  if (!isDesktop() || backendPlatform.isRemoteDesktopMode()) return []
   try {
     const failures = await getShellTransport().call<
       WorkspaceRestoreFailure[] | null
