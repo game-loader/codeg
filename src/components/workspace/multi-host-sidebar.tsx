@@ -5,6 +5,8 @@ import {
   ChevronDown,
   ChevronRight,
   Folder,
+  FolderOpen,
+  GitBranchPlus,
   Monitor,
   Plus,
   RefreshCw,
@@ -12,6 +14,12 @@ import {
   Settings2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 import type { BackendDescriptor } from "@/lib/backend/registry"
 import type { BackendKey } from "@/lib/backend/types"
@@ -91,6 +99,9 @@ export interface MultiHostSidebarProps extends CatalogRowActions {
   onAddRepository(key: BackendKey, generation: number): void
   /** Adds a project without a machine row to start from; the dialog picks one. */
   onAddProject?(): void
+  /** Clones a Git repository as a new project; the dialog picks the machine
+   *  and the directory. With it, "Add project" becomes a menu of both. */
+  onCloneProject?(): void
   onRefresh(key: BackendKey, generation: number): void
   onManageConnections(): void
   renderNavigation?(items: SidebarNavItemVisibility): ReactNode
@@ -107,6 +118,7 @@ export function MultiHostSidebar({
   onOpenFolder,
   onAddRepository,
   onAddProject,
+  onCloneProject,
   onWorktrees,
   onNewSession,
   onOpenConversation,
@@ -249,7 +261,31 @@ export function MultiHostSidebar({
           ))}
         </div>
         <div className="flex items-center">
-          {onAddProject && (
+          {onAddProject && onCloneProject ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-7"
+                  aria-label={t("addProject")}
+                  title={t("addProject")}
+                >
+                  <Plus className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={onAddProject}>
+                  <FolderOpen className="size-4" />
+                  {t("openProjectFolder")}
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={onCloneProject}>
+                  <GitBranchPlus className="size-4" />
+                  {t("cloneProject")}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : onAddProject ? (
             <Button
               size="icon"
               variant="ghost"
@@ -260,7 +296,7 @@ export function MultiHostSidebar({
             >
               <Plus className="size-4" />
             </Button>
-          )}
+          ) : null}
           <Button
             size="icon"
             variant="ghost"

@@ -96,6 +96,21 @@ vi.mock("@/components/layout/workspace-folder-dialog", () => ({
     </>
   ),
 }))
+vi.mock("@/components/layout/clone-dialog", () => ({
+  CloneDialog: ({
+    renderMachinePicker,
+  }: {
+    renderMachinePicker?: (options: { disabled: boolean }) => ReactNode
+  }) => (
+    <>
+      {renderMachinePicker?.({ disabled: false })}
+      <ClonePicker />
+    </>
+  ),
+}))
+vi.mock("@/contexts/git-credential-context", () => ({
+  GitCredentialProvider: ({ children }: { children: ReactNode }) => children,
+}))
 vi.mock("./host-worktree-dialog", () => ({
   HostWorktreeDialog: (props: unknown) => {
     mocks.worktreeDialog(props)
@@ -189,6 +204,31 @@ function FolderPicker() {
     >
       Pick on {client.key}
     </button>
+  )
+}
+
+function ClonePicker() {
+  const client = useBackendClient()
+  return (
+    <button
+      onClick={() => {
+        void client.api.cloneRepository(
+          "https://example.com/o/r.git",
+          "/remote/r"
+        )
+      }}
+    >
+      Clone on {client.key}
+    </button>
+  )
+}
+
+/** "Add project" is a menu of opening a folder and cloning from Git. */
+async function addProject(choice: "openProjectFolder" | "cloneProject") {
+  const user = userEvent.setup({ pointerEventsCheck: 0 })
+  await user.click(screen.getByRole("button", { name: "Add project" }))
+  await user.click(
+    screen.getByRole("menuitem", { name: messages.MultiHost[choice] })
   )
 }
 
@@ -604,7 +644,7 @@ describe("single-window machine integration", () => {
 
   it("adds a project on the focused machine and lets the dialog move it to another one", async () => {
     await mount()
-    fireEvent.click(screen.getByRole("button", { name: "Add project" }))
+    await addProject("openProjectFolder")
     const machine = screen.getByRole("combobox", { name: "Machine" })
     expect(machine).toHaveValue("local")
     fireEvent.change(machine, { target: { value: "remote:2" } })
@@ -630,6 +670,35 @@ describe("single-window machine integration", () => {
     )
   })
 
+  it("clones a project on the picked machine only", async () => {
+    await mount()
+    await addProject("cloneProject")
+    const machine = screen.getByRole("combobox", { name: "Machine" })
+    expect(machine).toHaveValue("local")
+    fireEvent.change(machine, { target: { value: "remote:2" } })
+    fireEvent.click(screen.getByRole("button", { name: "Clone on remote:2" }))
+    await waitFor(() =>
+      expect(mocks.remotes.get(2)?.call).toHaveBeenCalledWith(
+        "clone_repository",
+        {
+          url: "https://example.com/o/r.git",
+          targetDir: "/remote/r",
+          credentials: null,
+        },
+        undefined
+      )
+    )
+    expect(mocks.remotes.get(1)?.call).not.toHaveBeenCalledWith(
+      "clone_repository",
+      expect.anything(),
+      undefined
+    )
+    expect(mocks.shell.call).not.toHaveBeenCalledWith(
+      "clone_repository",
+      expect.anything()
+    )
+  })
+
   it("defaults a new project to the focused remote only while it is usable", async () => {
     await mount()
     showMachines()
@@ -640,7 +709,7 @@ describe("single-window machine integration", () => {
     )
     // Focused but never answered yet: still connecting, so this machine.
     expect(hostNode("remote:1")).toHaveTextContent("Connecting")
-    fireEvent.click(screen.getByRole("button", { name: "Add project" }))
+    await addProject("openProjectFolder")
     expect(screen.getByRole("combobox", { name: "Machine" })).toHaveValue(
       "local"
     )
@@ -649,7 +718,7 @@ describe("single-window machine integration", () => {
     await waitFor(() =>
       expect(hostNode("remote:1")).toHaveTextContent("Connected")
     )
-    fireEvent.click(screen.getByRole("button", { name: "Add project" }))
+    await addProject("openProjectFolder")
     expect(screen.getByRole("combobox", { name: "Machine" })).toHaveValue(
       "remote:1"
     )
@@ -660,7 +729,7 @@ describe("single-window machine integration", () => {
     act(() => {
       mocks.remotes.get(1)!.config.onUnauthorized?.()
     })
-    fireEvent.click(screen.getByRole("button", { name: "Add project" }))
+    await addProject("openProjectFolder")
     const machine = screen.getByRole("combobox", { name: "Machine" })
     expect(machine).toHaveValue("local")
     expect(

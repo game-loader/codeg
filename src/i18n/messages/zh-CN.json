@@ -7704,6 +7704,8 @@
     "showMachines": "显示侧边栏",
     "hideMachines": "隐藏侧边栏",
     "addProject": "添加项目",
+    "openProjectFolder": "打开文件夹…",
+    "cloneProject": "从 Git 克隆…",
     "projectMachine": "机器"
   }
 }

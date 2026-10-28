@@ -7704,6 +7704,8 @@
     "showMachines": "Show sidebar",
     "hideMachines": "Hide sidebar",
     "addProject": "Add project",
+    "openProjectFolder": "Open folder…",
+    "cloneProject": "Clone from Git…",
     "projectMachine": "Machine"
   }
 }

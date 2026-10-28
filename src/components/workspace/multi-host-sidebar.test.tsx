@@ -507,3 +507,23 @@ it("adds a project from the header in both views, without a machine row to start
   render(<MultiHostSidebar {...tagProps(new Map())} />)
   expect(screen.queryByRole("button", { name: "addProject" })).toBeNull()
 })
+
+it("offers opening a folder or cloning from Git when the header can clone", async () => {
+  const onAddProject = vi.fn()
+  const onCloneProject = vi.fn()
+  render(
+    <MultiHostSidebar
+      {...tagProps(new Map())}
+      onAddProject={onAddProject}
+      onCloneProject={onCloneProject}
+    />
+  )
+  const user = userEvent.setup({ pointerEventsCheck: 0 })
+  await user.click(screen.getByRole("button", { name: "addProject" }))
+  await user.click(screen.getByRole("menuitem", { name: "cloneProject" }))
+  expect(onCloneProject).toHaveBeenCalledOnce()
+  expect(onAddProject).not.toHaveBeenCalled()
+  await user.click(screen.getByRole("button", { name: "addProject" }))
+  await user.click(screen.getByRole("menuitem", { name: "openProjectFolder" }))
+  expect(onAddProject).toHaveBeenCalledOnce()
+})

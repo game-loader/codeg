@@ -54,6 +54,8 @@ import { BackendClientProvider } from "@/contexts/backend-client-context"
 import { BackendStoresProvider } from "@/contexts/backend-stores-context"
 import { ScopedRemoteConnectionProvider } from "@/contexts/remote-connection-context"
 import { WorkspaceFolderDialog } from "@/components/layout/workspace-folder-dialog"
+import { CloneDialog } from "@/components/layout/clone-dialog"
+import { GitCredentialProvider } from "@/contexts/git-credential-context"
 import { RemoteWorkspaceManageDialog } from "@/components/layout/remote-workspace-manage-dialog"
 import { WindowControls } from "@/components/layout/window-controls"
 import { AppToaster } from "@/components/ui/app-toaster"
@@ -267,6 +269,7 @@ export function MultiHostWorkspace({
   const [manageOpen, setManageOpen] = useState(false)
   const [repositoryTarget, setRepositoryTarget] =
     useState<BackendRuntime | null>(null)
+  const [cloneTarget, setCloneTarget] = useState<BackendRuntime | null>(null)
   const [worktreeTarget, setWorktreeTarget] = useState<{
     runtime: BackendRuntime
     folder: FolderDetail
@@ -473,6 +476,8 @@ export function MultiHostWorkspace({
       setManageOpen={setManageOpen}
       repositoryTarget={repositoryTarget}
       setRepositoryTarget={setRepositoryTarget}
+      cloneTarget={cloneTarget}
+      setCloneTarget={setCloneTarget}
       worktreeTarget={worktreeTarget}
       setWorktreeTarget={setWorktreeTarget}
       connectionError={connectionError}
@@ -511,6 +516,8 @@ function WindowWorkspace({
   setManageOpen,
   repositoryTarget,
   setRepositoryTarget,
+  cloneTarget,
+  setCloneTarget,
   worktreeTarget,
   setWorktreeTarget,
   connectionError,
@@ -545,6 +552,8 @@ function WindowWorkspace({
   setManageOpen(open: boolean): void
   repositoryTarget: BackendRuntime | null
   setRepositoryTarget(runtime: BackendRuntime | null): void
+  cloneTarget: BackendRuntime | null
+  setCloneTarget(runtime: BackendRuntime | null): void
   worktreeTarget: { runtime: BackendRuntime; folder: FolderDetail } | null
   setWorktreeTarget(
     target: { runtime: BackendRuntime; folder: FolderDetail } | null
@@ -940,12 +949,17 @@ function WindowWorkspace({
   }
   // Default to the focused machine when it is usable, otherwise this machine.
   // The dialog can still move the new project elsewhere before it opens.
+  const projectHost = () =>
+    registry.descriptor(focused)?.status === "connected"
+      ? registry.get(focused)
+      : registry.get("local")
   const addProject = () => {
-    const runtime =
-      registry.descriptor(focused)?.status === "connected"
-        ? registry.get(focused)
-        : registry.get("local")
+    const runtime = projectHost()
     if (runtime) setRepositoryTarget(runtime)
+  }
+  const cloneProject = () => {
+    const runtime = projectHost()
+    if (runtime) setCloneTarget(runtime)
   }
   const refreshHost = (key: BackendKey, generation: number) => {
     const runtime = resolveCatalogRuntime(registry, key, generation)
@@ -1188,6 +1202,7 @@ function WindowWorkspace({
               if (runtime) setRepositoryTarget(runtime)
             }}
             onAddProject={addProject}
+            onCloneProject={cloneProject}
             onWorktrees={(key, folder, generation) => {
               const runtime = resolveCatalogRuntime(
                 registry,
@@ -1341,6 +1356,48 @@ function WindowWorkspace({
             </BackendStoresProvider>
           </BackendClientProvider>
         )}
+      {cloneTarget && registry.get(cloneTarget.client.key) === cloneTarget && (
+        // As above: switching machines remounts the dialog, so the URL and
+        // directory typed for one machine never clone onto another.
+        <BackendClientProvider
+          key={`${cloneTarget.client.key}:${cloneTarget.generation}`}
+          client={cloneTarget.client}
+        >
+          <BackendStoresProvider stores={cloneTarget.stores}>
+            <ScopedRemoteConnectionProvider
+              connection={cloneTarget.client.remoteConnection}
+            >
+              <GitCredentialProvider>
+                <CloneDialog
+                  open
+                  onOpenChange={(open) => {
+                    if (!open) setCloneTarget(null)
+                  }}
+                  onFolderOpened={(folder) => {
+                    openRegisteredFolder(cloneTarget, folder)
+                    refreshHost(cloneTarget.client.key, cloneTarget.generation)
+                  }}
+                  renderMachinePicker={
+                    hosts.length > 1
+                      ? ({ disabled }) => (
+                          <ProjectMachinePicker
+                            hosts={hosts}
+                            value={cloneTarget.client.key}
+                            disabled={disabled}
+                            onChange={(key) => {
+                              const runtime = registry.get(key)
+                              if (runtime) setCloneTarget(runtime)
+                            }}
+                          />
+                        )
+                      : undefined
+                  }
+                />
+              </GitCredentialProvider>
+            </ScopedRemoteConnectionProvider>
+          </BackendStoresProvider>
+        </BackendClientProvider>
+      )}
       {worktreeTarget &&
         registry.get(worktreeTarget.runtime.client.key) ===
           worktreeTarget.runtime && (

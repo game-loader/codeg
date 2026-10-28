@@ -3,7 +3,7 @@
 import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
 import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useBackendApi } from "@/contexts/backend-client-context"
-import { useState, useMemo } from "react"
+import { useState, useMemo, type ReactNode } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { Loader2 } from "lucide-react"
@@ -36,12 +36,19 @@ interface CloneDialogProps {
    * caller that started it.
    */
   onFolderOpened?: (folder: FolderDetail) => void
+  /**
+   * The multi-host workspace's machine picker, drawn above the form. The
+   * caller mounts this dialog under the picked machine's providers, so the
+   * clone, the directory browser and the folder it opens all run there.
+   */
+  renderMachinePicker?: (options: { disabled: boolean }) => ReactNode
 }
 
 export function CloneDialog({
   open,
   onOpenChange,
   onFolderOpened,
+  renderMachinePicker,
 }: CloneDialogProps) {
   const backendStores = useBackendStores({ workspace: legacyWorkspace })
   const useAppWorkspaceStore = backendStores.workspace
@@ -121,6 +128,7 @@ export function CloneDialog({
           <DialogTitle>{t("title")}</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-2">
+          {renderMachinePicker?.({ disabled: cloning })}
           <div className="space-y-2">
             <Label htmlFor="clone-repo-url">{t("repositoryUrl")}</Label>
             <Input
