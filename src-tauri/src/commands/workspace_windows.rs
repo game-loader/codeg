@@ -11,9 +11,11 @@
 //! focused first, writes it to `app_metadata` whenever a window joins or leaves
 //! it and once more at quit, and replays it at the next launch:
 //!
-//!   * `main` is always built — the tray, the dock, deep links and the close
-//!     prompt all hang off it — but it starts hidden when it had been closed
-//!     (hidden to the tray) at quit and something else is coming back instead.
+//!   * `main` is always built and always shown. It is the multi-host
+//!     workspace: every saved remote connection is a host in its sidebar, so
+//!     a launch that brought back only standalone remote windows left the
+//!     user without the window that shows all their machines, and with
+//!     nothing in the UI that pointed back to it.
 //!   * Remote windows reopen even while their server is offline. Their
 //!     transport reconnects in the background; network availability must not
 //!     erase the window session. The remembered front window is raised last.
@@ -155,14 +157,15 @@ struct RestorePlan {
 
 /// `remembered` is the stored list; `connection_exists` weeds out the remote
 /// connections deleted since. `local_requested` is a launch that asked for the
-/// local workspace itself (a `codeg://` link on the command line), and
-/// `local_can_hide` whether `main` can be hidden at all this launch — where it
-/// cannot, a hidden `main` would have nothing to bring it back.
+/// local workspace itself (a `codeg://` link on the command line).
+///
+/// `main` is always shown (see the module docs). It goes in front when it was
+/// not among the remembered windows or a link asked for it; otherwise the
+/// remembered front window keeps its place.
 fn plan_restore(
     remembered: &[WorkspaceWindow],
     connection_exists: impl Fn(i32) -> bool,
     local_requested: bool,
-    local_can_hide: bool,
 ) -> RestorePlan {
     let restorable: Vec<WorkspaceWindow> = remembered
         .iter()
@@ -179,11 +182,8 @@ fn plan_restore(
             WorkspaceWindow::Local => None,
         })
         .collect();
-    let show_local = local_requested
-        || !local_can_hide
-        || remotes.is_empty()
-        || restorable.contains(&WorkspaceWindow::Local);
-    let front = if local_requested {
+    let show_local = true;
+    let front = if local_requested || !restorable.contains(&WorkspaceWindow::Local) {
         WorkspaceWindow::Local
     } else {
         restorable.last().copied().unwrap_or(WorkspaceWindow::Local)
@@ -485,12 +485,8 @@ impl Restore {
 }
 
 /// Read the remembered list and work out what this launch reopens. See
-/// [`plan_restore`] for `local_requested` and `local_can_hide`.
-pub async fn load_restore(
-    conn: &DatabaseConnection,
-    local_requested: bool,
-    local_can_hide: bool,
-) -> Restore {
+/// [`plan_restore`] for `local_requested`.
+pub async fn load_restore(conn: &DatabaseConnection, local_requested: bool) -> Restore {
     let remembered = match app_metadata_service::get_value(conn, SESSION_KEY).await {
         Ok(Some(raw)) => decode_session(&raw),
         Ok(None) => Vec::new(),
@@ -517,7 +513,6 @@ pub async fn load_restore(
         &remembered,
         |id| connections.contains_key(&id),
         local_requested,
-        local_can_hide,
     );
     let connections = plan
         .remotes
@@ -776,7 +771,7 @@ mod tests {
 
     #[test]
     fn nothing_remembered_opens_the_local_workspace() {
-        let plan = plan_restore(&[], |_| true, false, true);
+        let plan = plan_restore(&[], |_| true, false);
         assert_eq!(
             plan,
             RestorePlan {
@@ -789,7 +784,7 @@ mod tests {
 
     #[test]
     fn remote_windows_come_back_with_the_local_one() {
-        let plan = plan_restore(&[LOCAL, remote(1), remote(2)], |_| true, false, true);
+        let plan = plan_restore(&[LOCAL, remote(1), remote(2)], |_| true, false);
         assert_eq!(
             plan,
             RestorePlan {
@@ -799,32 +794,34 @@ mod tests {
             }
         );
 
-        let plan = plan_restore(&[remote(1), remote(2), LOCAL], |_| true, false, true);
+        let plan = plan_restore(&[remote(1), remote(2), LOCAL], |_| true, false);
         assert_eq!(plan.remotes, vec![1, 2]);
         assert_eq!(plan.front, LOCAL);
     }
 
+    // The local workspace is the multi-host window; a launch never leaves it
+    // hidden behind standalone remote windows, and it comes up in front.
     #[test]
-    fn a_local_workspace_closed_at_quit_stays_closed() {
-        let plan = plan_restore(&[remote(1), remote(2)], |_| true, false, true);
+    fn a_local_workspace_closed_at_quit_comes_back_in_front() {
+        let plan = plan_restore(&[remote(1), remote(2)], |_| true, false);
         assert_eq!(
             plan,
             RestorePlan {
-                show_local: false,
+                show_local: true,
                 remotes: vec![1, 2],
-                front: remote(2),
+                front: LOCAL,
             }
         );
     }
 
     #[test]
     fn deleted_connections_are_not_reopened() {
-        let plan = plan_restore(&[remote(1), remote(2)], |id| id == 1, false, true);
+        let plan = plan_restore(&[remote(1), remote(2), LOCAL], |id| id == 1, false);
         assert_eq!(plan.remotes, vec![1]);
-        assert_eq!(plan.front, remote(1));
+        assert_eq!(plan.front, LOCAL);
 
         // With nothing left to reopen, the local workspace opens after all.
-        let plan = plan_restore(&[remote(1)], |_| false, false, true);
+        let plan = plan_restore(&[remote(1)], |_| false, false);
         assert_eq!(
             plan,
             RestorePlan {
@@ -837,26 +834,13 @@ mod tests {
 
     #[test]
     fn a_link_on_the_command_line_opens_the_local_workspace_in_front() {
-        let plan = plan_restore(&[remote(1)], |_| true, true, true);
+        let plan = plan_restore(&[remote(1)], |_| true, true);
         assert_eq!(
             plan,
             RestorePlan {
                 show_local: true,
                 remotes: vec![1],
                 front: LOCAL,
-            }
-        );
-    }
-
-    #[test]
-    fn the_local_workspace_opens_where_it_could_not_be_brought_back() {
-        let plan = plan_restore(&[remote(1)], |_| true, false, false);
-        assert_eq!(
-            plan,
-            RestorePlan {
-                show_local: true,
-                remotes: vec![1],
-                front: remote(1),
             }
         );
     }
@@ -957,10 +941,10 @@ mod tests {
         session.apply(|state| state.mark_open(remote(one.id)));
         session.write_latest(&db.conn).await;
 
-        let restore = load_restore(&db.conn, false, true).await;
-        assert!(!restore.show_local());
+        let restore = load_restore(&db.conn, false).await;
+        assert!(restore.show_local());
         assert_eq!(restore.plan.remotes, vec![two.id, one.id]);
-        assert_eq!(restore.plan.front, remote(one.id));
+        assert_eq!(restore.plan.front, LOCAL);
         let names: Vec<&str> = restore
             .connections
             .iter()
@@ -972,9 +956,9 @@ mod tests {
         remote_workspace_connection_service::delete(&db.conn, one.id)
             .await
             .unwrap();
-        let restore = load_restore(&db.conn, false, true).await;
+        let restore = load_restore(&db.conn, false).await;
         assert_eq!(restore.plan.remotes, vec![two.id]);
-        assert_eq!(restore.plan.front, remote(two.id));
+        assert_eq!(restore.plan.front, LOCAL);
     }
 
     /// The user opens B while A is still being restored. Completing the
@@ -1020,9 +1004,9 @@ mod tests {
         assert!(session.freeze());
         session.write_latest(&db.conn).await;
 
-        let restore = load_restore(&db.conn, false, true).await;
+        let restore = load_restore(&db.conn, false).await;
         assert_eq!(restore.plan.remotes, vec![a.id, b.id]);
-        assert_eq!(restore.plan.front, remote(b.id));
+        assert_eq!(restore.plan.front, LOCAL);
     }
 
     #[tokio::test]
@@ -1043,8 +1027,8 @@ mod tests {
         session.apply(|state| state.mark_open(window));
         session.freeze();
         session.write_latest(&db.conn).await;
-        let restore = load_restore(&db.conn, false, true).await;
-        assert!(!restore.show_local());
+        let restore = load_restore(&db.conn, false).await;
+        assert!(restore.show_local());
         assert_eq!(restore.plan.remotes, vec![connection.id]);
 
         // A shell closing deliberately while the server remains unavailable
@@ -1054,7 +1038,7 @@ mod tests {
         closed_session.apply(|state| state.mark_closed(window));
         closed_session.freeze();
         closed_session.write_latest(&db.conn).await;
-        let restore = load_restore(&db.conn, false, true).await;
+        let restore = load_restore(&db.conn, false).await;
         assert!(restore.show_local());
         assert!(restore.plan.remotes.is_empty());
     }
@@ -1094,7 +1078,7 @@ mod tests {
     #[tokio::test]
     async fn a_first_launch_opens_the_local_workspace() {
         let db = fresh_in_memory_db().await;
-        let restore = load_restore(&db.conn, false, true).await;
+        let restore = load_restore(&db.conn, false).await;
         assert!(restore.show_local());
         assert!(restore.connections.is_empty());
     }
@@ -1200,7 +1184,7 @@ mod tests {
             .unwrap();
         assert!(!raw.contains("private-token-sentinel"));
         assert!(!raw.contains("offline.example"));
-        let restored = load_restore(&db.conn, false, true).await;
+        let restored = load_restore(&db.conn, false).await;
         assert_eq!(restored.plan.remotes, vec![remote.id]);
     }
 }

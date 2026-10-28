@@ -45,6 +45,7 @@ import {
 import { getCurrentWindowLabel } from "@/lib/browser/window-label"
 import { closeCurrentWindow } from "@/lib/platform"
 import { getShellTransport, isDesktop } from "@/lib/transport"
+import { hasMessageInputDraftContent } from "@/lib/message-input-draft"
 import { SearchCommandDialog } from "@/components/conversations/search-command-dialog"
 import { WorkspaceFolderDialog } from "@/components/layout/workspace-folder-dialog"
 
@@ -67,6 +68,8 @@ export function WorkspaceChromeController() {
     workspace: legacyWorkspace,
   })
   const { popClosedTab } = backendStores.storage.closedTabs
+  const buildDraftKey =
+    backendStores.storage.drafts.buildNewConversationDraftStorageKey
   const useTabActions = backendStoreSelection
     ? backendStores.tabs.useTabActions
     : standaloneUseTabActions
@@ -137,6 +140,17 @@ export function WorkspaceChromeController() {
       )
       if (target.conversation) {
         if (!activeTabId) return false
+        // The last tab, an untouched new-conversation draft: closing it would
+        // only put an identical draft back, so ⌘W could never get past it to
+        // the window. Leave it to the window instead.
+        const active = tabs.find((tab) => tab.id === activeTabId)
+        if (
+          tabs.length === 1 &&
+          active?.conversationId == null &&
+          !hasMessageInputDraftContent(buildDraftKey(activeTabId))
+        ) {
+          return false
+        }
         closeTab(activeTabId)
         return true
       }
@@ -150,11 +164,13 @@ export function WorkspaceChromeController() {
     [
       activeFileTabId,
       activeTabId,
+      buildDraftKey,
       closeFileTab,
       closeTab,
       conversationMaximized,
       filesMaximized,
       mode,
+      tabs,
     ]
   )
 

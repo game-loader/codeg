@@ -1575,7 +1575,6 @@ mod tauri_app {
                     startup_urls
                         .iter()
                         .any(|url| crate::deep_link::parse_deep_link(url).is_some()),
-                    windows::can_hide_to_tray(),
                 ));
 
                 // `main` is always built. Workspace state (open folders, opened

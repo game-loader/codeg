@@ -33,6 +33,8 @@ const state = vi.hoisted(() => ({
   filesMaximized: false,
   conversationMaximized: false,
   activeTabId: "conv-1" as string | null,
+  /** The active tab's saved conversation; null makes it a new draft. */
+  activeConversationId: 1 as number | null,
   activeFileTabId: "browser:tab-1" as string | null,
   desktop: true,
   shortcuts: {} as Record<string, string>,
@@ -78,7 +80,10 @@ vi.mock("@/contexts/tab-context", () => ({
     closeTab: spies.closeTab,
   }),
   useTabStore: <T,>(
-    selector: (s: { tabs: { id: string }[]; activeTabId: string | null }) => T
+    selector: (s: {
+      tabs: { id: string; conversationId: number | null }[]
+      activeTabId: string | null
+    }) => T
   ) => {
     const client = useOptionalBackendClient()
     const activeTabId =
@@ -86,7 +91,9 @@ vi.mock("@/contexts/tab-context", () => ({
         ? `${client.key}:${state.activeTabId}`
         : state.activeTabId
     return selector({
-      tabs: activeTabId ? [{ id: activeTabId }] : [],
+      tabs: activeTabId
+        ? [{ id: activeTabId, conversationId: state.activeConversationId }]
+        : [],
       activeTabId,
     })
   },
@@ -177,6 +184,7 @@ beforeEach(() => {
   state.filesMaximized = false
   state.conversationMaximized = false
   state.activeTabId = "conv-1"
+  state.activeConversationId = 1
   state.activeFileTabId = "browser:tab-1"
   state.desktop = true
   state.shortcuts = { ...DEFAULT_SHORTCUTS }
@@ -303,6 +311,17 @@ describe("WorkspaceChromeController — ⌘W from the app menu", () => {
     press({ window: "main", surfaceTabId: "tab-1" })
     expect(spies.closeCurrentWindow).toHaveBeenCalledTimes(1)
     expect(spies.closeTab).not.toHaveBeenCalled()
+  })
+
+  it("closes the window instead of replacing the last, empty draft", async () => {
+    state.activeConversationId = null
+    mount(`<iframe id="frame"></iframe>`)
+    vi.spyOn(document, "hasFocus").mockReturnValue(true)
+    document.getElementById("frame")?.focus()
+    const press = await renderController()
+    press({ window: "main", surfaceTabId: null })
+    expect(spies.closeTab).not.toHaveBeenCalled()
+    expect(spies.closeCurrentWindow).toHaveBeenCalledTimes(1)
   })
 
   it("keeps ⌘W on the window for someone who moved close-tab elsewhere", async () => {
