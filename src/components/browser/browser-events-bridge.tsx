@@ -338,7 +338,7 @@ function startShellBridge(): () => void {
         forgetDefaultAgentGrant(closed.tabId)
         forgetBrowserTabBackend(closed.tabId)
         if (closed.ownerWindow === getCurrentWindowLabel()) {
-          runtime?.current.actions.closeFileTab(tabId)
+          runtime?.current.actions.closeFileTab(tabId, { allScopes: true })
         }
       }),
       // A tab's web inspector has gone. Put the page back where the host

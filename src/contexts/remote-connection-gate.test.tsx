@@ -33,6 +33,9 @@ vi.mock("@/stores/backend-scoped-store-reset", () => ({
 }))
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }))
 vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }))
+vi.mock("@tauri-apps/api/webview", () => ({
+  getCurrentWebview: () => ({ listen: mocks.listen }),
+}))
 vi.mock("@/lib/transport", async () => {
   const { RemoteDesktopTransport } =
     await import("@/lib/transport/remote-desktop-transport")

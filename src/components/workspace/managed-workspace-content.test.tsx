@@ -39,8 +39,13 @@ const code = ts.transpileModule(
   declarations.map((node) => node.getText(source)).join("\n"),
   { compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2020 } }
 ).outputText
-const useTabs = (selector: (s: { tabs: unknown[] }) => unknown) =>
-  selector({ tabs: [{}] })
+const useTabs = Object.assign(
+  (selector: (s: { tabs: unknown[] }) => unknown) => selector({ tabs: [{}] }),
+  {
+    useVisibleConversationTabs: () => [{}],
+    useVisibleConversationLayout: () => ({ type: "leaf", groupId: "g1" }),
+  }
+)
 const passChildren = ({ children }: { children: React.ReactNode }) => (
   <>{children}</>
 )
@@ -57,6 +62,11 @@ const bindings = {
   scopePanelId,
   cn,
   selectIsSplit: () => false,
+  leafIds: () => ["g1"],
+  useFolderTabsStore: (selector: (s: { enabled: boolean }) => unknown) =>
+    selector({ enabled: false }),
+  SplitStripCornerReserve: () => null,
+  StatusBar: () => null,
   useWorkspaceView: () => ({
     mode: "fusion",
     filesMaximized: false,

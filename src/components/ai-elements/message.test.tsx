@@ -138,8 +138,8 @@ describe("normalizeMathDelimiters", () => {
   })
 
   it("does not rewrite currency or shell $ tokens", () => {
-    // A `$...$` pair is rewritten only when it holds TeX; these hold none.
-    // Coverage of both sides lives in math-delimiters.parse.test.ts.
+    // Currency and unpaired shell variables must stay literal: these pairs
+    // hold no TeX. Coverage of both sides lives in math-delimiters.parse.test.ts.
     const text = "Costs $25. Set $HOME and $1."
     expect(normalizeMathDelimiters(text)).toBe(text)
   })

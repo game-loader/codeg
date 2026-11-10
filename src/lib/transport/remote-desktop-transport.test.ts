@@ -1,14 +1,66 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { Event } from "@tauri-apps/api/event"
 import type { AttachHandlers, RemoteTransportConfig } from "./types"
 import { RemoteDesktopTransport } from "./remote-desktop-transport"
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
-  callbacks: new Map<string, (event: { payload: unknown }) => void>(),
+  getCurrentWebview: vi.fn(),
+  listeners: new Map<string, Set<(event: Event<unknown>) => void>>(),
 }))
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }))
 vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }))
+vi.mock("@tauri-apps/api/webview", () => ({
+  getCurrentWebview: mocks.getCurrentWebview,
+}))
+
+type EventHandler = (event: Event<unknown>) => void
+
+function listenerKey(target: string | null, event: string) {
+  return `${target ?? "*"}\u0000${event}`
+}
+
+function registerListener(
+  target: string | null,
+  event: string,
+  handler: EventHandler
+) {
+  const key = listenerKey(target, event)
+  let handlers = mocks.listeners.get(key)
+  if (!handlers) {
+    handlers = new Set()
+    mocks.listeners.set(key, handlers)
+  }
+  handlers.add(handler)
+  return () => {
+    handlers.delete(handler)
+    if (handlers.size === 0) mocks.listeners.delete(key)
+  }
+}
+
+function createWebview(label: string) {
+  return {
+    label,
+    listen: vi.fn((event: string, handler: EventHandler) =>
+      Promise.resolve(registerListener(label, event, handler))
+    ),
+  }
+}
+
+// The multi-machine tests below drive a connection's listener directly, on
+// whichever Webview it was registered against.
+function listenerFor(
+  event: string
+): ((event: { payload: unknown }) => void) | undefined {
+  for (const [key, handlers] of mocks.listeners) {
+    if (!key.endsWith(`\u0000${event}`)) continue
+    for (const handler of handlers) {
+      return handler as unknown as (event: { payload: unknown }) => void
+    }
+  }
+  return undefined
+}
 
 function transport(id: number, configRevision = `revision-${id}`) {
   const onUnauthorized = vi.fn()
@@ -31,16 +83,12 @@ function transport(id: number, configRevision = `revision-${id}`) {
 
 describe("remote transport in a multi-machine window", () => {
   beforeEach(() => {
-    mocks.callbacks.clear()
+    // These tests await real async round trips rather than timers.
+    vi.useRealTimers()
     mocks.invoke.mockReset()
-    mocks.listen.mockReset()
-    mocks.listen.mockImplementation(async (channel, callback) => {
-      mocks.callbacks.set(channel, callback)
-      return () => mocks.callbacks.delete(channel)
-    })
     mocks.invoke.mockImplementation(async (command, args) => {
       if (command === "remote_ws_subscribe") {
-        mocks.callbacks.get(`remote-ws-event-${args.connectionId}`)?.({
+        listenerFor(`remote-ws-event-${args.connectionId}`)?.({
           payload: {
             configRevision: args.configRevision,
             channel: "__ready__",
@@ -69,7 +117,7 @@ describe("remote transport in a multi-machine window", () => {
     const onB = vi.fn()
     await a.client.subscribe("folder://changed", onA)
     await b.client.subscribe("folder://changed", onB)
-    mocks.callbacks.get("remote-ws-event-1")!({
+    listenerFor("remote-ws-event-1")!({
       payload: {
         configRevision: "revision-1",
         channel: "folder://changed",
@@ -91,7 +139,7 @@ describe("remote transport in a multi-machine window", () => {
     const b = transport(2)
     await a.client.subscribe("folder://changed", vi.fn())
     await b.client.subscribe("folder://changed", vi.fn())
-    const emit = mocks.callbacks.get("remote-ws-event-1")!
+    const emit = listenerFor("remote-ws-event-1")!
     emit({
       payload: {
         configRevision: "revision-1",
@@ -127,7 +175,7 @@ describe("remote transport in a multi-machine window", () => {
     const a = transport(1)
     const receive = vi.fn()
     await a.client.subscribe("folder://changed", receive)
-    const emit = mocks.callbacks.get("remote-ws-event-1")!
+    const emit = listenerFor("remote-ws-event-1")!
     const callsBefore = mocks.invoke.mock.calls.filter(
       ([command]) => command === "remote_http_call"
     ).length
@@ -168,7 +216,7 @@ describe("remote transport in a multi-machine window", () => {
         })
     )
     const pending = a.client.call("get_folder", { id: 1 })
-    mocks.callbacks.get("remote-ws-event-1")!({
+    listenerFor("remote-ws-event-1")!({
       payload: {
         configRevision: "revision-1",
         channel: "__configuration_changed__",
@@ -182,7 +230,7 @@ describe("remote transport in a multi-machine window", () => {
     const replacement = transport(1, "new-revision")
     const receive = vi.fn()
     await replacement.client.subscribe("folder://changed", receive)
-    const emit = mocks.callbacks.get("remote-ws-event-1")!
+    const emit = listenerFor("remote-ws-event-1")!
     const stream = replacement.client.eventStream() as unknown as {
       handleServerFrame(frame: unknown): void
     }
@@ -232,10 +280,10 @@ describe("remote transport in a multi-machine window", () => {
     const receiveA = vi.fn()
     await a.client.subscribe("folder://changed", receiveA)
     await b.client.subscribe("folder://changed", vi.fn())
-    const bListener = mocks.callbacks.get("remote-ws-event-2")
+    const bListener = listenerFor("remote-ws-event-2")
     const onReconnectA = vi.fn()
     a.client.onReconnect(onReconnectA)
-    mocks.callbacks.get("remote-ws-event-1")!({
+    listenerFor("remote-ws-event-1")!({
       payload: {
         configRevision: "revision-1",
         channel: "__unauthorized__",
@@ -260,8 +308,8 @@ describe("remote transport in a multi-machine window", () => {
           command === "remote_ws_subscribe" && args.connectionId === 2
       )
     ).toHaveLength(1)
-    expect(mocks.callbacks.get("remote-ws-event-2")).toBe(bListener)
-    mocks.callbacks.get("remote-ws-event-1")!({
+    expect(listenerFor("remote-ws-event-2")).toBe(bListener)
+    listenerFor("remote-ws-event-1")!({
       payload: {
         configRevision: "revision-1",
         channel: "folder://changed",
@@ -278,7 +326,7 @@ describe("remote transport in a multi-machine window", () => {
     const b = transport(2)
     await a.client.subscribe("folder://changed", vi.fn())
     await b.client.subscribe("folder://changed", vi.fn())
-    mocks.callbacks.get("remote-ws-event-1")!({
+    listenerFor("remote-ws-event-1")!({
       payload: {
         configRevision: "revision-1",
         channel: "__unauthorized__",
@@ -309,6 +357,7 @@ const config: RemoteTransportConfig = {
   windowInstanceId: "rw-test",
 }
 const transports: RemoteDesktopTransport[] = []
+let defaultWebview: ReturnType<typeof createWebview>
 
 function recoveryTransport(overrides: Partial<RemoteTransportConfig> = {}) {
   const t = new RemoteDesktopTransport({ ...config, ...overrides })
@@ -316,17 +365,24 @@ function recoveryTransport(overrides: Partial<RemoteTransportConfig> = {}) {
   return t
 }
 
-function emit(payload: unknown, id = config.id) {
+function emit(payload: unknown, id = config.id, target = defaultWebview.label) {
   const event = `remote-ws-event-${id}`
-  mocks.callbacks.get(event)?.({ payload })
+  const eventData = { event, id: 1, payload }
+  for (const listenerTarget of [target, null]) {
+    for (const handler of mocks.listeners.get(
+      listenerKey(listenerTarget, event)
+    ) ?? []) {
+      handler(eventData)
+    }
+  }
 }
 
-function ready(id = config.id) {
-  emit({ channel: "__ready__", payload: null }, id)
+function ready(id = config.id, target = defaultWebview.label) {
+  emit({ channel: "__ready__", payload: null }, id, target)
 }
 
-function drop(id = config.id) {
-  emit({ channel: "__disconnected__", payload: null }, id)
+function drop(id = config.id, target = defaultWebview.label) {
+  emit({ channel: "__disconnected__", payload: null }, id, target)
 }
 
 function sentFrames() {
@@ -355,22 +411,25 @@ async function flush() {
   await vi.advanceTimersByTimeAsync(0)
 }
 
+beforeEach(() => {
+  vi.useFakeTimers()
+  mocks.invoke.mockReset().mockResolvedValue(undefined)
+  mocks.listen
+    .mockReset()
+    .mockImplementation(async (event: string, callback: EventHandler) =>
+      registerListener(null, event, callback)
+    )
+  defaultWebview = createWebview("main-webview")
+  mocks.getCurrentWebview.mockReset().mockReturnValue(defaultWebview)
+  mocks.listeners.clear()
+})
+
 afterEach(() => {
   for (const t of transports.splice(0)) t.destroy()
   vi.useRealTimers()
 })
 
 describe("remote desktop event recovery", () => {
-  beforeEach(() => {
-    vi.useFakeTimers()
-    mocks.invoke.mockReset().mockResolvedValue(undefined)
-    mocks.listen.mockReset().mockImplementation(async (event, callback) => {
-      mocks.callbacks.set(event, callback)
-      return () => mocks.callbacks.delete(event)
-    })
-    mocks.callbacks.clear()
-  })
-
   it("reattaches with its cursor, delivers missed events, then continues the session", async () => {
     const t = recoveryTransport()
     const stream = t.eventStream()
@@ -544,6 +603,56 @@ describe("remote desktop event recovery", () => {
     expect(updateB.mock.calls).toEqual([["B"]])
   })
 
+  it("isolates same-connection frames and lifecycle events by Webview target", async () => {
+    const webviewA = createWebview("remote-webview-a")
+    const webviewB = createWebview("remote-webview-b")
+    mocks.getCurrentWebview
+      .mockReturnValueOnce(webviewA)
+      .mockReturnValueOnce(webviewB)
+    const a = recoveryTransport({ windowInstanceId: "window-instance-a" })
+    const b = recoveryTransport({ windowInstanceId: "window-instance-b" })
+    const updateA = vi.fn()
+    const updateB = vi.fn()
+    const subA = a.subscribe("terminal://output", updateA)
+    const subB = b.subscribe("terminal://output", updateB)
+    await flush()
+
+    expect(webviewA.listen).toHaveBeenCalledWith(
+      "remote-ws-event-7",
+      expect.any(Function)
+    )
+    expect(webviewB.listen).toHaveBeenCalledWith(
+      "remote-ws-event-7",
+      expect.any(Function)
+    )
+
+    ready(config.id, webviewA.label)
+    expect(a.getConnectionSnapshot()).toBe("connected")
+    expect(b.getConnectionSnapshot()).toBe("reconnecting")
+    ready(config.id, webviewB.label)
+    await Promise.all([subA, subB])
+
+    emit(
+      { channel: "terminal://output", payload: "output from A" },
+      config.id,
+      webviewA.label
+    )
+    emit(
+      { channel: "terminal://output", payload: "output from B" },
+      config.id,
+      webviewB.label
+    )
+    expect(updateA.mock.calls).toEqual([["output from A"]])
+    expect(updateB.mock.calls).toEqual([["output from B"]])
+
+    drop(config.id, webviewA.label)
+    expect(a.getConnectionSnapshot()).toBe("reconnecting")
+    expect(b.getConnectionSnapshot()).toBe("connected")
+    ready(config.id, webviewA.label)
+    expect(a.getConnectionSnapshot()).toBe("connected")
+    expect(b.getConnectionSnapshot()).toBe("connected")
+  })
+
   it("coalesces failed attach sends and cancels retry after destroy", async () => {
     const t = recoveryTransport()
     const stream = t.eventStream()
@@ -566,7 +675,7 @@ describe("remote desktop event recovery", () => {
 
   it("releases an IPC listener that arrives after its window was destroyed", async () => {
     let finishListen!: (unlisten: () => void) => void
-    mocks.listen.mockImplementation(
+    defaultWebview.listen.mockImplementation(
       () => new Promise((resolve) => (finishListen = resolve))
     )
     const t = recoveryTransport()

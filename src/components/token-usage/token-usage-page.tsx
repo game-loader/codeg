@@ -51,7 +51,8 @@ import { FolderAliasLabel } from "@/components/conversations/folder-alias-label"
 import { formatFolderLabelWithAlias } from "@/lib/folder-display"
 
 import { toErrorMessage } from "@/lib/app-error"
-
+import { isCustomAgentType } from "@/lib/custom-agents"
+import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { formatTokenCount } from "@/lib/token-format"
 import {
   averagePerActiveDay,
@@ -330,6 +331,7 @@ export function TokenUsagePage() {
 
   const t = useTranslations("TokenUsage")
   const locale = useLocale()
+  const { agents: registeredAgents } = useAcpAgents()
 
   const [preset, setPreset] = useState<TokenUsageRangePreset>("30d")
   const [custom, setCustom] = useState({ from: "", to: "" })
@@ -576,14 +578,30 @@ export function TokenUsagePage() {
       })),
     [facets]
   )
-  const agentOptions = useMemo(
+  const agentNames = useMemo(
     () =>
-      (facets?.agents ?? []).map((a) => ({
-        value: a,
-        label: getAgentLabel(a as AgentType),
-      })),
-    [facets, getAgentLabel]
+      new Map(
+        registeredAgents.map((a) => [
+          a.agent_type,
+          isCustomAgentType(a.agent_type)
+            ? a.name.trim()
+            : getAgentLabel(a.agent_type),
+        ])
+      ),
+    [registeredAgents, getAgentLabel]
   )
+  const agentOptions = useMemo(() => {
+    const types = new Set([
+      ...(facets?.agents ?? []),
+      ...registeredAgents.filter((a) => a.enabled).map((a) => a.agent_type),
+      ...agentTypes,
+    ])
+    return Array.from(types, (value) => ({
+      value,
+      label:
+        agentNames.get(value as AgentType) || getAgentLabel(value as AgentType),
+    }))
+  }, [facets, registeredAgents, agentTypes, agentNames, getAgentLabel])
   const modelOptions = useMemo(
     () => (facets?.models ?? []).map((m) => ({ value: m, label: m })),
     [facets]
@@ -722,11 +740,14 @@ export function TokenUsagePage() {
 
   const breakdownLabel = useCallback(
     (key: string, fallback: string) => {
-      if (dim === "agent") return getAgentLabel(key as AgentType)
+      if (dim === "agent")
+        return (
+          agentNames.get(key as AgentType) || getAgentLabel(key as AgentType)
+        )
       if (dim === "model" && key === "__unknown__") return t("unknownModel")
       return fallback
     },
-    [dim, t, getAgentLabel]
+    [dim, t, agentNames, getAgentLabel]
   )
 
   const breakdownRows = useMemo<RankedDatum[]>(() => {

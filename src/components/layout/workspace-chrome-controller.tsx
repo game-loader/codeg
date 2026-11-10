@@ -2,6 +2,7 @@
 
 import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
 import { useTabActions as standaloneUseTabActions } from "@/contexts/tab-context"
+import { useVisibleConversationTabs as standaloneUseVisibleConversationTabs } from "@/stores/tab-store"
 import { isConversationDeleted as standaloneIsConversationDeleted } from "@/stores/app-workspace-store"
 import { useRuntimeEventScope } from "@/hooks/use-runtime-event-scope"
 import { defaultBackendStoreStorage as legacyStorage } from "@/stores/backend-store-storage"
@@ -93,7 +94,10 @@ export function WorkspaceChromeController() {
     switchTab,
     closeTab,
   } = useTabActions()
-  const tabs = useTabStore((s) => s.tabs)
+  const useVisibleConversationTabs = backendStoreSelection
+    ? backendStores.tabs.useVisibleConversationTabs
+    : standaloneUseVisibleConversationTabs
+  const tabs = useVisibleConversationTabs()
   const activeTabId = useTabStore((s) => s.activeTabId)
   // Tab-close/navigation shortcuts used to live in the visible tab strips.
   // Mobile no longer mounts those strips, so this always-mounted controller now

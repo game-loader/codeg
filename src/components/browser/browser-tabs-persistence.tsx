@@ -61,7 +61,8 @@ export function resetBrowserTabsPersistenceForTests(): void {
 export function BrowserTabsPersistence() {
   const client = useOptionalBackendClient()
   const { restoreBrowserTabs } = useWorkspaceActions()
-  const { fileTabs } = useWorkspaceFileTabs()
+  const { fileTabs: visibleFileTabs, allFileTabs } = useWorkspaceFileTabs()
+  const fileTabs = allFileTabs ?? visibleFileTabs
   const scope = client ?? "standalone"
   const label = getCurrentWindowLabel()
   const key = browserTabsStorageKey(label, client?.key)

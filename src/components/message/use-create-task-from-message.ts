@@ -6,16 +6,14 @@ import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useOptionalBackendClient } from "@/contexts/backend-client-context"
 import { useBackendEventScope } from "@/hooks/use-runtime-event-scope"
 import { useCallback } from "react"
-import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
-
-import { requestCreateTaskFromText } from "@/lib/task-compose-events"
+import { openTaskFromMessage } from "@/lib/task-from-message"
 
 /**
- * "Turn this message into a work task": parks the text + source project folder
- * in the task-compose buffer and switches to the Tasks route, whose editor
- * opens pre-filled. Worktree conversations resolve to their parent project
- * folder (tasks bind to projects); chat-mode / unknown folders fall back to
- * the board's own default.
+ * "Turn this message into a work task": opens the task editor over the
+ * conversation, seeded with the text and the source project folder (see
+ * `TaskFromMessageHost`). Worktree conversations resolve to their parent
+ * project folder (tasks bind to projects); chat-mode / unknown folders leave
+ * the editor to pick one.
  */
 export function useCreateTaskFromMessage(getText: () => string) {
   const backendKey = useOptionalBackendClient()?.key
@@ -26,8 +24,6 @@ export function useCreateTaskFromMessage(getText: () => string) {
   })
   const useTabStore = backendStores.tabs
   const useAppWorkspaceStore = backendStores.workspace
-
-  const { setRoute } = useWorkbenchRoute()
   const tabFolderId = useTabStore((s) => {
     const tab = s.rawTabs.find((t) => t.id === s.activeTabId)
     return tab?.folderId ?? null
@@ -48,14 +44,6 @@ export function useCreateTaskFromMessage(getText: () => string) {
       folder != null && folder.parent_id == null && folder.kind === "regular"
         ? folder.id
         : null
-    requestCreateTaskFromText({ text, folderId, backendKey, backendScope })
-    setRoute("tasks")
-  }, [
-    getText,
-    tabFolderId,
-    setRoute,
-    useAppWorkspaceStore,
-    backendKey,
-    backendScope,
-  ])
+    openTaskFromMessage({ text, folderId, backendKey, backendScope })
+  }, [getText, tabFolderId, useAppWorkspaceStore, backendKey, backendScope])
 }

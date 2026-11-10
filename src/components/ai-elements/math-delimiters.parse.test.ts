@@ -41,9 +41,44 @@ describe("remark-math with singleDollarTextMath: false", () => {
     expect(parseMath(normalizeMathDelimiters(text))).toEqual([])
   })
 
-  it("treats $x$ as literal text (recorded: reverts b23f6a5a)", () => {
+  it("normalizes tightly delimited $x$ without enabling permissive parsing", () => {
     expect(parseMath("$x$")).toEqual([])
-    expect(parseMath(normalizeMathDelimiters("$x$"))).toEqual([])
+    expect(parseMath(normalizeMathDelimiters("$x$"))).toEqual([
+      { type: "inlineMath", value: "x", meta: null },
+    ])
+  })
+
+  it("parses the reported single-dollar symbols and expressions inline", () => {
+    const text = String.raw`令 $T$、$AV$、$A - T$、$V - T$、$\Gamma^0, \Gamma^C$ 和 $\mathcal{U}^{AV}$。`
+    expect(parseMath(normalizeMathDelimiters(text))).toEqual(
+      [
+        "T",
+        "AV",
+        "A - T",
+        "V - T",
+        String.raw`\Gamma^0, \Gamma^C`,
+        String.raw`\mathcal{U}^{AV}`,
+      ].map((value) => ({ type: "inlineMath", value, meta: null }))
+    )
+  })
+
+  it("does not rewrite single-dollar formulas in code", () => {
+    const text = "`$T$`\n\n```tex\n$A - T$\n```\n\n~~~tex\n$AV$\n~~~"
+    expect(normalizeMathDelimiters(text)).toBe(text)
+    expect(parseMath(normalizeMathDelimiters(text))).toEqual([])
+  })
+
+  it("preserves double-dollar display math alongside inline formulas", () => {
+    expect(parseMath(normalizeMathDelimiters("$T$\n\n$$\nx^2\n$$"))).toEqual([
+      { type: "inlineMath", value: "T", meta: null },
+      { type: "math", value: "x^2", meta: null },
+    ])
+  })
+
+  it("preserves dollars inside existing backslash-delimited math", () => {
+    expect(normalizeMathDelimiters(String.raw`\(\text{$AV$}\)`)).toBe(
+      String.raw`$$\text{$AV$}$$`
+    )
   })
 
   it("does not parse shell variables as inlineMath", () => {
@@ -232,7 +267,7 @@ describe("single-dollar math that reads as TeX", () => {
       "Between $5 and $10_000 a year.",
       "Set $HOME and $PATH before running.",
       "Use $1 and $2 as positional args.",
-      "Run `echo $HOME_DIR` and `$PATH`, then $x$.",
+      "Run `echo $HOME_DIR` and `$PATH` first.",
       "Spend US$5_000 or $5-$10a.",
       "Literal \\$x_1$ and $a_b $ stay.",
       "${VAR} and ${HOME}_x are shell.",

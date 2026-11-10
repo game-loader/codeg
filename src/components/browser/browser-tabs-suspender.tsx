@@ -35,7 +35,8 @@ export function BrowserTabsSuspender() {
   const client = useOptionalBackendClient()
   const { suspendBackgroundTabs } = useBrowserPrefs()
   const { suspendBrowserTab } = useWorkspaceActions()
-  const { fileTabs } = useWorkspaceFileTabs()
+  const { fileTabs: visibleFileTabs, allFileTabs } = useWorkspaceFileTabs()
+  const fileTabs = allFileTabs ?? visibleFileTabs
   // Latest-state mirror for the timers below (synced post-commit, like the
   // workspace provider does for its own action callbacks).
   const fileTabsRef = useRef(fileTabs)

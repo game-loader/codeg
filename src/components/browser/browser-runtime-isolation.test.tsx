@@ -407,7 +407,7 @@ describe("native browser runtime isolation", () => {
     expect(workspaces.get(a)!.actions.adoptBrowserTab).not.toHaveBeenCalled()
     emit("closed", { tabId: "b-public", ownerWindow: "main", requestId: null })
     expect(workspaces.get(b)!.actions.closeFileTab.mock.calls).toEqual([
-      ["browser:b-public"],
+      ["browser:b-public", { allScopes: true }],
     ])
     expect(
       workspaces.get(replacement)!.actions.closeFileTab

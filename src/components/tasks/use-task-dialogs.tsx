@@ -4,7 +4,6 @@ import { useCallback, useMemo, useState, type ReactNode } from "react"
 import { toast } from "sonner"
 import { useBackendApi } from "@/contexts/backend-client-context"
 import { toErrorMessage } from "@/lib/app-error"
-import type { CreateTaskFromTextDetail } from "@/lib/task-compose-events"
 import type { WorkTask, WorkTaskDraft } from "@/lib/types"
 import {
   isAnotherTaskMerging,
@@ -30,8 +29,8 @@ interface UseTaskDialogsOptions {
   refetch: () => Promise<void>
   /** folder id → display name, for the detail sheet's location line. */
   folderNames: Map<number, string>
-  /** The project a NEW task starts in, unless a prefill names one — the board's
-   *  folder filter, or the aux panel's project. */
+  /** The project a NEW task starts in — the board's folder filter, or the aux
+   *  panel's project. */
   defaultFolderId: number | null
 }
 
@@ -42,9 +41,8 @@ export interface TaskDialogs {
   handlersFor: (task: WorkTask) => TaskActionHandlers
   /** Opens the detail sheet on a task. */
   openDetail: (taskId: number) => void
-  /** Opens the editor on a new task, optionally pre-filled ("task from
-   *  message"). */
-  openNewTask: (prefill?: CreateTaskFromTextDetail | null) => void
+  /** Opens the editor on a new task. */
+  openNewTask: () => void
   /** Every dialog and sheet the handlers open — render it once, anywhere. */
   dialogs: ReactNode
 }
@@ -57,8 +55,8 @@ export interface TaskDialogs {
  * Shared by the Tasks page and the aux panel's task tab, so a card does the
  * same thing wherever it is drawn — and a dialog added for one surface cannot
  * be missing from the other. What is page-only stays in the page: the board's
- * drag, its settings dialog, and the "task from message" hand-off (which the
- * page consumes and feeds to `openNewTask`).
+ * drag and its settings dialog. (A task made from a chat message is written in
+ * an editor of its own, over the conversation — see `TaskFromMessageHost`.)
  */
 export function useTaskDialogs({
   tasks,
@@ -69,8 +67,6 @@ export function useTaskDialogs({
   const backendApi = useBackendApi()
   const [editorOpen, setEditorOpen] = useState(false)
   const [editorTask, setEditorTask] = useState<WorkTask | null>(null)
-  const [editorPrefill, setEditorPrefill] =
-    useState<CreateTaskFromTextDetail | null>(null)
   const [detailTaskId, setDetailTaskId] = useState<number | null>(null)
   const [mergeTask, setMergeTask] = useState<WorkTask | null>(null)
   const [mergeOpen, setMergeOpen] = useState(false)
@@ -154,7 +150,6 @@ export function useTaskDialogs({
       if (editorTask) await backendApi.workTaskUpdate(editorTask.id, draft)
       else await backendApi.workTaskCreate(draft)
       setEditorOpen(false)
-      setEditorPrefill(null)
       void refetch()
     },
     [editorTask, refetch, backendApi]
@@ -198,18 +193,13 @@ export function useTaskDialogs({
 
   const openEdit = useCallback((task: WorkTask) => {
     setEditorTask(task)
-    setEditorPrefill(null)
     setEditorOpen(true)
   }, [])
 
-  const openNewTask = useCallback(
-    (prefill: CreateTaskFromTextDetail | null = null) => {
-      setEditorTask(null)
-      setEditorPrefill(prefill)
-      setEditorOpen(true)
-    },
-    []
-  )
+  const openNewTask = useCallback(() => {
+    setEditorTask(null)
+    setEditorOpen(true)
+  }, [])
 
   const handlersFor = useCallback(
     (task: WorkTask): TaskActionHandlers => ({
@@ -252,13 +242,9 @@ export function useTaskDialogs({
     <>
       <TaskEditorDialog
         open={editorOpen}
-        onOpenChange={(o) => {
-          setEditorOpen(o)
-          if (!o) setEditorPrefill(null)
-        }}
+        onOpenChange={setEditorOpen}
         task={editorTask}
-        defaultFolderId={editorPrefill?.folderId ?? defaultFolderId}
-        prefillText={editorPrefill?.text ?? null}
+        defaultFolderId={defaultFolderId}
         onSubmit={submitEditor}
       />
       <TaskDetailSheet

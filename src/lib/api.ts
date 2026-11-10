@@ -62,6 +62,8 @@ import type {
   ForgeIdentity,
   ForgeIssueList,
   ForgeIssueRow,
+  ForgeIssuesCreateResult,
+  ForgeIssuesTaskDraftInput,
   ForgeLabelList,
   ForgeMergeMethod,
   ForgeMergeOptions,
@@ -104,6 +106,13 @@ import type {
   CursorModelsResult,
   QoderAuthStatus,
   CodexModelInfo,
+  CodexCatalogLookup,
+  CodexCatalogRequest,
+  CodexPlanPreview,
+  ProviderModelList,
+  ProviderModelsRequest,
+  CodexCatalogStatus,
+  CodexEndpointCatalogView,
   AgentSkillScope,
   AgentSkillLayout,
   AgentSkillItem,
@@ -208,8 +217,11 @@ import type {
   WebhookConfig,
   ModelProviderInfo,
   UpdateModelProviderResult,
-  PluginCheckSummary,
+  OpencodePluginList,
   OpenCodeCatalogProvider,
+  OpenCodeConnectKeyRequest,
+  OpenCodeCredentialChange,
+  OpenCodeIntegration,
   QuickMessage,
   OfficecliInfo,
   OfficecliSkill,
@@ -233,8 +245,8 @@ import type {
  * would blow axum's 2 MiB `DefaultBodyLimit` and 413 the send.
  *
  * `shouldStrip` is false on a local desktop workspace (Tauri IPC has no body
- * limit and there is no uploads dir to hydrate from), so those blocks pass
- * through byte-identical. Under `shouldStrip`, a `file://` uri on an image
+ * limit, and an image there is never uploaded to be hydrated back), so those
+ * blocks pass through byte-identical. Under `shouldStrip`, a `file://` uri on an image
  * block can only have come from an upload — every web/remote attach path
  * routes through `/upload_attachment` first — so uri presence is the marker.
  * Pure; exported for tests.
@@ -1517,7 +1529,6 @@ export function createBackendApi(binding: BackendApiBinding) {
       enabled: boolean
       env: Record<string, string>
       config_json?: string | null
-      opencode_auth_json?: string | null
       codex_auth_json?: string | null
       codex_config_toml?: string | null
     }
@@ -1527,7 +1538,6 @@ export function createBackendApi(binding: BackendApiBinding) {
       enabled: params.enabled,
       env: params.env,
       configJson: params.config_json ?? null,
-      opencodeAuthJson: params.opencode_auth_json ?? null,
       codexAuthJson: params.codex_auth_json ?? null,
       codexConfigToml: params.codex_config_toml ?? null,
     })
@@ -1557,12 +1567,19 @@ export function createBackendApi(binding: BackendApiBinding) {
     agentType: AgentType,
     params: {
       config_json?: string | null
-      opencode_auth_json?: string | null
+      system_instructions_content?: string | null
+      /** The instructions file the editor showed: the content is written there
+       *  (the agent's own file only), not to a fresh resolution. */
+      system_instructions_file_path?: string | null
       codex_auth_json?: string | null
       codex_config_toml?: string | null
-      /** Compact structured codex model list; backend regenerates the
-       * `model_catalog_json` catalog files from it (config.toml keys are patched
-       * into `codex_config_toml` text by the caller). */
+      /** The config.toml text the draft was loaded from: a key codeg manages
+       * (`model_catalog_json`, root `model` while a catalog is published) that
+       * differs from it was edited by hand, and the save is refused. */
+      codex_config_toml_baseline?: string | null
+      /** Compact structured codex model list. The backend publishes what it
+       * makes (catalog file, `model_catalog_json`, root `model`) through one
+       * commit; callers send config.toml without patching those keys. */
       codex_model_catalog?: string | null
       /** Codex sandbox / approval controls; merged onto the on-disk config.toml
        * server-side. Governs the turns codex starts itself (/goal, /review,
@@ -1582,9 +1599,11 @@ export function createBackendApi(binding: BackendApiBinding) {
     return transport.call("acp_update_agent_config", {
       agentType,
       configJson: params.config_json ?? null,
-      opencodeAuthJson: params.opencode_auth_json ?? null,
+      systemInstructionsContent: params.system_instructions_content ?? null,
+      systemInstructionsFilePath: params.system_instructions_file_path ?? null,
       codexAuthJson: params.codex_auth_json ?? null,
       codexConfigToml: params.codex_config_toml ?? null,
+      codexConfigTomlBaseline: params.codex_config_toml_baseline ?? null,
       codexModelCatalog: params.codex_model_catalog ?? null,
       codexSandbox: params.codex_sandbox ?? null,
       grokConfigToml: params.grok_config_toml ?? null,
@@ -1694,21 +1713,6 @@ export function createBackendApi(binding: BackendApiBinding) {
   }
 
   /**
-   * List the models an API key + endpoint can access (GET `<baseUrl>/models`).
-   * Validates the key and powers the Kimi settings model picker; throws with the
-   * provider's error message on failure.
-   */
-  async function acpFetchKimiModels(params: {
-    baseUrl: string
-    apiKey: string
-  }): Promise<string[]> {
-    return transport.call("acp_fetch_kimi_models", {
-      baseUrl: params.baseUrl,
-      apiKey: params.apiKey,
-    })
-  }
-
-  /**
    * Apply a structured Pi config update. Merge-writes pi's native
    * `~/.pi/agent/settings.json` (`defaultProvider` / `defaultModel` /
    * `defaultThinkingLevel`) and, when an API key is supplied,
@@ -1731,6 +1735,9 @@ export function createBackendApi(binding: BackendApiBinding) {
       reasoning: boolean
       thinkingLevelMap: Record<string, string | null>
     }
+    /** The custom provider's whole model list (the chosen model always kept);
+     * omit to add the model to whatever the list holds. */
+    customModels?: string[]
   }): Promise<void> {
     return transport.call("acp_update_pi_config", {
       provider: params.provider,
@@ -1740,6 +1747,7 @@ export function createBackendApi(binding: BackendApiBinding) {
       customBaseUrl: params.customBaseUrl ?? null,
       customApi: params.customApi ?? null,
       modelReasoning: params.modelReasoning ?? null,
+      customModels: params.customModels ?? null,
     })
   }
 
@@ -2141,7 +2149,7 @@ export function createBackendApi(binding: BackendApiBinding) {
     })
   }
 
-  async function opencodeListPlugins(): Promise<PluginCheckSummary> {
+  async function opencodeListPlugins(): Promise<OpencodePluginList> {
     return transport.call("opencode_list_plugins", {})
   }
 
@@ -2165,20 +2173,86 @@ export function createBackendApi(binding: BackendApiBinding) {
     })
   }
 
-  async function opencodeInstallPlugins(
-    taskId: string,
-    names?: string[] | null
-  ): Promise<void> {
-    return transport.call("opencode_install_plugins", {
-      names: names ?? null,
-      taskId,
+  /** Every integration OpenCode 2 knows (providers, mostly), with how each is
+   *  connected. Asked of OpenCode itself, with the environment a session would
+   *  launch it with; never carries a secret. Needs OpenCode 2 installed. */
+  async function opencodeListIntegrations(): Promise<OpenCodeIntegration[]> {
+    return transport.call("opencode_list_integrations", {})
+  }
+
+  /** Store an API key for an OpenCode integration in OpenCode's own credential
+   *  store. Returns the integrations as that leaves them, and how many running
+   *  OpenCode sessions need a restart to use it. */
+  async function opencodeConnectKey(
+    request: OpenCodeConnectKeyRequest
+  ): Promise<OpenCodeCredentialChange> {
+    return transport.call("opencode_connect_key", { request })
+  }
+
+  /** Remove every credential OpenCode stores for an integration. */
+  async function opencodeDisconnectProvider(
+    integrationId: string
+  ): Promise<OpenCodeCredentialChange> {
+    return transport.call("opencode_disconnect_provider", {
+      integrationId,
     })
   }
 
-  async function opencodeUninstallPlugin(
-    name: string
-  ): Promise<PluginCheckSummary> {
-    return transport.call("opencode_uninstall_plugin", { name })
+  /** Fetch a provider's model list for the settings page, without publishing
+   *  it (the next save does). A native catalog is checked by the codex that
+   *  would run; the answer is cached for that save. */
+  async function codexFetchEndpointCatalog(
+    params: CodexCatalogRequest
+  ): Promise<CodexEndpointCatalogView> {
+    return transport.call("codex_fetch_endpoint_catalog", { params })
+  }
+
+  /** What saving this Codex draft would make of the keys codeg manages. Never
+   *  fetches, checks or writes. */
+  async function codexCatalogPlanPreview(params: {
+    configToml: string
+    authJson?: string | null
+    modelList?: string | null
+  }): Promise<CodexPlanPreview> {
+    return transport.call("codex_catalog_plan_preview", { params })
+  }
+
+  /** The published provider list, when it answers this request. */
+  async function codexEndpointCatalogPublished(
+    params: CodexCatalogRequest
+  ): Promise<CodexCatalogLookup> {
+    return transport.call("codex_endpoint_catalog_published", { params })
+  }
+
+  /** The cached answer to exactly this request. Never fetches. */
+  async function codexEndpointCatalogCached(
+    params: CodexCatalogRequest
+  ): Promise<CodexCatalogLookup> {
+    return transport.call("codex_endpoint_catalog_cached", { params })
+  }
+
+  /** What is published under codeg's CODEX_HOME, and how refreshing it goes. */
+  async function codexEndpointCatalogStatus(): Promise<CodexCatalogStatus> {
+    return transport.call("codex_endpoint_catalog_status", {})
+  }
+
+  /** "Refresh now": fetch the provider list whatever its age and publish what
+   *  the current settings make of it. */
+  async function codexRefreshEndpointCatalog(): Promise<CodexCatalogStatus> {
+    return transport.call("codex_refresh_endpoint_catalog", {})
+  }
+
+  /** Declare `spec` in OpenCode's `plugins`; OpenCode installs a package plugin
+   *  itself the next time a session starts. */
+  async function opencodeAddPlugin(spec: string): Promise<OpencodePluginList> {
+    return transport.call("opencode_add_plugin", { spec })
+  }
+
+  /** Remove every declaration of `spec` from OpenCode's plugin lists. */
+  async function opencodeRemovePlugin(
+    spec: string
+  ): Promise<OpencodePluginList> {
+    return transport.call("opencode_remove_plugin", { spec })
   }
 
   async function acpListAgentSkills(params: {
@@ -2186,6 +2260,22 @@ export function createBackendApi(binding: BackendApiBinding) {
     workspacePath?: string | null
   }): Promise<AgentSkillsListResult> {
     return transport.call("acp_list_agent_skills", {
+      agentType: params.agentType,
+      workspacePath: params.workspacePath ?? null,
+    })
+  }
+
+  /**
+   * The skills an agent's sessions can load, for the composer menus. For
+   * OpenCode that is every skill it reads (`.claude` folders and the folders
+   * above the workspace included), more than the Skills settings page manages
+   * through {@link acpListAgentSkills}; for every other agent the two agree.
+   */
+  async function acpListAgentRuntimeSkills(params: {
+    agentType: AgentType
+    workspacePath?: string | null
+  }): Promise<AgentSkillsListResult> {
+    return transport.call("acp_list_agent_runtime_skills", {
       agentType: params.agentType,
       workspacePath: params.workspacePath ?? null,
     })
@@ -2774,6 +2864,14 @@ export function createBackendApi(binding: BackendApiBinding) {
     token: string
   ): Promise<GitHubTokenValidation> {
     return transport.call("validate_gitea_token", { serverUrl, token })
+  }
+
+  /** CNB is its own API dialect: `https://api.cnb.cool` with a `Bearer` token. */
+  async function validateCnbToken(
+    serverUrl: string,
+    token: string
+  ): Promise<GitHubTokenValidation> {
+    return transport.call("validate_cnb_token", { serverUrl, token })
   }
 
   async function updateGitHubAccounts(
@@ -4502,30 +4600,42 @@ export function createBackendApi(binding: BackendApiBinding) {
     })
   }
 
-  /** Accept a reviewed forge-sourced task by pushing it back: an issue's task
-   *  publishes its branch and opens (or adopts) a pull request, a pull request's
-   *  task pushes onto that pull request's own branch (where `title`/`draft` are
-   *  ignored — nothing is created). Resolves with the pull request URL.
+  /** Accept a reviewed task by delivering it to a forge: an issue's task — or a
+   *  task with no forge provenance, on its project's `origin` — publishes its
+   *  branch and opens (or adopts) a pull request; a pull request's task pushes
+   *  onto that pull request's own branch, and so does a task whose earlier
+   *  delivery opened one it stayed in review after (`title`/`draft` are ignored
+   *  there — nothing is created). Resolves with the pull request URL.
    *
    *  Unlike the merge dispatch this awaits the WHOLE operation — no agent runs,
    *  just a push and two REST calls — so a rejection is the real reason and the
    *  task is already back in review by the time it surfaces.
    *
-   *  `deleteWorktree` takes the checkout along once the delivery lands — the
-   *  same offer the merge and complete acceptances make. It rides on the
-   *  delivery: a removal that fails leaves a retryable cleanup mark on the card
-   *  and this call still resolves with the URL. */
+   *  `markDone` finishes the task; `false` keeps it in review with the pull
+   *  request recorded, for another round on the same branch.
+   *
+   *  `deleteWorktree` takes the checkout along once a delivery that finishes
+   *  the task lands — the same offer the merge and complete acceptances make.
+   *  It rides on the delivery: a removal that fails leaves a retryable cleanup
+   *  mark on the card and this call still resolves with the URL. */
   async function workTaskDeliverPr(
     id: number,
     prTitle: string | null,
     draft: boolean,
-    deleteWorktree: boolean
+    deleteWorktree: boolean,
+    markDone: boolean,
+    /** Which issues the pull request closes — a task made from several related
+     *  issues only, and only before its first delivery fixed the list. Omitted
+     *  (`undefined`) for every other delivery. */
+    closes?: number[]
   ): Promise<string> {
     return transport.call("work_task_deliver_pr", {
       id,
       prTitle,
       draft,
       deleteWorktree,
+      markDone,
+      ...(closes === undefined ? {} : { closes }),
     })
   }
 
@@ -4736,6 +4846,20 @@ export function createBackendApi(binding: BackendApiBinding) {
       } finally {
         stop()
       }
+    }
+    // Local desktop: there is no server, so `save_pasted_attachment` keeps the
+    // bytes in this machine's own uploads directory.
+    if (isDesktop()) {
+      const buf = await file.arrayBuffer()
+      return shellTransport().call<UploadAttachmentResult>(
+        "save_pasted_attachment",
+        {
+          fileName: file.name,
+          mimeType: file.type || null,
+          sessionId: sessionId ?? null,
+          dataBase64: arrayBufferToBase64(buf),
+        }
+      )
     }
 
     // XHR rather than fetch so the composer gets byte-level progress.
@@ -5621,6 +5745,14 @@ export function createBackendApi(binding: BackendApiBinding) {
     return transport.call("set_chat_event_webhooks", { webhooks })
   }
 
+  async function getChatEventTopLevelOnly(): Promise<boolean> {
+    return transport.call("get_chat_event_top_level_only")
+  }
+
+  async function setChatEventTopLevelOnly(enabled: boolean): Promise<void> {
+    return transport.call("set_chat_event_top_level_only", { enabled })
+  }
+
   async function getChatMessageLanguage(): Promise<string> {
     return transport.call("get_chat_message_language")
   }
@@ -5691,6 +5823,20 @@ export function createBackendApi(binding: BackendApiBinding) {
 
   async function deleteModelProvider(id: number): Promise<void> {
     return transport.call("delete_model_provider", { id })
+  }
+
+  /** Keep the /model picker ids codeg adds for an unbound Claude agent; returns
+   *  how many running sessions now need a restart. */
+  async function acpUpdateClaudeModelPicker(models: string[]): Promise<number> {
+    return transport.call("acp_update_claude_model_picker", { models })
+  }
+
+  /** The models a provider lists, asked the way the agent itself would ask.
+   *  Fails with a `providerModels.<code>` i18n key. */
+  async function listProviderModels(
+    params: ProviderModelsRequest
+  ): Promise<ProviderModelList> {
+    return transport.call("list_provider_models", { params })
   }
 
   async function getDelegationSettings(): Promise<DelegationSettings> {
@@ -6094,6 +6240,24 @@ export function createBackendApi(binding: BackendApiBinding) {
     })
   }
 
+  /** One issue, read in full — its description included.
+   *
+   *  CNB's issue LIST omits the body (its pull list carries one), so the detail
+   *  panel asks for the item itself the moment it opens — one request, paid only
+   *  for the item somebody is reading, the same trade the comment thread makes.
+   *  No other forge takes this path: their list rows already carry the body. */
+  async function forgeIssueDetail(
+    folderId: number,
+    number: number,
+    accountId?: string | null
+  ): Promise<ForgeIssueRow> {
+    return transport.call("forge_issue_detail", {
+      folderId,
+      number,
+      accountId: accountId ?? null,
+    })
+  }
+
   /** One tab's count — a badge on the workbench's switcher — or null when the
    *  forge declines to count, the probe fails, or GitHub calls the search
    *  incomplete.
@@ -6352,6 +6516,13 @@ export function createBackendApi(binding: BackendApiBinding) {
     draft: ForgeTaskDraftInput
   ): Promise<ForgeCreateResult> {
     return transport.call("work_task_create_from_forge", { draft })
+  }
+
+  /** One task for several related issues — see `ForgeIssuesTaskDraftInput`. */
+  async function workTaskCreateFromForgeIssues(
+    draft: ForgeIssuesTaskDraftInput
+  ): Promise<ForgeIssuesCreateResult> {
+    return transport.call("work_task_create_from_forge_issues", { draft })
   }
 
   /** Latest task per source key (any state) — drives the row chips. */
@@ -6643,7 +6814,6 @@ export function createBackendApi(binding: BackendApiBinding) {
     acpCursorListModels,
     acpUpdateHermesConfig,
     acpUpdateKimiCodeConfig,
-    acpFetchKimiModels,
     acpUpdatePiConfig,
     loadPiConfig,
     listPiModelCapabilities,
@@ -6677,9 +6847,19 @@ export function createBackendApi(binding: BackendApiBinding) {
     opencodeListPlugins,
     opencodeProviderCatalog,
     codexBundledCatalog,
-    opencodeInstallPlugins,
-    opencodeUninstallPlugin,
+    opencodeListIntegrations,
+    opencodeConnectKey,
+    opencodeDisconnectProvider,
+    codexFetchEndpointCatalog,
+    codexCatalogPlanPreview,
+    codexEndpointCatalogPublished,
+    codexEndpointCatalogCached,
+    codexEndpointCatalogStatus,
+    codexRefreshEndpointCatalog,
+    opencodeAddPlugin,
+    opencodeRemovePlugin,
     acpListAgentSkills,
+    acpListAgentRuntimeSkills,
     acpReadAgentSkill,
     acpSaveAgentSkill,
     acpDeleteAgentSkill,
@@ -6755,6 +6935,7 @@ export function createBackendApi(binding: BackendApiBinding) {
     validateGitHubToken,
     validateGitLabToken,
     validateGiteaToken,
+    validateCnbToken,
     updateGitHubAccounts,
     saveAccountToken,
     getAccountToken,
@@ -7012,6 +7193,8 @@ export function createBackendApi(binding: BackendApiBinding) {
     setChatEventFilter,
     getChatEventWebhooks,
     setChatEventWebhooks,
+    getChatEventTopLevelOnly,
+    setChatEventTopLevelOnly,
     getChatMessageLanguage,
     setChatMessageLanguage,
     weixinGetQrcode,
@@ -7020,6 +7203,8 @@ export function createBackendApi(binding: BackendApiBinding) {
     createModelProvider,
     updateModelProvider,
     deleteModelProvider,
+    acpUpdateClaudeModelPicker,
+    listProviderModels,
     getDelegationSettings,
     setDelegationSettings,
     getCodegMcpServiceStatus,
@@ -7058,6 +7243,7 @@ export function createBackendApi(binding: BackendApiBinding) {
     discardPendingRestore,
     folderForgeRemote,
     forgeListIssues,
+    forgeIssueDetail,
     forgeTabCount,
     forgeListLabels,
     forgeListComments,
@@ -7070,6 +7256,7 @@ export function createBackendApi(binding: BackendApiBinding) {
     forgeMergeOptions,
     forgeMergeChange,
     workTaskCreateFromForge,
+    workTaskCreateFromForgeIssues,
     workTaskLookupBySource,
     forgeSettingsGet,
     forgeSettingsSet,
@@ -7200,8 +7387,6 @@ export const acpUpdateHermesConfig: BackendApi["acpUpdateHermesConfig"] = (
 export const acpUpdateKimiCodeConfig: BackendApi["acpUpdateKimiCodeConfig"] = (
   ...args
 ) => getDefaultBackendApi().acpUpdateKimiCodeConfig(...args)
-export const acpFetchKimiModels: BackendApi["acpFetchKimiModels"] = (...args) =>
-  getDefaultBackendApi().acpFetchKimiModels(...args)
 export const acpUpdatePiConfig: BackendApi["acpUpdatePiConfig"] = (...args) =>
   getDefaultBackendApi().acpUpdatePiConfig(...args)
 export const loadPiConfig: BackendApi["loadPiConfig"] = (...args) =>
@@ -7286,12 +7471,6 @@ export const opencodeProviderCatalog: BackendApi["opencodeProviderCatalog"] = (
 export const codexBundledCatalog: BackendApi["codexBundledCatalog"] = (
   ...args
 ) => getDefaultBackendApi().codexBundledCatalog(...args)
-export const opencodeInstallPlugins: BackendApi["opencodeInstallPlugins"] = (
-  ...args
-) => getDefaultBackendApi().opencodeInstallPlugins(...args)
-export const opencodeUninstallPlugin: BackendApi["opencodeUninstallPlugin"] = (
-  ...args
-) => getDefaultBackendApi().opencodeUninstallPlugin(...args)
 export const acpListAgentSkills: BackendApi["acpListAgentSkills"] = (...args) =>
   getDefaultBackendApi().acpListAgentSkills(...args)
 export const acpReadAgentSkill: BackendApi["acpReadAgentSkill"] = (...args) =>
@@ -8254,3 +8433,43 @@ export const renewOfficeWatch: BackendApi["renewOfficeWatch"] = (...args) =>
   getDefaultBackendApi().renewOfficeWatch(...args)
 export const listenAttachmentUploadProgress: BackendApi["listenAttachmentUploadProgress"] =
   (...args) => getDefaultBackendApi().listenAttachmentUploadProgress(...args)
+export const opencodeListIntegrations: BackendApi["opencodeListIntegrations"] =
+  (...args) => getDefaultBackendApi().opencodeListIntegrations(...args)
+export const opencodeConnectKey: BackendApi["opencodeConnectKey"] = (...args) =>
+  getDefaultBackendApi().opencodeConnectKey(...args)
+export const opencodeDisconnectProvider: BackendApi["opencodeDisconnectProvider"] =
+  (...args) => getDefaultBackendApi().opencodeDisconnectProvider(...args)
+export const codexFetchEndpointCatalog: BackendApi["codexFetchEndpointCatalog"] =
+  (...args) => getDefaultBackendApi().codexFetchEndpointCatalog(...args)
+export const codexCatalogPlanPreview: BackendApi["codexCatalogPlanPreview"] = (
+  ...args
+) => getDefaultBackendApi().codexCatalogPlanPreview(...args)
+export const codexEndpointCatalogPublished: BackendApi["codexEndpointCatalogPublished"] =
+  (...args) => getDefaultBackendApi().codexEndpointCatalogPublished(...args)
+export const codexEndpointCatalogCached: BackendApi["codexEndpointCatalogCached"] =
+  (...args) => getDefaultBackendApi().codexEndpointCatalogCached(...args)
+export const codexEndpointCatalogStatus: BackendApi["codexEndpointCatalogStatus"] =
+  (...args) => getDefaultBackendApi().codexEndpointCatalogStatus(...args)
+export const codexRefreshEndpointCatalog: BackendApi["codexRefreshEndpointCatalog"] =
+  (...args) => getDefaultBackendApi().codexRefreshEndpointCatalog(...args)
+export const opencodeAddPlugin: BackendApi["opencodeAddPlugin"] = (...args) =>
+  getDefaultBackendApi().opencodeAddPlugin(...args)
+export const opencodeRemovePlugin: BackendApi["opencodeRemovePlugin"] = (
+  ...args
+) => getDefaultBackendApi().opencodeRemovePlugin(...args)
+export const acpListAgentRuntimeSkills: BackendApi["acpListAgentRuntimeSkills"] =
+  (...args) => getDefaultBackendApi().acpListAgentRuntimeSkills(...args)
+export const validateCnbToken: BackendApi["validateCnbToken"] = (...args) =>
+  getDefaultBackendApi().validateCnbToken(...args)
+export const getChatEventTopLevelOnly: BackendApi["getChatEventTopLevelOnly"] =
+  (...args) => getDefaultBackendApi().getChatEventTopLevelOnly(...args)
+export const setChatEventTopLevelOnly: BackendApi["setChatEventTopLevelOnly"] =
+  (...args) => getDefaultBackendApi().setChatEventTopLevelOnly(...args)
+export const acpUpdateClaudeModelPicker: BackendApi["acpUpdateClaudeModelPicker"] =
+  (...args) => getDefaultBackendApi().acpUpdateClaudeModelPicker(...args)
+export const listProviderModels: BackendApi["listProviderModels"] = (...args) =>
+  getDefaultBackendApi().listProviderModels(...args)
+export const forgeIssueDetail: BackendApi["forgeIssueDetail"] = (...args) =>
+  getDefaultBackendApi().forgeIssueDetail(...args)
+export const workTaskCreateFromForgeIssues: BackendApi["workTaskCreateFromForgeIssues"] =
+  (...args) => getDefaultBackendApi().workTaskCreateFromForgeIssues(...args)

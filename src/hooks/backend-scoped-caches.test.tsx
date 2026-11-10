@@ -38,7 +38,7 @@ function machine(id: number) {
       .mockResolvedValue([
         { agent_type: "custom:same", name: `Machine ${id}`, sort_order: 0 },
       ] as AcpAgentInfo[]),
-    acpListAgentSkills: vi.fn().mockResolvedValue({
+    acpListAgentRuntimeSkills: vi.fn().mockResolvedValue({
       supported: true,
       skills: [{ name: `Skill ${id}` }] as AgentSkillItem[],
     }),
@@ -178,7 +178,7 @@ describe("backend scoped hook caches with identical resource identities", () => 
       wrapper: b.wrapper,
     })
     expect(again.result.current[0]?.name).toBe("Skill 2")
-    expect(b.api.acpListAgentSkills).toHaveBeenCalledTimes(1)
+    expect(b.api.acpListAgentRuntimeSkills).toHaveBeenCalledTimes(1)
   })
 
   it("keeps enabled skill snapshots separate while coalescing each client's focus refresh", async () => {

@@ -22,9 +22,10 @@ import {
   collectLiveModelPaths,
 } from "@/lib/monaco-model-path"
 import {
-  consumePendingTaskDraft,
-  CREATE_TASK_FROM_TEXT_EVENT,
-} from "@/lib/task-compose-events"
+  closeTaskFromMessage,
+  currentTaskFromMessage,
+  taskFromMessageOwner,
+} from "@/lib/task-from-message"
 import { useCreateTaskFromMessage } from "@/components/message/use-create-task-from-message"
 import {
   OPEN_TASK_SETTINGS_EVENT,
@@ -135,6 +136,16 @@ afterEach(() => {
 })
 
 const files = source("files/file-workspace-panel.tsx")
+const monacoModels = ts.createSourceFile(
+  "monaco-model-context.tsx",
+  readFileSync(
+    resolve(process.cwd(), "src/contexts/monaco-model-context.tsx"),
+    "utf8"
+  ),
+  ts.ScriptTarget.Latest,
+  true,
+  ts.ScriptKind.TSX
+)
 const canvas = source("canvas/canvas-view.tsx")
 const tasks = source("tasks/tasks-page.tsx")
 const forge = source("forge/forge-page.tsx")
@@ -232,9 +243,13 @@ describe("production Monaco generation wiring", () => {
     expect(value(files, "modelScope").getText()).toBe(
       "getBackendEventScope(useOptionalBackendClient())"
     )
-    const calls = nodes(files, ts.isCallExpression).filter((call) =>
-      ["buildMonacoModelPath", "collectLiveModelPaths"].includes(
-        call.expression.getText()
+    // The editor path is built in the panel; the keep-set lives in the
+    // workspace-owned MonacoModelProvider, fed the same generation scope.
+    const calls = [files, monacoModels].flatMap((root) =>
+      nodes(root, ts.isCallExpression).filter((call) =>
+        ["buildMonacoModelPath", "collectLiveModelPaths"].includes(
+          call.expression.getText()
+        )
       )
     )
     expect(calls).toHaveLength(2)
@@ -248,7 +263,7 @@ describe("production Monaco generation wiring", () => {
     const replacement = client("remote:1")
     const tab = { id: "file:shared", path: "/repo/shared.ts" }
     const model = value(files, "editorModelPath")
-    const keep = value(files, "liveModelUrisKey")
+    const keep = value(monacoModels, "liveKey")
     const modelUris = [a, b, replacement].map((backend) => {
       const bindings = {
         modelScope: getBackendEventScope(backend),
@@ -310,7 +325,7 @@ describe("production canvas export ownership", () => {
 })
 
 describe("production task handoff and settings generations", () => {
-  it("parks a real message producer's draft only for its fixed client's TasksPage", () => {
+  it("scopes a real message producer's request to its fixed client", () => {
     const a = client("remote:1")
     const b = client("remote:2")
     const replacement = client("remote:1")
@@ -323,51 +338,33 @@ describe("production task handoff and settings generations", () => {
       }
     )
     act(() => producer.result.current())
-    const open = [vi.fn(), vi.fn(), vi.fn()]
-    const prefill = [vi.fn(), vi.fn(), vi.fn()]
-    ;[b, replacement, a].forEach((backend, index) => {
-      const mounted = install(tasks, "CREATE_TASK_FROM_TEXT_EVENT", {
-        backendScope: getBackendEventScope(backend),
-        consumePendingTaskDraft,
-        CREATE_TASK_FROM_TEXT_EVENT,
-        openNewTask: (draft: unknown) => {
-          prefill[index](draft)
-          open[index]()
-        },
-      })
-      expect(mounted.arguments[1].getText()).toContain("backendScope")
-    })
-    expect(open[0]).not.toHaveBeenCalled()
-    expect(open[1]).not.toHaveBeenCalled()
-    expect(prefill[2]).toHaveBeenCalledWith({
+    const request = currentTaskFromMessage()
+    expect(request).toMatchObject({
       text: "A text",
       folderId: 1,
       backendKey: a.key,
       backendScope: getBackendEventScope(a),
     })
-    act(() => producer.result.current())
-    expect(open[0]).not.toHaveBeenCalled()
-    expect(open[1]).not.toHaveBeenCalled()
-    expect(open[2]).toHaveBeenCalledTimes(2)
-    expect(consumePendingTaskDraft(getBackendEventScope(a))).toBeNull()
+    const owner = taskFromMessageOwner(request!)
+    expect(owner).toBe(getBackendEventScope(a))
+    expect(owner).not.toBe(getBackendEventScope(b))
+    expect(owner).not.toBe(getBackendEventScope(replacement))
+    closeTaskFromMessage(request!.id)
+    expect(currentTaskFromMessage()).toBeNull()
   })
 
   it("preserves the provider-free message handoff", () => {
-    const prefill = vi.fn()
-    install(tasks, "CREATE_TASK_FROM_TEXT_EVENT", {
-      backendScope: undefined,
-      consumePendingTaskDraft,
-      CREATE_TASK_FROM_TEXT_EVENT,
-      openNewTask: prefill,
-    })
     const producer = renderHook(() => useCreateTaskFromMessage(() => "Legacy"))
     act(() => producer.result.current())
-    expect(prefill).toHaveBeenCalledWith({
+    const request = currentTaskFromMessage()
+    expect(request).toMatchObject({
       text: "Legacy",
       folderId: 1,
       backendKey: undefined,
       backendScope: undefined,
     })
+    expect(taskFromMessageOwner(request!)).toBeUndefined()
+    closeTaskFromMessage(request!.id)
   })
 
   it.each([
@@ -459,7 +456,6 @@ describe("owned global listener audit", () => {
     {
       root: tasks,
       expected: [
-        "CREATE_TASK_FROM_TEXT_EVENT:consume",
         "OPEN_TASK_SETTINGS_EVENT:open",
         "blur:abortDrag",
         "visibilitychange:onVisibility",

@@ -11,6 +11,10 @@ import type { AgentSkillItem, AgentType } from "@/lib/types"
  * The skills an agent sees from one folder, held ONCE per window and shared by
  * every component that reads them.
  *
+ * They are what the agent's sessions load (`acpListAgentRuntimeSkills`): for
+ * OpenCode that includes the `.claude` folders and the folders above the
+ * workspace, which its Skills settings page does not list.
+ *
  * Several readers routinely share a folder: a Codex tab's composer (its `$`
  * menu) and its transcript (its badge check) read the same list, and background
  * tabs stay mounted. There is one entry per backend client, agent and folder,
@@ -102,7 +106,7 @@ function scan(cache: SkillsCache, key: string, entry: SkillsEntry): void {
   const stale = () =>
     cache.entries.get(key) !== entry || entry.generation !== generation
   cache.api
-    .acpListAgentSkills({
+    .acpListAgentRuntimeSkills({
       agentType: entry.agentType,
       workspacePath: entry.workspacePath,
     })

@@ -122,3 +122,18 @@ describe("single-dollar formulas in agent prose", () => {
     }
   })
 })
+
+describe("single-dollar formulas reach KaTeX", () => {
+  it.each([
+    "T",
+    "AV",
+    "A - T",
+    String.raw`\Gamma^0, \Gamma^C`,
+    String.raw`\mathcal{U}^{AV}`,
+  ])("renders %s exactly like double-dollar inline math", (body) => {
+    const actual = katexInput(normalizeMathDelimiters(`正文 $${body}$。`), true)
+    expect(actual).toBe(body)
+    expect(render(actual)).toBe(render(katexInput(`正文 $$${body}$$。`, true)))
+    expect(render(actual)).toContain('class="katex"')
+  })
+})

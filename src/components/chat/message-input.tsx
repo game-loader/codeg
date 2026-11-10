@@ -2,7 +2,7 @@
 
 import { useOptionalBackendClient } from "@/contexts/backend-client-context"
 import { useBackendEventScope } from "@/hooks/use-runtime-event-scope"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { isImeCompositionKey } from "@/lib/ime-composition"
 import { Button } from "@/components/ui/button"
@@ -91,6 +91,7 @@ import {
   loadMessageInputDraftV2,
   saveMessageInputDraftV2,
   registerMessageInputDraftReader,
+  setLiveComposerContent,
 } from "@/lib/message-input-draft"
 import { rankByTextMatch } from "@/lib/fuzzy-text-match"
 import {
@@ -120,6 +121,7 @@ import {
   buildKnownInvocations,
   commandToReference,
   diskSkillTrigger,
+  skillMarkedCommands,
   skillsForMenu,
   skillToReference,
 } from "@/components/chat/composer/invocation-reference"
@@ -386,9 +388,10 @@ export function MessageInput({
   const tAttach = useTranslations("Folder.chat.messageInput")
   // Skills read from disk feed the menu only for an agent that does not
   // advertise them itself: Codex under `$` (its native command set is very
-  // small), Antigravity under `/` beside its commands (its ACP server lists
-  // only its built-ins). Every other agent surfaces its skills through ACP
-  // `availableCommands`, so a disk scan would only repeat them — skip it.
+  // small), Antigravity and OpenCode under `/` beside their commands (their
+  // ACP servers list only commands, never a skill). Every other agent surfaces
+  // its skills through ACP `availableCommands`, so a disk scan would only
+  // repeat them — skip it.
   const skillTrigger = diskSkillTrigger(agentType)
   // Pass the working dir so we see both global skills and folder-scoped
   // project skills (e.g. `{folder}/.codex/skills`). Without this, users
@@ -466,6 +469,21 @@ export function MessageInput({
     setComposerEmpty(ed ? isComposerEmpty(ed) : true)
   }, [])
 
+  // What this composer holds that its saved draft may not show yet — typing
+  // inside the save debounce, image attachments (never saved), a file still
+  // being read or uploaded — reported per draft key for the tab store, which
+  // reads it before tidying a "blank" draft tab away. An intake is reported
+  // the moment it starts; the rest once React has committed it (below).
+  const composerId = useId()
+  const reportIntakeStart = useCallback(() => {
+    if (!effectiveDraftStorageKey) return
+    setLiveComposerContent(
+      effectiveDraftStorageKey,
+      `${composerId}:intake`,
+      true
+    )
+  }, [composerId, effectiveDraftStorageKey])
+
   // Attachments (images → thumbnail strip, files → inline badges) and the "+"
   // menu's insertable shortcuts. Both are shared with the to-do task composers,
   // so paste/drop/pick and the skill/quick-message entries behave identically
@@ -478,6 +496,7 @@ export function MessageInput({
     attachmentTabId,
     defaultPath,
     logLabel: "MessageInput",
+    onIntakeStart: reportIntakeStart,
   })
   const {
     attachments,
@@ -957,6 +976,32 @@ export function MessageInput({
   const imageAttachments = attach.imageAttachments
   const hasAttachments = attachments.length > 0
   const hasSendableContent = !composerEmpty || hasAttachments
+  // The committed half of the report above: what the composer holds, and
+  // whether an intake is still in flight (once it settles, what it brought is
+  // already in `hasSendableContent` here). `intakeRevision` re-runs this after
+  // every intake, even one that started and settled within one render batch,
+  // where `intakePending` reads false both times.
+  const { intakePending, intakeRevision } = attach
+  useEffect(() => {
+    if (!effectiveDraftStorageKey) return
+    const intakeId = `${composerId}:intake`
+    setLiveComposerContent(
+      effectiveDraftStorageKey,
+      composerId,
+      hasSendableContent
+    )
+    setLiveComposerContent(effectiveDraftStorageKey, intakeId, intakePending)
+    return () => {
+      setLiveComposerContent(effectiveDraftStorageKey, composerId, false)
+      setLiveComposerContent(effectiveDraftStorageKey, intakeId, false)
+    }
+  }, [
+    composerId,
+    effectiveDraftStorageKey,
+    hasSendableContent,
+    intakePending,
+    intakeRevision,
+  ])
 
   // ── Slash command autocomplete ──
   //
@@ -989,6 +1034,12 @@ export function MessageInput({
       { name: "machine", description: tm("commandDescription") },
     ],
     [availableCommands, tm]
+  )
+  // Read off the full list, not the filtered one, so typing never moves the
+  // rows' icon column in or out.
+  const skillCommandNames = useMemo(
+    () => skillMarkedCommands(slashCommands),
+    [slashCommands]
   )
   const filteredSlashCommands = useMemo(() => {
     if (!slashMenuOpen || slashCommands.length === 0) return []
@@ -1070,8 +1121,8 @@ export function MessageInput({
     }
   }, [slashMenuOpen, slashSelectedIndex, slashAutocompleteCount])
 
-  // ── Editor-driven `/` (commands, plus Antigravity's skills) and `$` (Codex
-  // skills) trigger detection ──
+  // ── Editor-driven `/` (commands, plus Antigravity's and OpenCode's skills)
+  // and `$` (Codex skills) trigger detection ──
   // The `@` mention panel is now owned by RichComposer; this only handles the
   // runtime-command menus. We inspect the text before the collapsed caret in the
   // current block: a `/` (any agent) or `$` (Codex) at the start or right after
@@ -1098,11 +1149,23 @@ export function MessageInput({
     const match = before.match(regex)
     if (!match) return close()
     const trigger = match[2] as "/" | "$"
-    // The local machine command keeps `/` available before an agent
-    // connection, so an empty agent list is not "nothing to show". `$` stays
-    // armed during an empty disk scan so late-arriving skills can populate the
-    // panel without requiring another keystroke.
-    if (trigger === "/" && slashCommands.length === 0 && !commandsLoading) {
+    // Only a commands-only `/` is gated here. Its source is the agent's own
+    // command list, which exists only once the connection is up — so an empty
+    // list means "nothing to show" unless the connection is still coming, where
+    // the panel opens on a loading row instead. A trigger that also lists disk
+    // skills (Codex's `$`, Antigravity's and OpenCode's `/`) is deliberately
+    // ungated: `useAgentSkills` reports an in-flight scan as an empty list, so
+    // closing on empty would strand a trigger typed before the scan lands. Left
+    // open, the panel simply stays hidden until the skills arrive and then fills
+    // itself in — no second keystroke needed. `slashCommands` always carries
+    // the local `machine` command, so `/` stays available before an agent
+    // connection.
+    if (
+      trigger === "/" &&
+      skillTrigger !== "/" &&
+      slashCommands.length === 0 &&
+      !commandsLoading
+    ) {
       return close()
     }
     setSlashTriggerChar(trigger)
@@ -1341,24 +1404,30 @@ export function MessageInput({
   // reproduces the shortcut everywhere in the box. Reading the clipboard happens
   // inside the menu-click / keydown user gesture, so the async Clipboard API has
   // the activation it needs.
-  const handleContextPaste = useCallback(async () => {
+  const pasteFromClipboard = useCallback(async () => {
     if (disabled) return
     const editor = editorRef.current?.getEditor()
     if (!editor) return
-    let text = ""
     // The async clipboard read can be blocked at call time even though the API
     // exists (denied permission, browser policy), so track that: with the native
     // menu (and its Paste) suppressed to show this one, a silent failure would
     // leave the user with no feedback and no fallback.
     let readBlocked = false
-    try {
-      text = (await navigator.clipboard.readText()) ?? ""
-    } catch {
-      // Permission denied / unsupported / no activation — fall through to the
-      // image path (a textless clipboard may still hold a screenshot).
-      readBlocked = true
-      text = ""
-    }
+    // Started before anything is awaited, so it still runs inside the gesture.
+    const textRead = (async () => {
+      try {
+        return (await navigator.clipboard.readText()) ?? ""
+      } catch {
+        // Permission denied / unsupported / no activation — fall through to the
+        // image path (a textless clipboard may still hold a screenshot).
+        readBlocked = true
+        return ""
+      }
+    })()
+    // Files copied in Finder / Explorer reach the text API only as their
+    // names: attach the files themselves instead, as a keyboard paste does.
+    if (await attach.appendClipboardFiles()) return
+    const text = await textRead
     if (text) {
       // Route through ProseMirror's own text paste so newlines, marks and the
       // editor's paste pipeline behave exactly like a keyboard paste.
@@ -1384,6 +1453,17 @@ export function MessageInput({
       toast.error(t("pasteUnavailable"))
     }
   }, [disabled, attach, t])
+  // Content is on its way from the first clipboard read on: counted as an
+  // intake, so draft tidying never takes this composer for blank meanwhile.
+  const handleContextPaste = useCallback(async () => {
+    if (disabled) return
+    const settle = attach.beginIntake()
+    try {
+      await pasteFromClipboard()
+    } finally {
+      settle()
+    }
+  }, [attach, disabled, pasteFromClipboard])
 
   // Bridges the composer's Ctrl/⌘+Shift+V key to the plain-text paste above.
   // Returns whether the shortcut was consumed: when disabled or when the async
@@ -2073,7 +2153,11 @@ export function MessageInput({
                   handleSlashSelect(cmd)
                 }}
               >
-                <CommandOptionLabel command={cmd} />
+                <CommandOptionLabel
+                  command={cmd}
+                  skill={skillCommandNames.has(cmd.name)}
+                  kindColumn={skillCommandNames.size > 0}
+                />
               </button>
             ))}
             {filteredSlashSkills.map((skill, i) => {

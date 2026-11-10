@@ -13,6 +13,7 @@
 import { useEffect, useMemo, useState } from "react"
 
 import { Message, MessageContent } from "@/components/ai-elements/message"
+import { AsyncTaskStrip } from "@/components/chat/async-task-strip"
 import { SessionDetailsInsights } from "@/components/layout/session-details-insights"
 import { CompletedTurnContent } from "@/components/message/completed-turn-content"
 import { ContentPartsRenderer } from "@/components/message/content-parts-renderer"
@@ -51,7 +52,7 @@ import {
   toolResult,
   toolUse,
 } from "@/lib/activity/__fixtures__/mockup-turn"
-import type { MessageTurn } from "@/lib/types"
+import type { AsyncTaskRecord, MessageTurn } from "@/lib/types"
 import { publishTranscriptInsights } from "@/stores/transcript-insights-store"
 
 const params =
@@ -137,6 +138,63 @@ const FAILURE_TURN: MessageTurn = {
     {
       type: "text",
       text: "The build fails on a type error and I could not open the pull request.",
+    },
+  ],
+}
+
+/** Commands that exited non-zero: some answered what they asked (a search that
+ *  found nothing, a test that came out false, a name or a path that is not
+ *  there, files that differ), some failed — one with a code that names why. */
+const EXITS_TURN: MessageTurn = {
+  id: "turn-exits",
+  role: "assistant",
+  timestamp: "2026-10-22T09:01:00Z",
+  duration_ms: 132000,
+  blocks: [
+    toolUse("x1", "Bash", { command: "rg -n 'source_bindings' web/lib" }),
+    toolResult("x1", "Exit code 1", true),
+    toolUse("x2", "Bash", { command: "test -f .env.local && echo present" }),
+    toolResult("x2", "Exit code 1", true),
+    toolUse("x3", "Bash", { command: "which python2" }),
+    toolResult("x3", "Exit code 1\npython2 not found", true),
+    toolUse("x4", "Bash", { command: "cat web/.env.example" }),
+    toolResult(
+      "x4",
+      "Exit code 1\ncat: web/.env.example: No such file or directory",
+      true
+    ),
+    toolUse("x5", "Bash", { command: "git diff --quiet -- web" }),
+    toolResult("x5", "Exit code 1", true),
+    {
+      type: "text",
+      text: "No `.env.local` and nothing reads `source_bindings` in `web/lib`; the web tree has uncommitted changes.",
+    },
+    toolUse("x6", "Bash", { command: "pyhton scripts/regen_report.py" }),
+    toolResult(
+      "x6",
+      "Exit code 127\n(eval):1: command not found: pyhton",
+      true
+    ),
+    toolUse("x7", "Bash", {
+      command: "pnpm --filter web test",
+      description: "Run web unit tests",
+    }),
+    toolResult(
+      "x7",
+      [
+        "FAIL  lib/report.test.ts > maps inactive bindings",
+        "",
+        "Tests: 1 failed, 47 passed, 48 total",
+        "",
+        "Exit code 1",
+      ].join("\n"),
+      true
+    ),
+    toolUse("x8", "Bash", { command: "node scripts/crawl-audit.js" }),
+    toolResult("x8", "Exit code 143\nCommand timed out after 2m 0s", true),
+    {
+      type: "text",
+      text: "The test run still fails one case, and the crawl timed out.",
     },
   ],
 }
@@ -604,6 +662,10 @@ const RUNNING_TASK_ID = "5b4a74be-2c1d-4e8f-9a0b-6c5d4e3f2a1b"
 const RUNNING_TASK =
   "Run the web unit tests in /Users/me/work/my-app and report every failure with its file path and line number."
 
+const RESUMED_TASK_ID = "4df5d544-8b1e-4c2a-9f3d-1a2b3c4d5e6f"
+const RESUMED_TASK =
+  "Perform an independent security-focused review of the completed implementation and report every finding with its file and line."
+
 const DELEGATION_TURN: MessageTurn = {
   id: "turn-delegation",
   role: "assistant",
@@ -701,6 +763,50 @@ const DELEGATION_TURN: MessageTurn = {
       "d4",
       JSON.stringify({ task_id: RUNNING_TASK_ID, status: "running" })
     ),
+    // An interrupted sub-agent brought back: drawn as its delegation row.
+    toolUse(
+      "d5",
+      "mcp__codeg-mcp__resume_delegation",
+      {
+        task_id: RESUMED_TASK_ID,
+        reason: "The app was restarted while the review was running.",
+      },
+      {
+        "codeg.delegation": {
+          status: "running",
+          child_conversation_id: 80,
+          agent_type: "codex",
+          task_id: RESUMED_TASK_ID,
+          task_preview: RESUMED_TASK,
+        },
+      }
+    ),
+    toolResult(
+      "d5",
+      JSON.stringify({
+        task_id: RESUMED_TASK_ID,
+        status: "running",
+        agent_type: "codex",
+        child_conversation_id: 80,
+        message: `Delegation resumed. task_id=${RESUMED_TASK_ID} (unchanged).`,
+      })
+    ),
+    // A refused resume revived nothing: only its reason is shown.
+    toolUse("d6", "mcp__codeg-mcp__resume_delegation", {
+      task_id: POLLED_TASK_ID,
+    }),
+    toolResult(
+      "d6",
+      JSON.stringify({
+        task_id: POLLED_TASK_ID,
+        status: "completed",
+        error_code: "not_resumable",
+        agent_type: "codex",
+        child_conversation_id: 78,
+        message:
+          "Not resumed: the task already completed — resume only applies to a canceled task.",
+      })
+    ),
     {
       type: "text",
       text: "The build passes; three of the six steps are done.",
@@ -754,6 +860,40 @@ const COMMANDS_LIVE_TURN: MessageTurn = {
         " ✓ lib/report.test.ts (12 tests)",
       ].join("\n")
     ),
+  ],
+}
+
+/** A command group the reply has gone on past, with one of its commands moved
+ *  to the background and still running (codex's `asyncTasks.backgrounded`:
+ *  the call that launched it never settles). */
+const BACKGROUND_GROUP_TURN: MessageTurn = {
+  id: "turn-background-group",
+  role: "assistant",
+  timestamp: "2026-10-29T08:00:00Z",
+  blocks: [
+    toolUse("bg1", "Bash", {
+      command:
+        "cat package.json && cat app/page.tsx && cat app/globals.css && cat components/neon-demo.tsx",
+    }),
+    toolResult("bg1", '{\n  "name": "web",\n  "private": true\n}'),
+    toolUse(
+      "bg2",
+      "Bash",
+      { command: "git status --short && find .. -name AGENTS.md -print" },
+      { jetbrains: { air: { asyncTasks: { backgrounded: true } } } }
+    ),
+    toolResult(
+      "bg2",
+      [
+        "../codeg-task-423/AGENTS.md",
+        "../codeg-dev-0630/AGENTS.md",
+        "find: ../.Trashes: Operation not permitted",
+      ].join("\n")
+    ),
+    {
+      type: "thinking",
+      text: "**Considering design options**\n\nThe page needs a calmer palette.",
+    },
   ],
 }
 
@@ -836,7 +976,10 @@ const MARKDOWN_TURN: MessageTurn = {
  * starts over: prose that ends the reply and then turns into a note, a read,
  * commands that gather into a group one by one, an edit. `&interval=` sets the
  * beat in ms, `&beat=` holds it on one beat (`window.__setStreamBeat` moves
- * it).
+ * it). `&lead=prose` opens it on words rather than a thought, `&beats=` ends
+ * it after that many (`&lead=prose&beats=1`: a reply of words alone), and
+ * `&pending=1` draws its beat 0 as the pending reply, which gives way to the
+ * reply as a send's does.
  */
 const STREAM_BEATS: MessageTurn["blocks"][] = [
   [
@@ -876,6 +1019,23 @@ const STREAM_BEATS: MessageTurn["blocks"][] = [
 /** Beats the settled reply stays up for before it starts over. */
 const STREAM_SETTLED_BEATS = 3
 
+/** The beats as the page asks for them (see `STREAM_BEATS`). */
+const STREAM = ((): MessageTurn["blocks"][] => {
+  const beats: MessageTurn["blocks"][] =
+    params.get("lead") === "prose"
+      ? [
+          [
+            {
+              type: "text",
+              text: "Looking at the page first, then its styles.",
+            },
+          ],
+          ...STREAM_BEATS.slice(1),
+        ]
+      : STREAM_BEATS
+  return beats.slice(0, Number(params.get("beats") ?? beats.length))
+})()
+
 function StreamScenario() {
   const interval = Number(params.get("interval") ?? 1400)
   const held = params.get("beat")
@@ -886,15 +1046,14 @@ function StreamScenario() {
     if (held) return
     const id = window.setInterval(
       () =>
-        setBeat((b) =>
-          b >= STREAM_BEATS.length + STREAM_SETTLED_BEATS ? 1 : b + 1
-        ),
+        setBeat((b) => (b >= STREAM.length + STREAM_SETTLED_BEATS ? 1 : b + 1)),
       interval
     )
     return () => window.clearInterval(id)
   }, [held, interval])
+  const pending = params.get("pending") === "1" && beat === 0
   const scenario = useMemo<Scenario>(() => {
-    const blocks = STREAM_BEATS.slice(0, beat).flat()
+    const blocks = STREAM.slice(0, beat).flat()
     const answered = new Set(
       blocks.flatMap((b) =>
         b.type === "tool_result" && b.tool_use_id ? [b.tool_use_id] : []
@@ -910,7 +1069,7 @@ function StreamScenario() {
         duration_ms: 21000,
         blocks,
       },
-      live: beat <= STREAM_BEATS.length,
+      live: beat <= STREAM.length,
       inProgress: blocks.flatMap((b) =>
         b.type === "tool_use" && b.tool_use_id && !answered.has(b.tool_use_id)
           ? [b.tool_use_id]
@@ -918,7 +1077,129 @@ function StreamScenario() {
       ),
     }
   }, [beat])
-  return <ScenarioView scenario={scenario} />
+  // Two replies, as in the thread: the pending one goes, the reply comes.
+  return (
+    <ScenarioView
+      key={pending ? "pending" : "reply"}
+      scenario={scenario}
+      pending={pending}
+    />
+  )
+}
+
+/**
+ * The strip of background tasks over the transcript (`?view=async-tasks`):
+ * `&tasks=` of them still running (default 6) — shells with an output and a
+ * stop, a monitor that offers neither, a workflow on a phase, a turn the agent
+ * started on its own — over the reference reply, in a pane as tall as a chat
+ * column (`&height=`, default 640).
+ */
+const ASYNC_TASK_KINDS: AsyncTaskRecord[] = [
+  {
+    task_id: "bg-loops",
+    name: "Run fixed-file loops then original-failure checks",
+    task_type: "shell",
+    description: "for f in $(cat fixed.txt); do pnpm vitest run $f; done",
+    show_in_transcript: false,
+    can_stop: true,
+    state: "running",
+    output_file_path: "/tmp/codeg-gallery/bg-loops.output",
+  },
+  {
+    task_id: "bg-monitor",
+    name: "t3 verification: fixed-run failures, original-failure tallies, completion",
+    task_type: "monitor",
+    description: "t3 verification",
+    show_in_transcript: true,
+    can_stop: false,
+    state: "running",
+  },
+  {
+    task_id: "bg-wait",
+    name: "Wait until fixed-file verification loops finish",
+    task_type: "shell",
+    description: "until [ -f done.flag ]; do sleep 5; done",
+    show_in_transcript: false,
+    can_stop: true,
+    state: "running",
+    output_file_path: "/tmp/codeg-gallery/bg-wait.output",
+  },
+  {
+    task_id: "bg-workflow",
+    name: "deep-research",
+    task_type: "workflow",
+    description: "Survey the runners",
+    show_in_transcript: true,
+    can_stop: true,
+    state: "running",
+    phase: "Research",
+    current_agent: "researcher-2",
+  },
+  {
+    task_id: "bg-turn",
+    name: "Claude is working",
+    task_type: "turn",
+    description: 'Background command "pnpm build" completed (exit code 0)',
+    show_in_transcript: false,
+    can_stop: true,
+    state: "running",
+  },
+  {
+    task_id: "bg-paused",
+    name: "Wait until the whole verification job finishes",
+    task_type: "shell",
+    description: "wait $(cat job.pid)",
+    show_in_transcript: false,
+    can_stop: true,
+    state: "paused",
+    output_file_path: "/tmp/codeg-gallery/bg-paused.output",
+  },
+]
+
+function AsyncTasksScenario() {
+  const count = Number(params.get("tasks") ?? 6)
+  const height = Number(params.get("height") ?? 640)
+  const tasks = useMemo(
+    () =>
+      Array.from({ length: count }, (_, i) => {
+        const kind = ASYNC_TASK_KINDS[i % ASYNC_TASK_KINDS.length]!
+        return { ...kind, task_id: `${kind.task_id}-${i}` }
+      }),
+    [count]
+  )
+  const reply = useMemo(
+    () => adaptMessageTurn(MOCKUP_ASSISTANT_TURN, MOCKUP_ADAPTER_TEXT),
+    []
+  )
+  const [roundOpen, setRoundOpen] = useState(false)
+  return (
+    <div
+      id="gallery-root"
+      data-scenario="async-tasks"
+      className="mx-auto flex w-full max-w-[48rem] flex-col overflow-hidden border-x border-border"
+      style={{ height }}
+    >
+      <AsyncTaskStrip
+        tasks={tasks}
+        onStop={async () => true}
+        agentName="Claude Code"
+      />
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+        <Message from="assistant">
+          <MessageContent>
+            <CompletedTurnContent
+              parts={reply.content}
+              durationMs={MOCKUP_ASSISTANT_TURN.duration_ms}
+              completed
+              currentRound
+              roundOpen={roundOpen}
+              onRoundOpenChange={setRoundOpen}
+            />
+          </MessageContent>
+        </Message>
+      </div>
+    </div>
+  )
 }
 
 /**
@@ -1073,6 +1354,7 @@ const SCENARIOS: Scenario[] = [
     inProgress: ["l3"],
   },
   { id: "failure", title: "Failures", turn: FAILURE_TURN },
+  { id: "exits", title: "Exit codes", turn: EXITS_TURN },
   { id: "no-answer", title: "Stopped on a failed call", turn: NO_ANSWER_TURN },
   { id: "codex", title: "Codex", turn: CODEX_TURN },
   { id: "agent", title: "Sub-agent", turn: AGENT_TURN },
@@ -1096,10 +1378,24 @@ const SCENARIOS: Scenario[] = [
     live: true,
     inProgress: ["k3"],
   },
+  {
+    id: "background-group",
+    title: "A command moved to the background, the reply gone on past it",
+    turn: BACKGROUND_GROUP_TURN,
+    live: true,
+    inProgress: ["bg2"],
+  },
   { id: "markdown", title: "Markdown", turn: MARKDOWN_TURN },
 ]
 
-function ScenarioView({ scenario }: { scenario: Scenario }) {
+function ScenarioView({
+  scenario,
+  pending = false,
+}: {
+  scenario: Scenario
+  /** Drawn as the pending reply (see `CompletedTurnContent`). */
+  pending?: boolean
+}) {
   const [roundOpen, setRoundOpen] = useState(true)
   const adapted = useMemo(
     () =>
@@ -1134,6 +1430,7 @@ function ScenarioView({ scenario }: { scenario: Scenario }) {
               currentRound
               roundOpen={roundOpen}
               onRoundOpenChange={setRoundOpen}
+              pending={pending}
             />
           </MessageContent>
         </Message>
@@ -1157,6 +1454,8 @@ export default function ActivityGalleryPage() {
           <div className="chat-motion-scope min-h-screen bg-background text-foreground">
             {view === "nav" ? (
               <NavScenario />
+            ) : view === "async-tasks" ? (
+              <AsyncTasksScenario />
             ) : (
               <div
                 id="gallery-root"

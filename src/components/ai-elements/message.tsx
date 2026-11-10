@@ -29,9 +29,12 @@ import {
   defaultRemarkPlugins,
 } from "streamdown"
 import { markdownLinkComponents } from "./markdown-link"
-import { messageBlockComponents } from "./json-render-pre"
+import { messageBlockComponents, useAssistantReply } from "./json-render-pre"
+import { useChatHtmlEnabled } from "@/lib/chat-html-prefs"
+import { createChatHtmlProcessor } from "@/lib/chat-html-markdown"
 import { scrollportComponents } from "./markdown-scrollport"
 import { maskLiteralSpans } from "./markdown-mask"
+import { normalizeInlineDollarMath } from "./inline-dollar-math"
 import { rehypePluginsAllowingCodeg } from "./rehype-allow-codeg"
 import { remarkTrimCjkAutolinkTail } from "./remark-cjk-autolink-tail"
 import { withRelativeFileLinks } from "./rehype-relative-file-links"
@@ -358,8 +361,8 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown>
 // remark-math uses dollar delimiters. `\[...\]` / `\(...\)` are rewritten
 // to `$$...$$`. remark-math's own single-dollar `$...$` stays disabled
 // (`singleDollarTextMath: false`) so currency (`$9.99`) and shell vars
-// (`$HOME`, `$1`) stay prose; instead a single-line `$...$` is rewritten to
-// `$$...$$` only when it unmistakably holds TeX — see `SINGLE_DOLLAR_MATH`.
+// (`$HOME`, `$1`) stay prose; instead a tightly delimited, single-line `$...$`
+// is rewritten to `$$...$$` by `normalizeInlineDollarMath`.
 //
 // A single-line `$$x$$` inside a paragraph stays *inline* math (mdast tags
 // every math-text node `math-inline` regardless of dollar count). The one
@@ -394,9 +397,6 @@ export function normalizeMathDelimiters(text: string): string {
   // match what remark-parse sees while masked code keeps its own bytes.
   const source = masked.replace(/\r\n|\r/g, "\n")
   const normalized = source
-    .replace(SINGLE_DOLLAR_MATH, (match, inner: string) =>
-      TEX_SIGNAL.test(inner) ? `$$${inner}$$` : match
-    )
     .replace(/\\\[([\s\S]*?)\\\]/g, (_m, inner: string) => `$$${inner}$$`)
     .replace(/\\\(([\s\S]*?)\\\)/g, (_m, inner: string, offset: number) => {
       if (!inner.includes("\n")) return `$$${inner}$$`
@@ -406,32 +406,8 @@ export function normalizeMathDelimiters(text: string): string {
       const open = atContentStart ? MATH_FENCE_PAD : ""
       return `${open}$$${inner}${MATH_FENCE_PAD}$$`
     })
-  return restore(normalized)
+  return normalizeInlineDollarMath(restore(normalized))
 }
-
-/**
- * A single-line `$...$` span, with Pandoc's `tex_math_dollars` boundary rules:
- * the opener is followed by a non-space, the closer is preceded by one and is
- * not followed by a digit. On top of those, neither delimiter may touch
- * another `$` (so `$$...$$` is left alone), the opener may not be escaped or
- * glued to an ASCII word (`US$5`), and the closer may not run into one
- * (`$5-$10a`). `\$` inside the span is consumed as an escape, never as the
- * closer. CJK text around the span is fine: `\w` here is ASCII-only.
- *
- * These boundaries alone already keep the usual prose dollars out —
- * `$9.99 or $19.99` and `$HOME and $PATH` both close on a `$` preceded by a
- * space — and [`TEX_SIGNAL`] then admits only spans that read as TeX.
- */
-const SINGLE_DOLLAR_MATH =
-  /(?<![\\$\w])\$(?![\s$])((?:[^$\n\\]|\\[^\n])+?)(?<!\s)\$(?![\w$])/g
-
-/**
- * What a span must contain to be rendered: a TeX command (`\sum`, `\min`), a
- * sub/superscript or a group brace. A bare `$x$` therefore stays literal, as
- * it has been since b23f6a5a was reverted — currency and shell text can form
- * such pairs, but almost never with these characters inside.
- */
-const TEX_SIGNAL = /\\[A-Za-z]|[\^_{}]/
 
 function isSpaceOrTab(code: number): boolean {
   return code === 32 || code === 9
@@ -578,12 +554,17 @@ function MessageResponseImpl({
   remend,
   ...props
 }: MessageResponseProps) {
+  const inReply = useAssistantReply()
+  const htmlEnabled = useChatHtmlEnabled() && inReply
+  const processHtml = useMemo(() => createChatHtmlProcessor(), [])
   const normalized = useMemo(
     () =>
       typeof children === "string"
-        ? normalizeMathDelimiters(children)
+        ? htmlEnabled
+          ? processHtml(children, mode === "streaming", normalizeMathDelimiters)
+          : normalizeMathDelimiters(children)
         : children,
-    [children]
+    [children, htmlEnabled, mode, processHtml]
   )
   const plugins = useStreamdownPlugins(
     typeof normalized === "string" ? normalized : undefined
@@ -592,7 +573,9 @@ function MessageResponseImpl({
   return (
     <Streamdown
       className={cn(
-        "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_ul]:list-disc [&_ol]:list-decimal [&_ul]:ps-2 [&_ol]:ps-2",
+        // `chat-markdown`: while it streams, its blocks keep the spacing they
+        // settle with (globals.css).
+        "chat-markdown size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_ul]:list-disc [&_ol]:list-decimal [&_ul]:ps-2 [&_ol]:ps-2",
         // Each block takes the direction of its own text (`dir="auto"`
         // below), so indents and rules go on the logical start side. An item
         // re-states `text-align: start`: the UA gives <li>
@@ -650,7 +633,12 @@ export const MessageResponse = memo(
     (prevProps.mode ?? FINISHED_MODE) === (nextProps.mode ?? FINISHED_MODE) &&
     (prevProps.parseIncompleteMarkdown ??
       FINISHED_PARSE_INCOMPLETE_MARKDOWN) ===
-      (nextProps.parseIncompleteMarkdown ?? FINISHED_PARSE_INCOMPLETE_MARKDOWN)
+      (nextProps.parseIncompleteMarkdown ??
+        FINISHED_PARSE_INCOMPLETE_MARKDOWN) &&
+    // The prose being written wraps its new characters to fade them in
+    // (`animated` + `isAnimating`); done, it drops the wrapping.
+    (prevProps.isAnimating ?? false) === (nextProps.isAnimating ?? false) &&
+    prevProps.animated === nextProps.animated
 )
 
 MessageResponse.displayName = "MessageResponse"

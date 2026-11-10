@@ -53,6 +53,10 @@ function tokenPageUrl(provider: ForgeProviderId, serverUrl: string): string {
   if (provider === "gitea") {
     return `${base}/user/settings/applications`
   }
+  if (provider === "cnb") {
+    // CNB: personal settings → access tokens.
+    return `${base}/profile/token`
+  }
   const params = new URLSearchParams({
     description: "codeg",
     scopes: "repo,read:org,workflow,gist,read:user,user:email",
@@ -65,16 +69,20 @@ function defaultServerUrl(provider: ForgeProviderId): string {
   // gitea.com is the public instance, but a Gitea is far more often somebody's
   // own — the field stays editable and the placeholder says so.
   if (provider === "gitea") return "https://gitea.com"
+  if (provider === "cnb") return "https://cnb.cool"
   return "https://github.com"
 }
 
 /** Which "who am I" endpoint checks the token. Keyed by provider rather than
  *  branched on one, so a forge added later has exactly one place to appear. */
-function validatorsFor(api: BackendApi) {
+function validatorsFor(
+  api: BackendApi
+): Record<ForgeProviderId, BackendApi["validateGitHubToken"]> {
   return {
     github: api.validateGitHubToken,
     gitlab: api.validateGitLabToken,
     gitea: api.validateGiteaToken,
+    cnb: api.validateCnbToken,
   }
 }
 
@@ -87,6 +95,7 @@ const COPY = {
   github: { description: "githubDescription", tokenHint: "tokenHint" },
   gitlab: { description: "gitlabDescription", tokenHint: "gitlabTokenHint" },
   gitea: { description: "giteaDescription", tokenHint: "giteaTokenHint" },
+  cnb: { description: "cnbDescription", tokenHint: "cnbTokenHint" },
 } as const satisfies Record<
   ForgeProviderId,
   { description: string; tokenHint: string }
