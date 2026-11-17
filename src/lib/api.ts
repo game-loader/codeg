@@ -27,6 +27,9 @@ import {
 
 import { TurnBusyError, isTurnInProgressRejection } from "./turn-busy"
 
+import { asConversationMovedError } from "./conversation-moved"
+import { rankFileMatches } from "./file-search-match"
+import { randomUUID } from "./utils"
 import { withUploadedImageReferences } from "./uploaded-image-reference"
 
 import type { FolderThemeColor } from "./theme-presets"
@@ -44,6 +47,7 @@ import type {
   AssistantPatch,
   ForgeAutoScanReport,
   ForgeAutoStatus,
+  ForgeApproveResult,
   ConversationOutline,
   CommitMessageSettings,
   GeneratedCommitMessage,
@@ -55,6 +59,7 @@ import type {
   DeepSeekCatalogModel,
   DeepSeekModelCatalog,
   ForgeChangeDetail,
+  ForgeCheckSummaryList,
   ForgeChangedFileList,
   ForgeComment,
   ForgeCreateResult,
@@ -69,6 +74,7 @@ import type {
   ForgeMergeOptions,
   ForgePanelSettings,
   ForgeRemote,
+  ForgeImage,
   ForgeSettingsStore,
   ForgeSort,
   ForgeStateAction,
@@ -82,6 +88,7 @@ import type {
   WorkTaskEvent,
   WorkTaskFolderSettings,
   WorkTaskTemplate,
+  WorkTaskUncommittedFile,
   ConversationSummary,
   ConversationDetail,
   ConversationTurnsPage,
@@ -148,6 +155,7 @@ import type {
   WorktreeResolution,
   GitWorktreeRemoval,
   DbConversationSummary,
+  MoveConversationsResult,
   ImportResult,
   ImportSelectedResult,
   ScanResult,
@@ -628,6 +636,8 @@ export type SettingsSection =
   | "version-control"
   | "shortcuts"
   | "system"
+  // Desktop only: the web nav has no Web service page.
+  | "web-service"
 
 interface OpenSettingsWindowOptions {
   agentType?: AgentType | null
@@ -791,12 +801,27 @@ export interface WebServerInfo {
   port: number
   token: string
   addresses: string[]
+  /** Address the listener is bound to: `0.0.0.0` (every interface, so the
+   *  local network can reach it) or `127.0.0.1` (this machine only). */
+  bindHost: string
 }
+
+/** Bind hosts the desktop web service can be configured with (Rust
+ *  `WEB_SERVICE_HOST_CANDIDATES`); the first is the default. */
+export const WEB_SERVICE_HOSTS = ["0.0.0.0", "127.0.0.1"] as const
+export type WebServiceHost = (typeof WEB_SERVICE_HOSTS)[number]
+export const DEFAULT_WEB_SERVICE_HOST: WebServiceHost = "0.0.0.0"
+
+/** Broadcast whenever the desktop web service starts or stops, from any
+ *  window or from auto-start. Carries only `running`; re-read the status. */
+export const WEB_SERVICE_STATUS_CHANGED_EVENT = "web-service://status-changed"
 
 export interface WebServiceConfig {
   token: string | null
   port: number | null
   autoStart: boolean
+  /** Saved bind host; `null`/absent means never chosen (the default). */
+  host?: WebServiceHost | null
 }
 
 export type WebServicePortState = "free" | "occupied" | "unknown"
@@ -1253,7 +1278,7 @@ export function createBackendApi(binding: BackendApiBinding) {
       })
     } catch (e) {
       if (isTurnInProgressRejection(e)) throw new TurnBusyError()
-      throw e
+      throw asConversationMovedError(e) ?? e
     }
   }
 
@@ -4227,6 +4252,22 @@ export function createBackendApi(binding: BackendApiBinding) {
     return transport.call("delete_conversation", { conversationId })
   }
 
+  /**
+   * Move conversations to another open project folder. From the next message on
+   * the agent works in the target folder; the history is untouched. Each
+   * conversation is judged on its own — see {@link MoveConversationsResult} —
+   * and the call rejects only for an invalid target.
+   */
+  async function moveConversations(
+    conversationIds: number[],
+    targetFolderId: number
+  ): Promise<MoveConversationsResult> {
+    return transport.call("move_conversations", {
+      conversationIds,
+      targetFolderId,
+    })
+  }
+
   // Folder command management
 
   async function listFolderCommands(
@@ -4627,7 +4668,9 @@ export function createBackendApi(binding: BackendApiBinding) {
     /** Which issues the pull request closes — a task made from several related
      *  issues only, and only before its first delivery fixed the list. Omitted
      *  (`undefined`) for every other delivery. */
-    closes?: number[]
+    closes?: number[],
+    /** Commit dirty changes before pushing; omitted, a dirty worktree is refused. */
+    commitMessage?: string
   ): Promise<string> {
     return transport.call("work_task_deliver_pr", {
       id,
@@ -4636,7 +4679,14 @@ export function createBackendApi(binding: BackendApiBinding) {
       deleteWorktree,
       markDone,
       ...(closes === undefined ? {} : { closes }),
+      ...(commitMessage === undefined ? {} : { commitMessage }),
     })
+  }
+
+  /** Stop waiting for the background work a running task's agent left going
+   *  and settle the task now; whatever is still running is stopped with it. */
+  async function workTaskStopBackgroundWait(id: number): Promise<void> {
+    return transport.call("work_task_stop_background_wait", { id })
   }
 
   /** Withdraw a merge waiting in the project's queue; the task stays in review. */
@@ -4657,6 +4707,28 @@ export function createBackendApi(binding: BackendApiBinding) {
     return transport.call("work_task_archive", { id, archived })
   }
 
+  /**
+   * The answer about a forge-sourced task's thread comment, given while
+   * accepting it: whether it is posted when the task finishes, and the reply it
+   * carries per item number (blank or missing = the outcome line alone). Only
+   * while the task is in review in generation `runSeq` — the one the dialog
+   * showed; call it before the acceptance itself, which it then binds to that
+   * generation (refused once the task ran again).
+   */
+  async function workTaskSetWriteback(
+    id: number,
+    runSeq: number,
+    writeback: boolean,
+    drafts: Record<number, string>
+  ): Promise<void> {
+    return transport.call("work_task_set_writeback", {
+      id,
+      runSeq,
+      writeback,
+      drafts,
+    })
+  }
+
   /** Remove the task's worktree + branch (also retries a failed cleanup). */
   async function workTaskCleanup(id: number): Promise<void> {
     return transport.call("work_task_cleanup", { id })
@@ -4674,6 +4746,14 @@ export function createBackendApi(binding: BackendApiBinding) {
     id: number
   ): Promise<WorkTaskChangedFile[]> {
     return transport.call("work_task_changed_files", { id })
+  }
+
+  /** What the task's worktree holds uncommitted — the files a delivery would
+   *  commit before pushing. */
+  async function workTaskUncommittedFiles(
+    id: number
+  ): Promise<WorkTaskUncommittedFile[]> {
+    return transport.call("work_task_uncommitted_files", { id })
   }
 
   /** Effective settings after the folder → global → built-in fallback — what
@@ -5318,6 +5398,114 @@ export function createBackendApi(binding: BackendApiBinding) {
     path: string
   ): Promise<WorkspaceFileEntry[]> {
     return transport.call("list_workspace_files", { path })
+  }
+
+  /** Compatibility no-op. Discovery starts only with a cancellable query. */
+  async function prepareWorkspaceFileSearch(path: string): Promise<void> {
+    return transport.call("prepare_workspace_file_search", { path })
+  }
+
+  // Older remote hosts still expose the full listing. Reuse one listing for
+  // nearby keystrokes and retry native search after it expires.
+  let legacyFileSearch: {
+    path: string
+    startedAt: number
+    files: Promise<
+      { entry: WorkspaceFileEntry; lowerName: string; lowerPath: string }[]
+    >
+  } | null = null
+
+  /** Rank across the workspace and transfer only a bounded set of matches. */
+  async function searchWorkspaceFiles(
+    path: string,
+    query: string,
+    options: {
+      limit?: number
+      filesOnly?: boolean
+      refresh?: boolean
+      /** Reject a cached snapshot built more than this many ms ago. */
+      maxAgeMs?: number
+      request?: { consumerId: string; generation: number }
+      signal?: AbortSignal
+    } = {}
+  ): Promise<WorkspaceFileEntry[]> {
+    const {
+      signal,
+      request = { consumerId: randomUUID(), generation: 0 },
+      ...params
+    } = options
+    if (signal?.aborted) return []
+    const searchLegacy = async () => {
+      if (signal?.aborted) return []
+      let listing = legacyFileSearch
+      if (
+        listing?.path !== path ||
+        params.refresh ||
+        performance.now() - listing.startedAt > (params.maxAgeMs ?? Infinity)
+      ) {
+        const pending = {
+          path,
+          startedAt: performance.now(),
+          files: listWorkspaceFiles(path).then((entries) =>
+            entries.map((entry) => ({
+              entry,
+              lowerName: entry.name.toLowerCase(),
+              lowerPath: entry.path.toLowerCase(),
+            }))
+          ),
+        }
+        legacyFileSearch = listing = pending
+        const expire = () => {
+          if (legacyFileSearch === pending) legacyFileSearch = null
+        }
+        void pending.files.then(() => setTimeout(expire, 5000), expire)
+      }
+      const files = await listing.files
+      if (signal?.aborted) return []
+      return rankFileMatches(
+        query,
+        params.filesOnly
+          ? files.filter(({ entry }) => entry.kind === "file")
+          : files,
+        Math.min(200, Math.max(1, params.limit ?? 100))
+      ).map(({ entry }) => entry)
+    }
+    if (legacyFileSearch?.path === path) return searchLegacy()
+    const cancel = () => {
+      void transport
+        .call("cancel_workspace_file_search", { request })
+        .catch(() => {})
+    }
+    signal?.addEventListener("abort", cancel, { once: true })
+    try {
+      return await transport.call(
+        "search_workspace_files",
+        {
+          path,
+          query,
+          ...params,
+          request,
+        },
+        {
+          // The backend bounds queue wait + traversal to five minutes. Give both
+          // HTTP transports time to receive that result, including a cold build.
+          timeoutMs: 330_000,
+        }
+      )
+    } catch (error) {
+      if (
+        remoteConnectionId !== null &&
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "not_implemented"
+      ) {
+        return searchLegacy()
+      }
+      throw error
+    } finally {
+      signal?.removeEventListener("abort", cancel)
+    }
   }
 
   async function startWorkspaceStateStream(
@@ -6287,6 +6475,32 @@ export function createBackendApi(binding: BackendApiBinding) {
    *  (and its own cache in the page): labels change far more slowly than the
    *  list, and on GitHub this runs on the core quota rather than search's
    *  30-per-minute one. */
+  /** Download to the backend cache; render its binary resource URL. */
+  async function forgeReadImage(
+    folderId: number,
+    uploadPath: string,
+    accountId?: string | null
+  ): Promise<ForgeImage> {
+    const image = await transport.call<ForgeImage>("forge_read_image", {
+      folderId,
+      uploadPath,
+      accountId: accountId ?? null,
+    })
+    if (remoteConnectionId !== null) {
+      // Preserve the remote connection's custom auth headers and support HTTP
+      // remote servers: Rust copies the binary into this desktop's cache.
+      try {
+        return await shellTransport().call<ForgeImage>(
+          "remote_cache_forge_image",
+          { connectionId: remoteConnectionId, url: image.url, configRevision }
+        )
+      } catch (error) {
+        return handleRemoteShellError(error)
+      }
+    }
+    return isDesktop() ? image : { ...image, url: `${baseUrl}${image.url}` }
+  }
+
   async function forgeListLabels(
     folderId: number,
     accountId?: string | null
@@ -6413,6 +6627,35 @@ export function createBackendApi(binding: BackendApiBinding) {
     return transport.call("forge_change_detail", {
       folderId,
       query: { number, accountId: accountId ?? null },
+    })
+  }
+
+  /** CI summaries for one page of proposed changes — the list rows' marks.
+   *  Asked AFTER the list has drawn, and never an error the page shows: a forge
+   *  that cannot answer comes back `available: false`, which draws nothing. */
+  async function forgeCheckSummaries(
+    folderId: number,
+    numbers: number[],
+    accountId?: string | null
+  ): Promise<ForgeCheckSummaryList> {
+    return transport.call("forge_check_summaries", {
+      folderId,
+      query: { numbers, accountId: accountId ?? null },
+    })
+  }
+
+  /** Approve the workflow runs held on a pull request (GitHub). `headSha` is the
+   *  commit the person reviewed: the backend refuses if the change has moved on
+   *  since, rather than approving a push nobody looked at. */
+  async function forgeApproveWorkflows(
+    folderId: number,
+    number: number,
+    headSha: string,
+    accountId?: string | null
+  ): Promise<ForgeApproveResult> {
+    return transport.call("forge_approve_workflows", {
+      folderId,
+      request: { number, headSha, accountId: accountId ?? null },
     })
   }
 
@@ -6764,6 +7007,7 @@ export function createBackendApi(binding: BackendApiBinding) {
     deleteCommitMessageSettings,
     runLocalCommand,
     workTaskDefer,
+    workTaskSetWriteback,
     getCliAccessStatus,
     setCliAccessEnabled,
     getCliToolStatus,
@@ -7073,6 +7317,7 @@ export function createBackendApi(binding: BackendApiBinding) {
     updateConversationTitle,
     updateConversationPinned,
     deleteConversation,
+    moveConversations,
     listFolderCommands,
     createFolderCommand,
     updateFolderCommand,
@@ -7114,12 +7359,14 @@ export function createBackendApi(binding: BackendApiBinding) {
     workTaskCancel,
     workTaskMerge,
     workTaskDeliverPr,
+    workTaskStopBackgroundWait,
     workTaskMergeUnqueue,
     workTaskComplete,
     workTaskArchive,
     workTaskCleanup,
     workTaskDiff,
     workTaskChangedFiles,
+    workTaskUncommittedFiles,
     workTaskSettingsEffective,
     workTaskSettingsGet,
     workTaskSettingsGetOwn,
@@ -7143,6 +7390,8 @@ export function createBackendApi(binding: BackendApiBinding) {
     downloadWorkspaceDir,
     getFileTree,
     listWorkspaceFiles,
+    prepareWorkspaceFileSearch,
+    searchWorkspaceFiles,
     startWorkspaceStateStream,
     stopWorkspaceStateStream,
     getWorkspaceSnapshot,
@@ -7244,6 +7493,7 @@ export function createBackendApi(binding: BackendApiBinding) {
     folderForgeRemote,
     forgeListIssues,
     forgeIssueDetail,
+    forgeReadImage,
     forgeTabCount,
     forgeListLabels,
     forgeListComments,
@@ -7251,6 +7501,8 @@ export function createBackendApi(binding: BackendApiBinding) {
     forgeSetItemState,
     forgeCreateIssue,
     forgeChangeDetail,
+    forgeCheckSummaries,
+    forgeApproveWorkflows,
     forgeChangeFiles,
     forgeIdentity,
     forgeMergeOptions,
@@ -8473,3 +8725,34 @@ export const forgeIssueDetail: BackendApi["forgeIssueDetail"] = (...args) =>
   getDefaultBackendApi().forgeIssueDetail(...args)
 export const workTaskCreateFromForgeIssues: BackendApi["workTaskCreateFromForgeIssues"] =
   (...args) => getDefaultBackendApi().workTaskCreateFromForgeIssues(...args)
+
+export const moveConversations: BackendApi["moveConversations"] = (...args) =>
+  getDefaultBackendApi().moveConversations(...args)
+
+export const workTaskStopBackgroundWait: BackendApi["workTaskStopBackgroundWait"] =
+  (...args) => getDefaultBackendApi().workTaskStopBackgroundWait(...args)
+
+export const workTaskSetWriteback: BackendApi["workTaskSetWriteback"] = (
+  ...args
+) => getDefaultBackendApi().workTaskSetWriteback(...args)
+
+export const workTaskUncommittedFiles: BackendApi["workTaskUncommittedFiles"] =
+  (...args) => getDefaultBackendApi().workTaskUncommittedFiles(...args)
+
+export const prepareWorkspaceFileSearch: BackendApi["prepareWorkspaceFileSearch"] =
+  (...args) => getDefaultBackendApi().prepareWorkspaceFileSearch(...args)
+
+export const searchWorkspaceFiles: BackendApi["searchWorkspaceFiles"] = (
+  ...args
+) => getDefaultBackendApi().searchWorkspaceFiles(...args)
+
+export const forgeReadImage: BackendApi["forgeReadImage"] = (...args) =>
+  getDefaultBackendApi().forgeReadImage(...args)
+
+export const forgeCheckSummaries: BackendApi["forgeCheckSummaries"] = (
+  ...args
+) => getDefaultBackendApi().forgeCheckSummaries(...args)
+
+export const forgeApproveWorkflows: BackendApi["forgeApproveWorkflows"] = (
+  ...args
+) => getDefaultBackendApi().forgeApproveWorkflows(...args)

@@ -150,6 +150,70 @@ describe("fixed backend clients", () => {
     expect(b.shell.call).not.toHaveBeenCalled()
   })
 
+  it("downloads a Forge image through the same remote binding that issued it", async () => {
+    const a = client(1)
+    const b = client(2)
+    const url = "/api/forge_image/test-token"
+    a.target.call.mockResolvedValue({ url })
+    a.shell.call.mockResolvedValue({ url: "asset://localhost/image.png" })
+
+    await expect(
+      a.client.api.forgeReadImage(1, "/uploads/test/image.png")
+    ).resolves.toEqual({
+      url: "asset://localhost/image.png",
+    })
+    expect(a.target.call).toHaveBeenCalledWith("forge_read_image", {
+      folderId: 1,
+      uploadPath: "/uploads/test/image.png",
+      accountId: null,
+    })
+    expect(a.shell.call).toHaveBeenCalledWith("remote_cache_forge_image", {
+      connectionId: 1,
+      configRevision: "revision-1",
+      url,
+    })
+    expect(b.target.call).not.toHaveBeenCalled()
+    expect(b.shell.call).not.toHaveBeenCalled()
+  })
+
+  it("keeps file search working when only one remote host is still on an older release", async () => {
+    vi.useFakeTimers()
+    try {
+      const oldHost = client(1)
+      const newHost = client(2)
+      const readme = { name: "README.md", path: "README.md", kind: "file" }
+      const docs = { name: "docs", path: "docs", kind: "dir" }
+      oldHost.target.call
+        .mockRejectedValueOnce({ code: "not_implemented" })
+        .mockResolvedValueOnce([docs, readme])
+      newHost.target.call.mockResolvedValueOnce([docs])
+
+      await expect(
+        oldHost.client.api.searchWorkspaceFiles("/repo", "read")
+      ).resolves.toEqual([readme])
+      await expect(
+        oldHost.client.api.searchWorkspaceFiles("/repo", "", {
+          filesOnly: true,
+          limit: 1,
+        })
+      ).resolves.toEqual([readme])
+      expect(oldHost.target.call.mock.calls.map(([cmd]) => cmd)).toEqual([
+        "search_workspace_files",
+        "list_workspace_files",
+      ])
+
+      await expect(
+        newHost.client.api.searchWorkspaceFiles("/repo", "docs")
+      ).resolves.toEqual([docs])
+      expect(newHost.target.call.mock.calls.map(([cmd]) => cmd)).toEqual([
+        "search_workspace_files",
+      ])
+      await vi.runAllTimersAsync()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("keeps an upload and its subsequent prompt on A after B is selected", async () => {
     const a = client(1)
     const b = client(2)

@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
+import { ConversationManageDialog } from "@/components/conversations/conversation-manage-dialog"
+import { MoveConversationDialog } from "@/components/conversations/move-conversation-dialog"
 import { SidebarConversationCard } from "@/components/conversations/sidebar-conversation-card"
 import { useSubsessionSync } from "@/hooks/use-subsession-sync"
 import {
@@ -30,6 +32,8 @@ export function OwnedSessionCard({
   const t = useTranslations("MultiHost")
   const [expanded, setExpanded] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [moveTarget, setMoveTarget] = useState<number | null>(null)
+  const [manageOpen, setManageOpen] = useState(false)
   const tabs = runtime.stores.tabs((s) => s.tabs)
   const activeTabId = runtime.stores.tabs((s) => s.activeTabId)
   const conversation = session.conversation
@@ -146,6 +150,16 @@ export function OwnedSessionCard({
             runtime.getSnapshot()?.pinConversation?.(conversation, pinned)
           )
         }}
+        onMoveToFolder={(_, folderId) => {
+          if (current()) setMoveTarget(folderId)
+        }}
+        onManageConversations={
+          session.folder
+            ? () => {
+                if (current()) setManageOpen(true)
+              }
+            : undefined
+        }
         onNewConversation={() => {
           if (current()) {
             if (session.folder)
@@ -162,6 +176,21 @@ export function OwnedSessionCard({
         expanded={expanded}
         onToggleExpand={toggleExpanded}
       />
+      {moveTarget !== null && current() && (
+        <MoveConversationDialog
+          open
+          onOpenChange={(open) => !open && setMoveTarget(null)}
+          conversations={[conversation]}
+          targetFolderId={moveTarget}
+        />
+      )}
+      {manageOpen && session.folder && current() && (
+        <ConversationManageDialog
+          open
+          onOpenChange={setManageOpen}
+          folderId={session.folder.id}
+        />
+      )}
       {error && (
         <p role="alert" className="text-xs text-destructive">
           {error}

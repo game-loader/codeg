@@ -12,6 +12,7 @@ import {
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
+  TriangleAlert,
   Undo2,
   X,
 } from "lucide-react"
@@ -73,8 +74,10 @@ import {
   type ConfigSyncSettingsInput,
   type DomainCounts,
   type PickedConfigImport,
+  type RemoteConflict,
   type RollbackSnapshot,
 } from "@/lib/config-sync"
+import { adoptSyncedAppearance } from "@/lib/appearance-sync"
 
 /** Fixed choices instead of a free number field: the interval only has to be
  *  "how stale may the remote copy be", and an open input invites 0 or 99999. */
@@ -88,11 +91,13 @@ const SCOPE_INCLUDED = [
   "quickMessages",
   "taskTemplates",
   "preferences",
+  "appearance",
 ] as const
 
 const SCOPE_EXCLUDED = [
   "conversations",
   "uploads",
+  "backgroundImage",
   "workspaces",
   "mcp",
   "credentials",
@@ -185,6 +190,16 @@ export function ConfigSyncSettings() {
 
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null)
   const [lastError, setLastError] = useState<string | null>(null)
+  const [lastPulledAt, setLastPulledAt] = useState<string | null>(null)
+  /** The remote holds a snapshot this machine has not seen, so uploads are
+   *  held back until the user restores it or chooses to replace it. */
+  const [conflict, setConflict] = useState<RemoteConflict | null>(null)
+  /** The snapshot the open overwrite confirmation names. Fixed when the
+   *  dialog opens: a status event that replaces `conflict` meanwhile must not
+   *  quietly change what the user is about to confirm. */
+  const [overwriteTarget, setOverwriteTarget] = useState<RemoteConflict | null>(
+    null
+  )
 
   const [busy, setBusy] = useState<
     | null
@@ -265,6 +280,8 @@ export function ConfigSyncSettings() {
         setIntervalMinutes(settings.intervalMinutes)
         setLastSyncAt(state.lastSyncAt)
         setLastError(state.lastError)
+        setLastPulledAt(state.lastPulledAt ?? null)
+        setConflict(state.conflict ?? null)
       } catch (err) {
         console.error("[config-sync] failed to load settings", err)
       } finally {
@@ -284,6 +301,7 @@ export function ConfigSyncSettings() {
     void listenConfigSyncStatus((event) => {
       setLastSyncAt(event.lastSyncAt)
       setLastError(event.lastError)
+      setConflict(event.conflict ?? null)
     }, backendPlatform).then((fn) => {
       if (disposed) fn()
       else unlisten = fn
@@ -419,11 +437,22 @@ export function ConfigSyncSettings() {
     }
   }, [currentInput, localize, t, backendPlatform])
 
+  /**
+   * "Sync now". It does not replace a remote snapshot this machine has not
+   * seen either: that comes back as a conflict, and the user picks between
+   * restoring it and replacing it.
+   */
   const handleUpload = useCallback(async () => {
     setBusy("upload")
     try {
       const outcome = await uploadConfigNow(backendPlatform)
       if (!mounted.current) return
+      if (outcome.conflict) {
+        setConflict(outcome.conflict)
+        setOverwriteTarget(outcome.conflict)
+        return
+      }
+      setConflict(null)
       setLastSyncAt(outcome.syncedAt)
       setLastError(null)
       toast.success(t("uploaded"))
@@ -435,6 +464,37 @@ export function ConfigSyncSettings() {
       if (mounted.current) setBusy(null)
     }
   }, [localize, t, backendPlatform])
+
+  /** Replace exactly the snapshot the user was shown. If another machine
+   *  has replaced it in the meantime, that is a new decision, not this one. */
+  const handleConfirmOverwrite = useCallback(async () => {
+    if (!overwriteTarget) return
+    const named = overwriteTarget.sha256
+    setOverwriteTarget(null)
+    setBusy("upload")
+    try {
+      const outcome = await uploadConfigNow(
+        { overwriteRemoteSha256: named },
+        backendPlatform
+      )
+      if (!mounted.current) return
+      if (outcome.conflict) {
+        setConflict(outcome.conflict)
+        toast.error(t("conflictChanged"))
+        return
+      }
+      setConflict(null)
+      setLastSyncAt(outcome.syncedAt)
+      setLastError(null)
+      toast.success(t("uploaded"))
+    } catch (err) {
+      const message = localize(err)
+      if (mounted.current) setLastError(message)
+      toast.error(message)
+    } finally {
+      if (mounted.current) setBusy(null)
+    }
+  }, [overwriteTarget, localize, t, backendPlatform])
 
   /** Look before overwriting: the confirmation names the machine and time the
    *  remote snapshot came from. */
@@ -461,10 +521,17 @@ export function ConfigSyncSettings() {
     setBusy("download")
     try {
       const outcome = await downloadAndApplyConfig(backendPlatform)
+      // Before the mount check: the values belong in this window's storage
+      // even if the panel itself has gone away.
+      adoptSyncedAppearance(
+        outcome.applied.appearance,
+        backendPlatform.getTransport
+      )
       if (!mounted.current) return
-      // Providers, appearance, and language are read once at launch, so the
-      // window the user is looking at keeps showing the old values. Saying so
-      // is the difference between "it worked" and "it did nothing".
+      setConflict(null)
+      setLastPulledAt(new Date().toISOString())
+      // Appearance updates live above. Providers and language still need a
+      // restart, so keep the hint for the values this window has cached.
       toast.success(t("restored", { count: outcome.applied.total }), {
         description: appliedDescription(outcome.applied),
       })
@@ -515,6 +582,10 @@ export function ConfigSyncSettings() {
     setBusy("import")
     try {
       const result = await importPickedConfig(source, backendPlatform)
+      adoptSyncedAppearance(
+        result.applied.appearance,
+        backendPlatform.getTransport
+      )
       if (mounted.current) {
         toast.success(t("imported", { count: result.applied.total }), {
           description: appliedDescription(result.applied),
@@ -547,6 +618,10 @@ export function ConfigSyncSettings() {
     setBusy("rollback")
     try {
       const result = await applyConfigRollback(id, backendPlatform)
+      adoptSyncedAppearance(
+        result.applied.appearance,
+        backendPlatform.getTransport
+      )
       if (mounted.current) {
         toast.success(t("rolledBack", { count: result.applied.total }), {
           description: appliedDescription(result.applied),
@@ -572,6 +647,15 @@ export function ConfigSyncSettings() {
   ])
 
   const syncedLabel = formatTimestamp(lastSyncAt)
+  const pulledLabel = formatTimestamp(lastPulledAt)
+  const conflictDevice = conflict?.sourceDevice ?? t("conflictUnknownDevice")
+  const conflictTime =
+    formatTimestamp(conflict?.createdAt ?? null) ?? t("rollbackUnknownTime")
+  const overwriteDevice =
+    overwriteTarget?.sourceDevice ?? t("conflictUnknownDevice")
+  const overwriteTime =
+    formatTimestamp(overwriteTarget?.createdAt ?? null) ??
+    t("rollbackUnknownTime")
   // Only the hosted services need a setup note; "custom" has nothing to say.
   const presetHint = preset === "custom" ? null : t(`presetHint.${preset}`)
   const remoteBusy = busy === "upload" || busy === "download"
@@ -1024,12 +1108,52 @@ export function ConfigSyncSettings() {
               </Button>
             </div>
 
+            {conflict ? (
+              <div
+                role="alert"
+                className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3"
+              >
+                <div className="flex items-start gap-2">
+                  <TriangleAlert className="h-4 w-4 shrink-0 text-amber-600" />
+                  <div className="space-y-1">
+                    <p className="text-xs font-medium">{t("conflictTitle")}</p>
+                    <p className="text-2xs text-muted-foreground leading-5">
+                      {t("conflictBody", {
+                        device: conflictDevice,
+                        time: conflictTime,
+                      })}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2 pl-6">
+                  <Button
+                    size="sm"
+                    onClick={handleOpenRestore}
+                    disabled={busy !== null}
+                  >
+                    {t("conflictRestore")}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setOverwriteTarget(conflict)}
+                    disabled={busy !== null}
+                  >
+                    {t("conflictOverwrite")}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
             <div className="text-2xs text-muted-foreground space-y-1">
               <p>
                 {syncedLabel
                   ? t("lastSyncAt", { time: syncedLabel })
                   : t("neverSynced")}
               </p>
+              {pulledLabel ? (
+                <p>{t("lastPulledAt", { time: pulledLabel })}</p>
+              ) : null}
               {lastError ? (
                 <p className="text-destructive">
                   {t("lastError", { message: lastError })}
@@ -1129,6 +1253,37 @@ export function ConfigSyncSettings() {
               }}
             >
               {t("rollbackConfirmAction")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={overwriteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setOverwriteTarget(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("overwriteConfirmTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("overwriteConfirmBody", {
+                device: overwriteDevice,
+                time: overwriteTime,
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={(e) => {
+                e.preventDefault()
+                void handleConfirmOverwrite()
+              }}
+            >
+              {t("overwriteConfirmAction")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

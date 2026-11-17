@@ -1,7 +1,8 @@
 "use client"
 
 import { useEffect, useState, useSyncExternalStore } from "react"
-import { folderForgeRemote } from "@/lib/api"
+import { useBackendApi } from "@/contexts/backend-client-context"
+import * as defaultApi from "@/lib/api"
 import type { ForgeProviderId, ForgeRemote } from "@/lib/types"
 
 /**
@@ -21,15 +22,33 @@ import type { ForgeProviderId, ForgeRemote } from "@/lib/types"
  * ask for it to be re-read when it mounts (`revalidate`), keeping what is
  * known on screen meanwhile.
  */
-const remotes = new Map<number, ForgeRemote | null>()
-const inFlight = new Set<number>()
-const listeners = new Set<() => void>()
+type ForgeApi = Pick<typeof defaultApi, "folderForgeRemote">
 
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener)
-  return () => {
-    listeners.delete(listener)
+function createCache() {
+  const remotes = new Map<number, ForgeRemote | null>()
+  const inFlight = new Set<number>()
+  const listeners = new Set<() => void>()
+  return {
+    remotes,
+    inFlight,
+    listeners,
+    subscribe(listener: () => void) {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
   }
+}
+
+const caches = new WeakMap<ForgeApi, ReturnType<typeof createCache>>()
+function cacheFor(api: ForgeApi) {
+  let cache = caches.get(api)
+  if (!cache) {
+    cache = createCache()
+    caches.set(api, cache)
+  }
+  return cache
 }
 
 /** Whether two readings say the same thing about the folder — what decides
@@ -49,8 +68,10 @@ function sameRemote(a: ForgeRemote | null, b: ForgeRemote | null): boolean {
 /** Record the remote a folder resolved to (`null`: none readable). */
 export function rememberForgeRemote(
   folderId: number,
-  remote: ForgeRemote | null
+  remote: ForgeRemote | null,
+  api: ForgeApi = defaultApi
 ): void {
+  const { remotes, listeners } = cacheFor(api)
   if (
     remotes.has(folderId) &&
     sameRemote(remotes.get(folderId) ?? null, remote)
@@ -60,12 +81,18 @@ export function rememberForgeRemote(
   for (const listener of listeners) listener()
 }
 
-function ensureForgeRemote(folderId: number, revalidate: boolean): void {
+function ensureForgeRemote(
+  api: ForgeApi,
+  folderId: number,
+  revalidate: boolean
+): void {
+  const { remotes, inFlight } = cacheFor(api)
   if (inFlight.has(folderId)) return
   if (remotes.has(folderId) && !revalidate) return
   inFlight.add(folderId)
-  folderForgeRemote(folderId)
-    .then((remote) => rememberForgeRemote(folderId, remote))
+  api
+    .folderForgeRemote(folderId)
+    .then((remote) => rememberForgeRemote(folderId, remote, api))
     .catch(() => {
       // Left as it was rather than recorded: a transient failure must not pin
       // "no remote" (or the default wording) on a folder for the session.
@@ -84,6 +111,8 @@ export function useFolderForgeRemote(
   folderId: number | null,
   options?: { revalidate?: boolean }
 ): ForgeRemote | null {
+  const api = useBackendApi()
+  const { remotes, subscribe } = cacheFor(api)
   const revalidate = options?.revalidate === true
   const remote = useSyncExternalStore(
     subscribe,
@@ -91,8 +120,8 @@ export function useFolderForgeRemote(
     () => null
   )
   useEffect(() => {
-    if (folderId != null) ensureForgeRemote(folderId, revalidate)
-  }, [folderId, revalidate])
+    if (folderId != null) ensureForgeRemote(api, folderId, revalidate)
+  }, [api, folderId, revalidate])
   return remote
 }
 
@@ -124,7 +153,9 @@ export type FreshForgeRemote =
 export function useFreshFolderForgeRemote(
   folderId: number | null
 ): FreshForgeRemote {
+  const api = useBackendApi()
   const [read, setRead] = useState<{
+    api: ForgeApi
     folderId: number
     result: FreshForgeRemote
   } | null>(null)
@@ -134,28 +165,30 @@ export function useFreshFolderForgeRemote(
     setRead(null)
     if (folderId == null) return
     let cancelled = false
-    folderForgeRemote(folderId)
+    api
+      .folderForgeRemote(folderId)
       .then((remote) => {
         // A read overtaken by a newer ask is not reported either: answers
         // landing out of order must not leave the older one in the cache.
         if (cancelled) return
-        rememberForgeRemote(folderId, remote)
-        setRead({ folderId, result: { status: "ready", remote } })
+        rememberForgeRemote(folderId, remote, api)
+        setRead({ api, folderId, result: { status: "ready", remote } })
       })
       .catch(() => {
-        if (!cancelled) setRead({ folderId, result: { status: "failed" } })
+        if (!cancelled) setRead({ api, folderId, result: { status: "failed" } })
       })
     return () => {
       cancelled = true
     }
-  }, [folderId])
+  }, [api, folderId])
   if (folderId == null) return { status: "idle" }
-  if (read == null || read.folderId !== folderId) return { status: "loading" }
+  if (read == null || read.folderId !== folderId || read.api !== api) {
+    return { status: "loading" }
+  }
   return read.result
 }
 
 /** Test seam: forget every folder, so each test starts from no lookups. */
 export function resetForgeProviderCacheForTests(): void {
-  remotes.clear()
-  inFlight.clear()
+  caches.delete(defaultApi)
 }

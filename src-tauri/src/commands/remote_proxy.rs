@@ -490,6 +490,75 @@ fn clamp_http_timeout_ms(ms: u64) -> u64 {
     ms.min(HTTP_TIMEOUT_MAX.as_millis() as u64)
 }
 
+/// Cache a previously issued forge image locally. The image URL is a narrow,
+/// capability-bearing resource path, never a caller-supplied host or file.
+#[tauri::command]
+pub async fn remote_cache_forge_image(
+    db: State<'_, AppDatabase>,
+    proxy: State<'_, Arc<RemoteProxyState>>,
+    connection_id: i32,
+    url: String,
+    config_revision: Option<String>,
+) -> Result<crate::forge::ForgeImage, AppCommandError> {
+    use crate::forge::{image_cache, ForgeError};
+
+    if !image_cache::valid_image_url(&url) {
+        return Err(AppCommandError::invalid_input(
+            "Invalid cached forge image URL",
+        ));
+    }
+    let binding = proxy
+        .bindings
+        .bind(&db.conn, connection_id, config_revision.as_deref())
+        .await?;
+    let conn = &binding.connection;
+    binding
+        .run(async {
+            let endpoint = format!("{}{}", conn.base_url.trim_end_matches('/'), url);
+            let key = image_cache::cache_key(&[
+                "codeg-server",
+                &connection_id.to_string(),
+                &conn.base_url,
+                &conn.token,
+                &conn.config_revision,
+                &url,
+            ]);
+            let client = crate::forge::http_client()?;
+            let image = image_cache::get_or_download(
+                &crate::paths::codeg_forge_images_root(),
+                key,
+                image_cache::IMAGE_MAX_BYTES,
+                || async {
+                    let response = client
+                        .get(endpoint)
+                        .bearer_auth(conn.token.trim())
+                        .headers(conn.headers.to_header_map())
+                        .header("X-Requested-With", "XMLHttpRequest")
+                        .send()
+                        .await
+                        .map_err(|error| ForgeError::Network(error.without_url().to_string()))?;
+                    match response.status().as_u16() {
+                        200 => Ok(response),
+                        401 => Err(ForgeError::Auth(
+                            "Remote workspace token was rejected".into(),
+                        )),
+                        status => Err(ForgeError::Api {
+                            status,
+                            message: "Remote image download failed".into(),
+                        }),
+                    }
+                },
+            )
+            .await
+            .map_err(|error| match error {
+                ForgeError::Auth(message) => AppCommandError::authentication_failed(message),
+                error => error.into(),
+            })?;
+            Ok(image_cache::local_image_url(image).await?)
+        })
+        .await
+}
+
 // ─── Multipart upload proxy ───────────────────────────────────────────
 
 /// Progress channel for chat-attachment uploads to a remote workspace.
@@ -686,7 +755,6 @@ pub async fn read_local_file_for_upload(
 /// Error mapping mirrors `remote_http_call`: 401 → `AuthenticationFailed`,
 /// other non-2xx prefers a structured `AppCommandError` body (preserving
 /// `i18n_key` for the user toast), else wraps in `NetworkError`.
-#[allow(clippy::too_many_arguments)] // flat Tauri command args, like the rest of this module
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn remote_upload_attachment(

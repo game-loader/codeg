@@ -3,8 +3,8 @@
  *
  * Mirrors `src-tauri/src/commands/config_sync/`: a config-only snapshot
  * (providers, agent settings, custom agents, quick messages, task templates,
- * whitelisted preferences) that can be written to a single file or pushed to
- * the user's own WebDAV share.
+ * whitelisted preferences, and the appearance settings from `appearance-sync`)
+ * that can be written to a single file or pushed to the user's own WebDAV share.
  *
  * Kept out of `api.ts` on purpose — that module is already thousands of lines
  * and this feature has its own vocabulary.
@@ -29,6 +29,7 @@ export const CONFIG_DOMAIN_IDS = [
   "quickMessages",
   "taskTemplates",
   "preferences",
+  "appearance",
 ] as const
 
 export type ConfigDomainId = (typeof CONFIG_DOMAIN_IDS)[number]
@@ -61,6 +62,9 @@ export interface ApplyReport {
   /** Entries stored under another name than the file's, because a different
    *  one here already had it (assistants). Absent from an older backend. */
   renamed?: number
+  /** localStorage appearance values the client that ran this apply should
+   *  adopt (`adoptSyncedAppearance`). Absent when there are none. */
+  appearance?: Record<string, string>
 }
 
 export interface ConfigExportSummary {
@@ -143,11 +147,27 @@ export interface ConfigSyncState {
   lastUploadedTarget: string | null
   lastSyncAt: string | null
   lastError: string | null
+  /** When this machine last restored the remote snapshot. */
+  lastPulledAt?: string | null
+  /** Uploads are held back: the remote holds a snapshot this machine neither
+   *  wrote nor restored. Only ever for the currently configured location. */
+  conflict?: RemoteConflict | null
+}
+
+/** A remote snapshot this machine has not seen, which an upload would have
+ *  replaced. */
+export interface RemoteConflict {
+  /** Pass back as `overwriteRemoteSha256` to replace exactly this snapshot. */
+  sha256: string
+  /** `null` when the remote manifest cannot be read. */
+  sourceDevice: string | null
+  createdAt: string | null
 }
 
 export interface ConfigSyncStatusEvent {
   lastSyncAt: string | null
   lastError: string | null
+  conflict?: RemoteConflict | null
 }
 
 export interface UploadOutcome {
@@ -157,6 +177,9 @@ export interface UploadOutcome {
   sha256: string
   counts: DomainCounts
   syncedAt: string
+  /** Set when nothing was sent because the remote holds a snapshot this
+   *  machine has not seen — a decision for the user, not a failure. */
+  conflict?: RemoteConflict | null
 }
 
 export interface DownloadOutcome {
@@ -376,13 +399,22 @@ export async function testConfigSyncConnection(
     .call<null>("config_sync_test_connection", { settings })
 }
 
-/** Manual "sync now": uploads even when the hash is unchanged. */
+/** Manual "sync now": uploads even when the hash is unchanged — but never
+ *  over a remote snapshot this machine has not seen, unless
+ *  `overwriteRemoteSha256` names exactly that snapshot (the `sha256` of the
+ *  conflict the previous call returned, after the user confirmed).
+ *  The platform-only call remains supported for existing bound callers. */
 export async function uploadConfigNow(
+  optionsOrPlatform: { overwriteRemoteSha256?: string } | BackendPlatform = {},
   backendPlatform: BackendPlatform = legacyBackendPlatform
 ): Promise<UploadOutcome> {
-  return backendPlatform
-    .getTransport()
-    .call<UploadOutcome>("config_sync_upload_now", {})
+  const options =
+    "getTransport" in optionsOrPlatform ? undefined : optionsOrPlatform
+  const platform =
+    "getTransport" in optionsOrPlatform ? optionsOrPlatform : backendPlatform
+  return platform.getTransport().call<UploadOutcome>("config_sync_upload_now", {
+    overwriteRemoteSha256: options?.overwriteRemoteSha256 ?? null,
+  })
 }
 
 /** `null` when the remote has no snapshot yet. */

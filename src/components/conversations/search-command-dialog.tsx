@@ -106,7 +106,8 @@ export function SearchCommandDialog({
     reset: resetFileTree,
   } = useFileTree({
     folderPath: folderPath || undefined,
-    enabled: activeTab === "files",
+    enabled: open && activeTab === "files",
+    query,
   })
 
   // Compute which agent types exist in current folder
@@ -114,8 +115,8 @@ export function SearchCommandDialog({
     new Set(conversations.map((c) => c.agent_type))
   ).sort(compareAgentType)
 
-  // Rank files by relevance (name/path tiers + fuzzy subsequence), scanning the
-  // full list so a deeply nested match isn't crowded out by shallower ones.
+  // The backend ranks the whole workspace before capping the response, so a
+  // deeply nested match remains reachable without retaining the full index.
   const filteredFiles = useMemo(
     () => rankFileMatches(query, allFiles, 100),
     [allFiles, query]
@@ -164,7 +165,9 @@ export function SearchCommandDialog({
       setAgentFilter(null)
       setResults([])
       setActiveTab("conversations")
-      resetFileTree()
+      // Like the full re-list this replaced, each opening searches files as
+      // they are now, not a native snapshot left over from before it opened.
+      resetFileTree(true)
     }
   }, [open, resetFileTree])
 

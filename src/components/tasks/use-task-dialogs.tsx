@@ -222,6 +222,8 @@ export function useTaskDialogs({
       onFollowUp: () => openFollowUp(task),
       onEdit: () => openEdit(task),
       onSchedule: () => openSchedule(task),
+      onStopBackgroundWait: () =>
+        void act(() => backendApi.workTaskStopBackgroundWait(task.id)),
     }),
     [
       act,

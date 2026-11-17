@@ -6,7 +6,13 @@ import { useBackendApi } from "@/contexts/backend-client-context"
 import { useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import { CircleDot, GitPullRequest, Info, MessageSquare } from "lucide-react"
+import {
+  Bot,
+  CircleDot,
+  GitPullRequest,
+  Info,
+  MessageSquare,
+} from "lucide-react"
 
 import { toErrorMessage } from "@/lib/app-error"
 import {
@@ -187,6 +193,7 @@ function ForgeSettingsScope({
   const [issueScenario, setIssueScenario] = useState<ForgeScenarioId>("fix")
   const [prScenario, setPrScenario] = useState<ForgeScenarioId>("review_fix")
   const [writeback, setWriteback] = useState(true)
+  const [commentFooter, setCommentFooter] = useState(true)
   const [prompts, setPrompts] = useState<Record<string, string>>({})
   const [promptKey, setPromptKey] = useState<string>(PROMPT_KEYS[0])
   const [auto, setAuto] = useState<ForgeAutoSettings>(
@@ -217,6 +224,7 @@ function ForgeSettingsScope({
         setIssueScenario(initialScenario(false, s?.default_issue_scenario))
         setPrScenario(initialScenario(true, s?.default_pr_scenario))
         setWriteback(s?.writeback_default ?? true)
+        setCommentFooter(s?.comment_footer ?? true)
         setPrompts(s?.scenario_prompts ?? {})
         setAuto(autoSettingsOf(s))
       })
@@ -271,6 +279,7 @@ function ForgeSettingsScope({
               default_issue_scenario: issueScenario,
               default_pr_scenario: prScenario,
               writeback_default: writeback,
+              comment_footer: commentFooter,
               // Blank entries are dropped here as well as server-side: the
               // object that comes back is what the page will hand the next
               // trigger dialog, and it should not carry keys that mean nothing.
@@ -420,6 +429,19 @@ function ForgeSettingsScope({
                       id="forge-writeback-default"
                       checked={writeback}
                       onCheckedChange={setWriteback}
+                    />
+                  }
+                />
+                <SettingRow
+                  icon={Bot}
+                  title={t("settingsCommentFooter")}
+                  description={t("settingsCommentFooterHint")}
+                  htmlFor="forge-comment-footer"
+                  control={
+                    <Switch
+                      id="forge-comment-footer"
+                      checked={commentFooter}
+                      onCheckedChange={setCommentFooter}
                     />
                   }
                 />

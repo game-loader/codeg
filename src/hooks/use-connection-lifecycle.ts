@@ -4,6 +4,7 @@ import { useAgentDisplay } from "@/hooks/use-agent-display"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { useAcpActions } from "@/contexts/acp-connections-context"
+import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import { useTaskContext } from "@/contexts/task-context"
 import { useConnection, type UseConnectionReturn } from "@/hooks/use-connection"
 import { extractAppCommandError } from "@/lib/app-error"
@@ -13,6 +14,8 @@ import {
   type ConnectionWork,
 } from "@/lib/connection-teardown"
 import { TurnBusyError } from "@/lib/turn-busy"
+import { ConversationMovedError } from "@/lib/conversation-moved"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
 import { type AgentType, type PromptDraft } from "@/lib/types"
 
 interface UseConnectionLifecycleOptions {
@@ -142,6 +145,7 @@ export function useConnectionLifecycle({
   isTransientUnmount,
 }: UseConnectionLifecycleOptions): UseConnectionLifecycleReturn {
   const { getAgentLabel } = useAgentDisplay()
+  const { workspace } = useBackendStores({ workspace: legacyWorkspace })
 
   const t = useTranslations("Folder.chat.connectionLifecycle")
   const { setActiveKey, releaseActiveKey, touchActivity } = useAcpActions()
@@ -544,6 +548,27 @@ export function useConnectionLifecycle({
           onTurnInProgress?.()
           return
         }
+        if (e instanceof ConversationMovedError) {
+          // The conversation was moved to another project and this connection
+          // still runs in the folder it left. Say where it went and pull the
+          // rows: the tab follows its row to the new folder, which reconnects
+          // the agent there. The message is not resent on its own — the user
+          // sends it again from the new folder.
+          const folder =
+            e.folderId != null
+              ? workspace.getState().getFolder(e.folderId)
+              : undefined
+          notify({
+            level: "warning",
+            key: `conversation-moved:${contextKey}`,
+            title: t("errors.conversationMoved", {
+              folder: folder?.alias || folder?.name || "",
+            }),
+          })
+          void workspace.getState().refreshConversations()
+          onSendFailed?.(e)
+          return
+        }
         console.error("[ConnLifecycle] sendPrompt:", e)
         // The composer already cleared itself (sends are fire-and-forget), so
         // without a toast a failed send — an oversized body 413'd by the
@@ -566,7 +591,7 @@ export function useConnectionLifecycle({
         onSendFailed?.(e)
       })
     },
-    [connSetMode, sendPrompt, contextKey, touchActivity, t]
+    [connSetMode, sendPrompt, contextKey, touchActivity, t, workspace]
   )
 
   const handleCancel = useCallback(() => {
