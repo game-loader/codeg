@@ -12673,11 +12673,13 @@ async fn apply_preferred_session_options(
     let mut options = initial_config_options;
     // Ids this launch must not replay a saved preference for — see
     // `config_option_never_replayed`, which the option probe shares.
-    let (pinned, agent_type) = {
+    let (pinned, agent_type, resuming_claude) = {
         let guard = state.read().await;
         (
             guard.env_pinned_config_option_ids.clone(),
             guard.agent_type,
+            guard.agent_type == AgentType::ClaudeCode
+                && guard.requested_session_id.as_deref() == Some(session_id.0.as_ref()),
         )
     };
     let never_replayed =
@@ -12710,8 +12712,13 @@ async fn apply_preferred_session_options(
         // with no advertised-list check (verified in the 1.7.0 bundle). So let
         // the agent decide.
         let advertised = options.iter().find(|o| o.id.to_string() == *config_id);
-        let already_matches =
-            advertised.is_some_and(|o| config_option_already_holds(o, value_id.as_str()));
+        // On resume claude-agent-acp can report the transcript's Opus row
+        // while the CLI sends its first prompt with ANTHROPIC_MODEL (Fable).
+        // Only an explicit model set synchronizes the CLI in that case.
+        let already_matches = advertised.is_some_and(|o| {
+            config_option_already_holds(o, value_id.as_str())
+                && !(resuming_claude && is_model_config_option(o))
+        });
         if already_matches {
             continue;
         }
@@ -47104,6 +47111,58 @@ mod tests {
             received,
             vec![("model".to_string(), "gemini-3.1-pro".to_string())]
         );
+    }
+
+    #[tokio::test]
+    async fn only_a_resumed_claude_session_sets_an_already_matching_model() {
+        use agent_client_protocol::schema::v1::SetSessionConfigOptionResponse;
+
+        for (agent_type, requested_id, expect_set) in [
+            (AgentType::ClaudeCode, Some("s1"), true),
+            (AgentType::ClaudeCode, None, false),
+            (AgentType::ClaudeCode, Some("other"), false),
+            (AgentType::OpenCode, Some("s1"), false),
+        ] {
+            let (client_end, agent_end) = agent_client_protocol::Channel::duplex();
+            let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let log = Arc::clone(&received);
+            let agent = tokio::spawn(
+                Agent.builder().on_receive_request(
+                    async move |req: SetSessionConfigOptionRequest,
+                                responder: Responder<SetSessionConfigOptionResponse>,
+                                _cx: ConnectionTo<Client>| {
+                        log.lock().unwrap().push(serde_json::to_value(req).unwrap());
+                        responder.respond(SetSessionConfigOptionResponse::new(vec![
+                            claude_model_selector("opus"),
+                        ]))
+                    },
+                    on_receive_request!(),
+                ).connect_with(agent_end, async |_cx: ConnectionTo<Client>| {
+                    std::future::pending::<Result<(), agent_client_protocol::Error>>().await
+                }),
+            );
+            Client.builder().connect_with(client_end, async move |cx: ConnectionTo<Agent>| {
+                let mut state = SessionState::new("conn".into(), agent_type, None, "web".into(), None);
+                state.requested_session_id = requested_id.map(String::from);
+                let state = Arc::new(RwLock::new(state));
+                let mut session = AgentSession::attach(&cx, NewSessionResponse::new(SessionId::new("s1")))?;
+                apply_preferred_session_options(
+                    &cx, &mut session, &state, &EventEmitter::Noop, None,
+                    &BTreeMap::from([("model".into(), "opus".into())]), None,
+                    vec![claude_model_selector("opus")],
+                ).await;
+                Ok(())
+            }).await.unwrap();
+            agent.abort();
+            let sent = received.lock().unwrap();
+            if expect_set {
+                assert_eq!(sent.as_slice(), &[serde_json::json!({
+                    "sessionId": "s1", "configId": "model", "value": "opus"
+                })]);
+            } else {
+                assert!(sent.is_empty());
+            }
+        }
     }
 
     /// The claude shape: a model select plus the effort option that hangs off it.
