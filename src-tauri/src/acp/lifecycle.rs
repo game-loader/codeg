@@ -38,8 +38,10 @@ use tokio::sync::RwLock;
 /// of times per turn, so 64 slots is comfortable headroom for a sustained
 /// SQLite stall without forcing the dispatcher to block on `send`.
 /// (SessionStarted, TurnComplete, ConversationLinked, NativeSessionTitle,
-/// TranscriptRolledOver, ToolApproval, SelectorsReady, ModeChanged,
-/// SessionConfigOptions, Disconnected, Error.) `ToolApproval` is one per
+/// TranscriptRolledOver, ToolApproval, Disconnected, Error, and the selector
+/// events the conversation's stored selection follows — SessionModes,
+/// ModeChanged, SessionConfigOptions, SelectorsReady, ComposerModeChanged —
+/// which arrive per establishment or per pick.) `ToolApproval` is one per
 /// answered permission card, so it is paced by a person.
 const WORKER_QUEUE_CAPACITY: usize = 64;
 
@@ -68,12 +70,14 @@ fn is_lifecycle_relevant(event: &AcpEvent) -> bool {
         AcpEvent::SessionStarted { .. }
             | AcpEvent::TurnComplete { .. }
             | AcpEvent::ConversationLinked { .. }
+            | AcpEvent::SessionModes { .. }
+            | AcpEvent::ModeChanged { .. }
+            | AcpEvent::SessionConfigOptions { .. }
+            | AcpEvent::SelectorsReady
+            | AcpEvent::ComposerModeChanged { .. }
             | AcpEvent::NativeSessionTitle { .. }
             | AcpEvent::TranscriptRolledOver { .. }
             | AcpEvent::ToolApproval { .. }
-            | AcpEvent::SelectorsReady
-            | AcpEvent::ModeChanged { .. }
-            | AcpEvent::SessionConfigOptions { .. }
             | AcpEvent::StatusChanged {
                 status: ConnectionStatus::Disconnected
             }
@@ -140,6 +144,22 @@ struct CachedConn {
     emitter: EventEmitter,
 }
 
+/// A connection's `(state, emitter)`, as the manager hands them out.
+type ConnHandle = (Arc<RwLock<SessionState>>, EventEmitter);
+
+/// The connection's handle from the manager while it is still registered
+/// (`true`), else the one its worker kept from an earlier event (`false`).
+async fn live_or_known(
+    manager: &ConnectionManager,
+    connection_id: &str,
+    known: Option<&ConnHandle>,
+) -> Option<(ConnHandle, bool)> {
+    match manager.get_state_and_emitter(connection_id).await {
+        Some(handle) => Some((handle, true)),
+        None => known.cloned().map(|handle| (handle, false)),
+    }
+}
+
 /// Backoff schedule for `handle_event` DB writes. Most transient
 /// SQLite contention clears within the first retry; the third gives a
 /// final chance before we fall back to "log loudly and move on".
@@ -159,8 +179,9 @@ async fn handle_event_with_retry(
     manager: &ConnectionManager,
     envelope: &EventEnvelope,
     broker: Option<&Arc<DelegationBroker>>,
+    known: Option<&ConnHandle>,
 ) {
-    match handle_event(db_conn, manager, envelope, broker).await {
+    match handle_event(db_conn, manager, envelope, broker, known).await {
         Ok(()) => return,
         Err(e) => {
             tracing::warn!(
@@ -171,7 +192,7 @@ async fn handle_event_with_retry(
     }
     for (attempt, backoff) in HANDLE_EVENT_RETRY_BACKOFFS.iter().enumerate() {
         tokio::time::sleep(*backoff).await;
-        match handle_event(db_conn, manager, envelope, broker).await {
+        match handle_event(db_conn, manager, envelope, broker, known).await {
             Ok(()) => return,
             Err(e) => {
                 let attempt_num = attempt + 2;
@@ -193,7 +214,8 @@ async fn handle_event_with_retry(
     // Given up. A turn's status write is released, so a CLI run's fallback —
     // the one other writer — may still make it.
     if matches!(envelope.payload, AcpEvent::TurnComplete { .. }) {
-        if let Some(state) = manager.get_state(&envelope.connection_id).await {
+        if let Some(((state, _), _)) = live_or_known(manager, &envelope.connection_id, known).await
+        {
             state
                 .write()
                 .await
@@ -315,11 +337,62 @@ async fn persist_session_selectors(
     Ok(())
 }
 
+/// `known` is the connection's handle kept by its worker. Only a
+/// `TurnComplete` falls back to it, once the manager has already let the
+/// connection go — see that arm.
+/// [`write_turn_status`] for a turn whose connection was already dropped when
+/// its `TurnComplete` got here: written only over a row still `InProgress`.
+///
+/// A delegation child is left alone. Its broker call is not completed on this
+/// path, so the trailing `Disconnected` cancels it — and the row has to stay in
+/// step with that (`Cancelled`), or `resume_delegation` would take it for a
+/// finished child and refuse to resume it.
+async fn write_dropped_turn_status(
+    db_conn: &DatabaseConnection,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    conversation_id: i32,
+    stop_reason: &str,
+) -> Result<(), DbError> {
+    use crate::db::entities::conversation;
+    use sea_orm::EntityTrait;
+
+    let Some(status) = turn_complete_status(stop_reason) else {
+        return Ok(());
+    };
+    let row = conversation::Entity::find_by_id(conversation_id)
+        .one(db_conn)
+        .await?;
+    if row.is_none_or(|row| row.parent_id.is_some()) {
+        return Ok(());
+    }
+    let changed = conversation_service::update_status_if(
+        db_conn,
+        conversation_id,
+        ConversationStatus::InProgress,
+        status.clone(),
+    )
+    .await?;
+    if changed {
+        emit_with_state(
+            state,
+            emitter,
+            AcpEvent::ConversationStatusChanged {
+                conversation_id,
+                status,
+            },
+        )
+        .await;
+    }
+    Ok(())
+}
+
 pub(crate) async fn handle_event(
     db_conn: &DatabaseConnection,
     manager: &ConnectionManager,
     envelope: &EventEnvelope,
     broker: Option<&Arc<DelegationBroker>>,
+    known: Option<&ConnHandle>,
 ) -> Result<(), DbError> {
     match &envelope.payload {
         // NOTE: parent-side `delegate_to_agent` tool_call_id capture used to
@@ -393,8 +466,19 @@ pub(crate) async fn handle_event(
             // CAS InProgress → Cancelled at the user-cancel entry point), so
             // we leave it alone here. `completed` transitions remain
             // frontend-driven.
-            let Some((state_arc, emitter)) =
-                manager.get_state_and_emitter(&envelope.connection_id).await
+            //
+            // Whoever ends a turn may drop the connection the moment it sees
+            // this event — the to-do task engine disconnects at once — and get
+            // there before this worker does. The turn still ended: skipping it
+            // would leave the row `InProgress` for the `Disconnected` right
+            // behind to flip to `Cancelled`. So a dropped connection's turn is
+            // settled from the handle the worker kept, but only off a row
+            // nobody has moved since (`InProgress`): whoever dropped it may
+            // have settled the row already (a CLI run's fallback leaving a
+            // user's `Completed` alone, a task cancel), and the broker is not
+            // told — its own disconnect path already answers for the child.
+            let Some(((state_arc, emitter), live)) =
+                live_or_known(manager, &envelope.connection_id, known).await
             else {
                 return Ok(());
             };
@@ -416,6 +500,13 @@ pub(crate) async fn handle_event(
             let Some(cid) = conversation_id else {
                 return Ok(());
             };
+            if !live {
+                if claimed {
+                    write_dropped_turn_status(db_conn, &state_arc, &emitter, cid, stop_reason)
+                        .await?;
+                }
+                return Ok(());
+            }
             if claimed {
                 write_turn_status(db_conn, &state_arc, &emitter, cid, stop_reason).await?;
             }
@@ -3267,14 +3358,49 @@ async fn connection_worker_loop(
     // the terminal work; the second one is a no-op so the broker / DB
     // aren't double-touched.
     let mut terminal_dispatched = false;
+    // The connection's state + emitter, kept from the first event handled so a
+    // selection persist never needs a manager lookup: `disconnect` removes the
+    // entry before the connection stops, and a queued event would otherwise
+    // find nothing. The driver's own final flush covers a connection removed
+    // before this worker saw any event.
+    let mut selection_handle: Option<(Arc<RwLock<SessionState>>, EventEmitter)> = None;
     while let Some(envelope_arc) = rx.recv().await {
         let envelope: &EventEnvelope = envelope_arc.as_ref();
+        if selection_handle.is_none() {
+            selection_handle = manager.get_state_and_emitter(&connection_id).await;
+        }
+        let persists_selection = matches!(
+            envelope.payload,
+            AcpEvent::SessionModes { .. }
+                | AcpEvent::ModeChanged { .. }
+                | AcpEvent::SessionConfigOptions { .. }
+                | AcpEvent::SelectorsReady
+                | AcpEvent::ComposerModeChanged { .. }
+                | AcpEvent::ConversationLinked { .. }
+                | AcpEvent::TurnComplete { .. }
+        );
+        if persists_selection {
+            if let Some((state, emitter)) = selection_handle.as_ref() {
+                // (A link's write authority is taken at the link itself, in
+                // `send_prompt_linked_full` / `fork_session` — never here,
+                // where a delayed event could take it back from a newer
+                // binder.)
+                //
+                // Before the broker forward on `TurnComplete`, so a delegation
+                // child is persisted before the broker can disconnect it.
+                manager
+                    .selection
+                    .persist(&connection_id, state, Some(emitter))
+                    .await;
+            }
+        }
         match &envelope.payload {
             AcpEvent::ConversationLinked {
                 conversation_id, ..
             } => {
                 try_cache_link(&mut cache, &manager, &connection_id, *conversation_id).await;
             }
+            AcpEvent::SessionModes { .. } | AcpEvent::ComposerModeChanged { .. } => {}
             AcpEvent::StatusChanged {
                 status: ConnectionStatus::Disconnected,
             } => {
@@ -3333,7 +3459,14 @@ async fn connection_worker_loop(
                 terminal_dispatched = true;
             }
             _ => {
-                handle_event_with_retry(&db, &manager, envelope, broker.as_ref()).await;
+                handle_event_with_retry(
+                    &db,
+                    &manager,
+                    envelope,
+                    broker.as_ref(),
+                    selection_handle.as_ref(),
+                )
+                .await;
             }
         }
     }
@@ -3366,6 +3499,7 @@ pub fn lifecycle_subscriber_task(
 ) -> impl Future<Output = ()> + Send + 'static {
     let mut rx = bus.subscribe();
     let metrics = Arc::clone(bus.metrics());
+    manager.install_selection_db(db_conn.clone());
     async move {
         // connection_id → worker mailbox. Workers are spawned lazily on the
         // connection's first relevant event and torn down after a terminal
@@ -3560,7 +3694,9 @@ mod tests {
                 session_id: "ext-99".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
         let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
             .await
             .unwrap();
@@ -3602,7 +3738,9 @@ mod tests {
                     approval: approval.clone(),
                 },
             };
-            handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+            handle_event(&db.conn, &mgr, &env, None, None)
+                .await
+                .unwrap();
         }
         // The unbound connection's copy had nowhere to go.
         let kept = tool_approval_service::list_by_conversation(&db.conn, conv.id)
@@ -3638,7 +3776,9 @@ mod tests {
                 transcript_id: "new-sess".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
         let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
             .await
             .unwrap();
@@ -3652,7 +3792,9 @@ mod tests {
                 transcript_id: "newer-sess".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env2, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env2, None, None)
+            .await
+            .unwrap();
         let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
             .await
             .unwrap();
@@ -3720,6 +3862,7 @@ mod tests {
                 config_options: Vec::new(),
             }),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -3739,6 +3882,7 @@ mod tests {
             &db.conn,
             &mgr,
             &selector_event(AcpEvent::SelectorsReady),
+            None,
             None,
         )
         .await
@@ -3765,6 +3909,7 @@ mod tests {
             &selector_event(AcpEvent::ModeChanged {
                 mode_id: "plan".into(),
             }),
+            None,
             None,
         )
         .await
@@ -3795,6 +3940,7 @@ mod tests {
             &db.conn,
             &mgr,
             &selector_event(AcpEvent::SelectorsReady),
+            None,
             None,
         )
         .await
@@ -3835,6 +3981,7 @@ mod tests {
                 transcript_id: "transcript-2".into(),
             }),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -3859,6 +4006,7 @@ mod tests {
             &selector_event(AcpEvent::SessionConfigOptions {
                 config_options: Vec::new(),
             }),
+            None,
             None,
         )
         .await
@@ -3901,7 +4049,9 @@ mod tests {
                 session_id: "ext-99".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
 
         // external_id persisted on the row...
         let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
@@ -3945,7 +4095,9 @@ mod tests {
                 title: "  Fix login flow  ".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
 
         let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
             .await
@@ -3993,7 +4145,7 @@ mod tests {
                 title: "agent title".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &locked_env, None)
+        handle_event(&db.conn, &mgr, &locked_env, None, None)
             .await
             .unwrap();
         let unbound_env = EventEnvelope {
@@ -4003,7 +4155,7 @@ mod tests {
                 title: "should not land anywhere".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &unbound_env, None)
+        handle_event(&db.conn, &mgr, &unbound_env, None, None)
             .await
             .unwrap();
 
@@ -4064,7 +4216,9 @@ mod tests {
                 session_id: "session-S2".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
 
         // The deleted row is untouched: still deleted, still S1, same updated_at.
         let after = conversation::Entity::find_by_id(conv.id)
@@ -4112,7 +4266,9 @@ mod tests {
                 session_id: "should-not-write".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
 
         // Sentinel row must still have no external_id — dispatcher correctly
         // skipped the write because the connection had no conversation_id.
@@ -4174,7 +4330,9 @@ mod tests {
                 agent_type: "claude_code".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
         assert_eq!(
             read_row_status(&db, conv.id).await,
             ConversationStatus::PendingReview
@@ -4215,7 +4373,9 @@ mod tests {
         conversation_service::update_status(&db.conn, conv.id, ConversationStatus::Completed)
             .await
             .unwrap();
-        handle_event(&db.conn, &mgr, &turn(7), None).await.unwrap();
+        handle_event(&db.conn, &mgr, &turn(7), None, None)
+            .await
+            .unwrap();
         assert_eq!(
             read_row_status(&db, conv.id).await,
             ConversationStatus::Completed,
@@ -4223,7 +4383,9 @@ mod tests {
         );
 
         // The next turn is the worker's again, retries included.
-        handle_event(&db.conn, &mgr, &turn(9), None).await.unwrap();
+        handle_event(&db.conn, &mgr, &turn(9), None, None)
+            .await
+            .unwrap();
         assert_eq!(
             read_row_status(&db, conv.id).await,
             ConversationStatus::PendingReview
@@ -4231,7 +4393,9 @@ mod tests {
         conversation_service::update_status(&db.conn, conv.id, ConversationStatus::InProgress)
             .await
             .unwrap();
-        handle_event(&db.conn, &mgr, &turn(9), None).await.unwrap();
+        handle_event(&db.conn, &mgr, &turn(9), None, None)
+            .await
+            .unwrap();
         assert_eq!(
             read_row_status(&db, conv.id).await,
             ConversationStatus::PendingReview,
@@ -4267,7 +4431,7 @@ mod tests {
         // Every attempt fails.
         db.conn.clone().close().await.unwrap();
 
-        handle_event_with_retry(&db.conn, &mgr, &turn, None).await;
+        handle_event_with_retry(&db.conn, &mgr, &turn, None, None).await;
 
         assert!(
             state
@@ -4336,7 +4500,9 @@ mod tests {
                     agent_type: "open_code".into(),
                 },
             };
-            handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+            handle_event(&db.conn, &mgr, &env, None, None)
+                .await
+                .unwrap();
             assert_eq!(
                 read_row_status(&db, conv.id).await,
                 ConversationStatus::Cancelled,
@@ -4374,7 +4540,9 @@ mod tests {
                 agent_type: "claude_code".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
         assert_eq!(
             read_row_status(&db, conv.id).await,
             ConversationStatus::InProgress,
@@ -4408,7 +4576,9 @@ mod tests {
                 agent_type: "claude_code".into(),
             },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
         assert_eq!(
             read_row_status(&db, sentinel.id).await,
             ConversationStatus::InProgress,
@@ -4681,7 +4851,9 @@ mod tests {
             connection_id: "c1".to_string(),
             payload: AcpEvent::ContentDelta { text: "hi".into(), parent_tool_use_id: None },
         };
-        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None, None)
+            .await
+            .unwrap();
 
         let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
             .await
@@ -4743,6 +4915,18 @@ mod tests {
             code: None,
             details: None,
             terminal: true,
+        }));
+        // The conversation's stored selection follows these.
+        assert!(is_lifecycle_relevant(&AcpEvent::ModeChanged {
+            mode_id: "plan".into(),
+        }));
+        assert!(is_lifecycle_relevant(&AcpEvent::SessionConfigOptions {
+            config_options: Vec::new(),
+        }));
+        assert!(is_lifecycle_relevant(&AcpEvent::SelectorsReady));
+        assert!(is_lifecycle_relevant(&AcpEvent::ComposerModeChanged {
+            mode_id: None,
+            explicit: false,
         }));
 
         // Rejected (worker no-ops on these — must not enter the queue):
@@ -5003,6 +5187,204 @@ mod tests {
 
         assert_eq!(observed_external.as_deref(), Some("ext-final"));
         assert_eq!(observed_status, ConversationStatus::PendingReview);
+    }
+
+    /// The to-do task engine drops a connection the moment it sees its
+    /// `TurnComplete`, so the worker can reach that event after the manager
+    /// has let the connection go. The turn still ended: the row must land on
+    /// `PendingReview`, and the trailing `Disconnected` must leave it there
+    /// rather than flip it to `Cancelled`.
+    #[tokio::test]
+    async fn turn_complete_after_the_connection_was_dropped_still_lands() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/disp-dropped").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+
+        let mgr = ConnectionManager::new();
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert(
+                "c1".to_string(),
+                fake_connection_with_state("c1", Some(conv.id)),
+            );
+        }
+
+        let metrics = Arc::new(EventBusMetrics::default());
+        let bus = Arc::new(InternalEventBus::new(metrics));
+        let dispatcher = tokio::spawn(lifecycle_subscriber_task(
+            db.conn.clone(),
+            mgr.clone_ref(),
+            bus.clone(),
+            None,
+        ));
+
+        bus.send(Arc::new(EventEnvelope {
+            seq: 1,
+            connection_id: "c1".to_string(),
+            payload: AcpEvent::ConversationLinked {
+                conversation_id: conv.id,
+                folder_id,
+                parent_conversation_id: None,
+                parent_tool_use_id: None,
+            },
+        }));
+        bus.send(Arc::new(EventEnvelope {
+            seq: 2,
+            connection_id: "c1".to_string(),
+            payload: AcpEvent::SessionStarted {
+                session_id: "ext-dropped".into(),
+            },
+        }));
+        // The worker has handled both while the connection was registered.
+        assert_eq!(
+            poll_external_id(&db, conv.id, "ext-dropped", Duration::from_millis(500))
+                .await
+                .as_deref(),
+            Some("ext-dropped")
+        );
+
+        // The engine's disconnect wins the race to the turn's end.
+        mgr.connections.lock().await.remove("c1");
+        bus.send(Arc::new(EventEnvelope {
+            seq: 3,
+            connection_id: "c1".to_string(),
+            payload: AcpEvent::TurnComplete {
+                session_id: "ext-dropped".into(),
+                stop_reason: "end_turn".into(),
+                agent_type: "claude_code".into(),
+            },
+        }));
+        bus.send(Arc::new(EventEnvelope {
+            seq: 4,
+            connection_id: "c1".to_string(),
+            payload: AcpEvent::StatusChanged {
+                status: ConnectionStatus::Disconnected,
+            },
+        }));
+
+        // Without the fallback the turn is skipped and `Disconnected` writes
+        // `Cancelled`, which this poll would time out on. Once `PendingReview`
+        // is there, the `Disconnected` CAS (from `InProgress` only) cannot
+        // move it.
+        let observed = poll_status(
+            &db,
+            conv.id,
+            ConversationStatus::PendingReview,
+            Duration::from_secs(2),
+        )
+        .await;
+
+        drop(bus);
+        let _ = dispatcher.await;
+
+        assert_eq!(observed, ConversationStatus::PendingReview);
+    }
+
+    /// A dropped delegation child's turn writes nothing: its broker call is
+    /// cancelled by the trailing `Disconnected`, and a `PendingReview` row
+    /// would read as a finished child that `resume_delegation` refuses.
+    #[tokio::test]
+    async fn dropped_turn_complete_leaves_a_delegation_child_alone() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/dropped-child").await;
+        let parent =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let child = conversation_service::create_with_delegation(
+            &db.conn,
+            folder_id,
+            AgentType::Codex,
+            None,
+            None,
+            Some(crate::acp::delegation::spawner::DelegationLink {
+                parent_conversation_id: parent.id,
+                parent_tool_use_id: "toolu_1".into(),
+                delegation_call_id: "call-1".into(),
+                assistant: None,
+            }),
+        )
+        .await
+        .unwrap();
+        let mgr = ConnectionManager::new();
+        let known: ConnHandle = (
+            fake_connection_with_state("gone-child", Some(child.id)).state,
+            EventEmitter::Noop,
+        );
+        let env = EventEnvelope {
+            seq: 1,
+            connection_id: "gone-child".to_string(),
+            payload: AcpEvent::TurnComplete {
+                session_id: "s".into(),
+                stop_reason: "end_turn".into(),
+                agent_type: "codex".into(),
+            },
+        };
+        handle_event(&db.conn, &mgr, &env, None, Some(&known))
+            .await
+            .unwrap();
+        assert_eq!(
+            read_row_status(&db, child.id).await,
+            ConversationStatus::InProgress
+        );
+    }
+
+    /// A dropped connection's turn writes only over a row still `InProgress`:
+    /// whoever dropped it may have settled the row first (a user's
+    /// `Completed` a CLI run's fallback left alone, a task cancel's
+    /// `Cancelled`), and that must stand.
+    #[tokio::test]
+    async fn dropped_turn_complete_writes_only_over_in_progress() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/dropped-cas").await;
+        let mgr = ConnectionManager::new();
+
+        for (before, after) in [
+            (
+                ConversationStatus::InProgress,
+                ConversationStatus::PendingReview,
+            ),
+            (ConversationStatus::Completed, ConversationStatus::Completed),
+            (ConversationStatus::Cancelled, ConversationStatus::Cancelled),
+        ] {
+            let conv = conversation_service::create(
+                &db.conn,
+                folder_id,
+                AgentType::ClaudeCode,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            conversation_service::update_status(&db.conn, conv.id, before.clone())
+                .await
+                .unwrap();
+            // Kept by the worker, never (or no longer) in the manager.
+            let known: ConnHandle = (
+                fake_connection_with_state("gone", Some(conv.id)).state,
+                EventEmitter::Noop,
+            );
+            let env = EventEnvelope {
+                seq: 1,
+                connection_id: "gone".to_string(),
+                payload: AcpEvent::TurnComplete {
+                    session_id: "s".into(),
+                    stop_reason: "end_turn".into(),
+                    agent_type: "claude_code".into(),
+                },
+            };
+            handle_event(&db.conn, &mgr, &env, None, Some(&known))
+                .await
+                .unwrap();
+            assert_eq!(
+                read_row_status(&db, conv.id).await,
+                after,
+                "{before:?} before the dropped turn's end"
+            );
+        }
     }
 
     /// Burst: emit a long sequence of relevant events followed by a

@@ -23,6 +23,8 @@ pub mod prelude;
 pub mod quick_message;
 pub mod remote_workspace_connection;
 pub mod session_selector_state;
+pub mod srn_web_login;
+pub mod srn_web_session;
 pub mod token_usage_sync;
 pub mod token_usage_turn;
 pub mod tool_approval;

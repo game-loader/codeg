@@ -680,7 +680,7 @@ describe("real production providers in retained backend scopes", () => {
       )
     })
     expect(a.transport.requests("acp_disconnect")).toEqual([
-      { connectionId: CONNECTION_ID },
+      { connectionId: CONNECTION_ID, onlyIfIdle: true },
     ])
     expect(b.transport.requests("acp_disconnect")).toHaveLength(0)
   })

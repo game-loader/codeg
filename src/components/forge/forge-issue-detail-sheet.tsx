@@ -378,6 +378,7 @@ function CommentThread({
   )
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch from the forge; load() flips the loading flag before awaiting
     void load(1)
   }, [load])
 
@@ -1083,6 +1084,7 @@ function useChangeDetail(
   }, [folderId, number, backendApi])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch from the forge; load() flips the loading flag before awaiting
     void load()
   }, [load])
 
@@ -1576,6 +1578,7 @@ function ChangedFiles({
   )
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch from the forge; load() flips the loading flag before awaiting
     void load(1)
   }, [load])
 

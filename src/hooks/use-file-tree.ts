@@ -46,7 +46,12 @@ export function useFileTree({
   const backendApi = useBackendApi()
   const [allFiles, setAllFiles] = useState<FlatFileEntry[]>([])
   const [loading, setLoading] = useState(false)
-  const loadedForPathRef = useRef<string | null>(null)
+  // State, not a ref: `loaded` is returned from render, so it must re-render
+  // when it changes rather than be read off a ref.
+  const [loadedScope, setLoadedScope] = useState<{
+    pathKey: string
+    api: typeof backendApi
+  } | null>(null)
   const [revision, setRevision] = useState(0)
   const generation = useRef(0)
   const refresh = useRef(false)
@@ -67,12 +72,15 @@ export function useFileTree({
 
   useEffect(() => {
     const current = ++generation.current
+    // The synchronous resets and loading flag belong to the search request
+    // issued below (an external system), keyed by the scope ref.
+    /* eslint-disable react-hooks/set-state-in-effect */
     if (
       scopeRef.current?.pathKey !== pathKey ||
       scopeRef.current.api !== backendApi
     ) {
       scopeRef.current = { pathKey, api: backendApi }
-      loadedForPathRef.current = null
+      setLoadedScope(null)
       setAllFiles([])
     }
     if (!enabled || !folderPath) {
@@ -82,6 +90,7 @@ export function useFileTree({
     let canceled = false
     const abort = new AbortController()
     setLoading(true)
+    /* eslint-enable react-hooks/set-state-in-effect */
     if (refresh.current) {
       refresh.current = false
       freshSince.current = performance.now()
@@ -117,7 +126,7 @@ export function useFileTree({
 
         if (!canceled && generation.current === current) {
           setAllFiles(flat)
-          loadedForPathRef.current = folderPath!
+          setLoadedScope({ pathKey, api: backendApi })
         }
       } catch {
         if (!canceled && generation.current === current) setAllFiles([])
@@ -144,7 +153,7 @@ export function useFileTree({
   ])
 
   const reset = useCallback((refreshIndex = false) => {
-    loadedForPathRef.current = null
+    setLoadedScope(null)
     scopeRef.current = null
     generation.current += 1
     if (refreshIndex) {
@@ -156,11 +165,11 @@ export function useFileTree({
   }, [])
 
   const currentScope =
-    scopeRef.current?.pathKey === pathKey && scopeRef.current.api === backendApi
+    loadedScope?.pathKey === pathKey && loadedScope.api === backendApi
   return {
     allFiles: currentScope ? allFiles : [],
     loading,
-    loaded: currentScope && loadedForPathRef.current === folderPath,
+    loaded: currentScope,
     reset,
   }
 }

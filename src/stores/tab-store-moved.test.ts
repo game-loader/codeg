@@ -147,7 +147,7 @@ describe("moved conversations in backend tab stores", () => {
     a.tabs
       .getState()
       .bindConversationTab(draft.tabId, 3, "codex", "Chat", -3, 1, "/scratch")
-    expect(a.tabs.getState().rawTabs.at(-1)?.isChat).toBe(true)
+    expect(a.tabs.getState().rawTabs.slice(-1)[0]?.isChat).toBe(true)
     a.workspace.setState({ conversationsLoading: true })
 
     a.tabs.getState().handleTabsChanged({
@@ -160,18 +160,18 @@ describe("moved conversations in backend tab stores", () => {
       ],
     })
 
-    expect(a.tabs.getState().rawTabs.at(-1)).toMatchObject({
+    expect(a.tabs.getState().rawTabs.slice(-1)[0]).toMatchObject({
       id: draft.tabId,
       folderId: 2,
       runtimeConversationId: -3,
       isChat: true,
     })
-    expect(a.tabs.getState().rawTabs.at(-1)?.workingDir).toBeUndefined()
+    expect(a.tabs.getState().rawTabs.slice(-1)[0]?.workingDir).toBeUndefined()
     expect(a.tabs.getState().activeTabId).toBe(draft.tabId)
     a.workspace.getState().applyConversationUpsert(row(3, 2))
-    expect(a.tabs.getState().rawTabs.at(-1)?.isChat).toBe(true)
+    expect(a.tabs.getState().rawTabs.slice(-1)[0]?.isChat).toBe(true)
     a.workspace.setState({ conversationsLoading: false })
-    expect(a.tabs.getState().rawTabs.at(-1)).toMatchObject({
+    expect(a.tabs.getState().rawTabs.slice(-1)[0]).toMatchObject({
       id: draft.tabId,
       folderId: 2,
       runtimeConversationId: -3,
@@ -216,8 +216,8 @@ describe("moved conversations in backend tab stores", () => {
     a.tabs.getState().openTab(1, 7, "codex", true)
     b.tabs.getState().openTab(1, 7, "codex", true)
 
-    expect(a.tabs.getState().rawTabs.at(-1)?.folderId).toBe(2)
-    expect(b.tabs.getState().rawTabs.at(-1)?.folderId).toBe(1)
+    expect(a.tabs.getState().rawTabs.slice(-1)[0]?.folderId).toBe(2)
+    expect(b.tabs.getState().rawTabs.slice(-1)[0]?.folderId).toBe(1)
     a.tabs.getState().openTab(1, 7, "codex", true)
     expect(
       a.tabs.getState().rawTabs.filter((tab) => tab.conversationId === 7)

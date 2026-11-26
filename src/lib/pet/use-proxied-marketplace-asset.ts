@@ -9,32 +9,74 @@ import {
 } from "./sprite-url"
 import type { PetSpriteAsset } from "./types"
 
-// Cache the fetched *asset data* per URL (immutable, content-addressed `/v/…`
-// paths) — NOT the blob URL. Paging back / reopening the dialog then resolves
-// without another codex-pets fetch (which is the whole reason for the proxy:
-// that host is slow/unreachable for these users). Each consumer mints its own
-// blob URL from the shared asset and revokes it on unmount, so blob lifetimes
-// are strictly per-consumer: a shared entry can never be revoked out from under
-// a still-mounted consumer, and closing the dialog can't strand a live image.
-const assetCache = new Map<string, Promise<PetSpriteAsset>>()
+// Keep up to two pages of recent posters, subject to a payload budget so a
+// few large previews cannot stay resident with every previously viewed page.
+const MAX_CACHED_ASSETS = 64
+const MAX_CACHED_BYTES = 16 * 1024 * 1024
+function newCache() {
+  return {
+    assetCache: new Map<string, { asset: PetSpriteAsset; bytes: number }>(),
+    pendingAssets: new Map<string, Promise<PetSpriteAsset>>(),
+    bytes: 0,
+  }
+}
+let caches = new WeakMap<BackendPlatform, ReturnType<typeof newCache>>()
+
+function rememberAsset(
+  cache: ReturnType<typeof newCache>,
+  url: string,
+  asset: PetSpriteAsset
+): void {
+  const { assetCache } = cache
+  // Charge strings at two bytes per code unit regardless of engine encoding.
+  const bytes = 2 * (url.length + asset.mime.length + asset.dataBase64.length)
+  if (bytes > MAX_CACHED_BYTES) return
+
+  assetCache.set(url, { asset, bytes })
+  cache.bytes += bytes
+  for (const [oldUrl, entry] of assetCache) {
+    if (
+      assetCache.size <= MAX_CACHED_ASSETS &&
+      cache.bytes <= MAX_CACHED_BYTES
+    ) {
+      break
+    }
+    assetCache.delete(oldUrl)
+    cache.bytes -= entry.bytes
+  }
+}
 
 function loadAsset(
   url: string,
   backendPlatform: BackendPlatform = legacyBackendPlatform
 ): Promise<PetSpriteAsset> {
-  const existing = assetCache.get(url)
-  if (existing) return existing
+  const cache = caches.get(backendPlatform) ?? newCache()
+  caches.set(backendPlatform, cache)
+  const { assetCache, pendingAssets } = cache
+  const cached = assetCache.get(url)
+  if (cached) {
+    assetCache.delete(url)
+    assetCache.set(url, cached)
+    return Promise.resolve(cached.asset)
+  }
+  const pending = pendingAssets.get(url)
+  if (pending) return pending
 
-  const promise = fetchMarketplaceAsset(url, backendPlatform)
-  assetCache.set(url, promise)
-  // Don't cache a rejection — a transient network blip should be retryable when
-  // a component next mounts. Attached separately (not via the cached promise's
-  // own chain) so consumers still observe the original rejection, and guarded on
-  // identity so a superseded request's late failure can't evict a newer entry.
-  promise.catch(() => {
-    if (assetCache.get(url) === promise) assetCache.delete(url)
-  })
-  return promise
+  // Deduplicate active fetches independently of cache eviction. Failures are
+  // retryable, and even an oversized asset is returned to current consumers.
+  const request: Promise<PetSpriteAsset> = fetchMarketplaceAsset(
+    url,
+    backendPlatform
+  )
+    .then((asset) => {
+      if (pendingAssets.get(url) === request) rememberAsset(cache, url, asset)
+      return asset
+    })
+    .finally(() => {
+      if (pendingAssets.get(url) === request) pendingAssets.delete(url)
+    })
+  pendingAssets.set(url, request)
+  return request
 }
 
 export interface ProxiedAsset {
@@ -66,9 +108,11 @@ export function useProxiedMarketplaceAsset(
 ): ProxiedAsset {
   const backendPlatform = useBackendPlatform()
 
-  const [state, setState] = useState<{ url: string | null; outcome: Outcome }>(
-    () => ({ url: null, outcome: { src: null, failed: false } })
-  )
+  const [state, setState] = useState<{
+    backendPlatform?: BackendPlatform
+    url: string | null
+    outcome: Outcome
+  }>(() => ({ url: null, outcome: { src: null, failed: false } }))
 
   useEffect(() => {
     if (!url) return
@@ -79,11 +123,15 @@ export function useProxiedMarketplaceAsset(
       .then((asset) => {
         if (cancelled) return
         objectUrl = createPetSpriteObjectUrl(asset)
-        setState({ url, outcome: { src: objectUrl, failed: false } })
+        setState({
+          backendPlatform,
+          url,
+          outcome: { src: objectUrl, failed: false },
+        })
       })
       .catch(() => {
         if (cancelled) return
-        setState({ url, outcome: { src: null, failed: true } })
+        setState({ backendPlatform, url, outcome: { src: null, failed: true } })
       })
 
     return () => {
@@ -97,7 +145,7 @@ export function useProxiedMarketplaceAsset(
   }, [url, backendPlatform])
 
   if (!url) return { src: null, loading: false, failed: false }
-  if (state.url === url) {
+  if (state.url === url && state.backendPlatform === backendPlatform) {
     return {
       src: state.outcome.src,
       loading: false,
@@ -110,5 +158,5 @@ export function useProxiedMarketplaceAsset(
 
 /** Test-only: drop cached asset data so module state doesn't leak across tests. */
 export function __resetMarketplaceAssetCacheForTests(): void {
-  assetCache.clear()
+  caches = new WeakMap()
 }

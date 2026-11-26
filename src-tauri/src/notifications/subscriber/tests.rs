@@ -134,6 +134,7 @@ fn typed_failures_masking_end_turn_are_filtered_but_retry_warnings_can_recover()
                     details: None,
                     actions: vec![],
                     resolved: false,
+                    echoed_in_reply: false,
                 },
             },
         );

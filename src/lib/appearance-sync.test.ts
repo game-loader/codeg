@@ -153,8 +153,8 @@ describe("adoptSyncedAppearance", () => {
   })
 
   it("mirrors the adopted values to each backend even when another snapshot arrives first", async () => {
-    const mirrorA = vi.fn<typeof call>(async () => null)
-    const mirrorB = vi.fn<typeof call>(async () => null)
+    const mirrorA = vi.fn(async () => null)
+    const mirrorB = vi.fn(async () => null)
     adoptSyncedAppearance({ "codeg-theme-color": "red" }, () => ({
       call: mirrorA,
     }))

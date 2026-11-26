@@ -11,14 +11,11 @@
 //!
 //! ## Isolation contract
 //!
-//! - Different `connection_id`s use distinct Tauri event channels
-//!   (`remote-ws-event-{id}`) AND distinct background WS tasks. Two remote
-//!   workspaces opened side-by-side never mix events.
+//! - Different `connection_id`s use distinct Tauri event channels and
+//!   distinct background WS tasks.
 //! - Within one `connection_id`, multiple webviews (main + remote-settings
-//!   child window, etc.) share **one** underlying WS connection but each
-//!   event is dispatched only to the webview labels that have explicitly
-//!   subscribed. We never `app.emit(...)` globally — every emit is
-//!   `app.emit_to(EventTarget::webview(label), ...)`.
+//!   child window, etc.) share one underlying WS connection. Each subscriber
+//!   label has its own event name (`remote-ws-event-{id}-{label}`) and target.
 //! - When the last subscriber for a connection unsubscribes (or its window
 //!   is destroyed), the WS task shuts down and the entry is removed from
 //!   the proxy state.
@@ -258,12 +255,11 @@ impl RemoteProxyState {
         config_revision: &str,
     ) {
         let (disconnected, stale) = self.invalidate_connection(id, deleted).await;
-        let event_name = format!("remote-ws-event-{id}");
         for label in disconnected {
             emit_internal_to_label(
                 app,
                 &label,
-                &event_name,
+                id,
                 WS_DISCONNECTED_CHANNEL,
                 config_revision,
             );
@@ -272,7 +268,7 @@ impl RemoteProxyState {
             emit_internal_to_label(
                 app,
                 &label,
-                &event_name,
+                id,
                 "__configuration_changed__",
                 config_revision,
             );
@@ -334,12 +330,11 @@ impl RemoteProxyState {
             .invalidate_saved_update(transfers, before, updated)
             .await
         {
-            let event_name = format!("remote-ws-event-{}", updated.id);
             for label in disconnected {
                 emit_internal_to_label(
                     app,
                     &label,
-                    &event_name,
+                    updated.id,
                     WS_DISCONNECTED_CHANNEL,
                     &before.config_revision,
                 );
@@ -348,7 +343,7 @@ impl RemoteProxyState {
                 emit_internal_to_label(
                     app,
                     &label,
-                    &event_name,
+                    updated.id,
                     "__configuration_changed__",
                     &before.config_revision,
                 );
@@ -1819,7 +1814,6 @@ pub async fn remote_ws_subscribe(
     config_revision: Option<String>,
 ) -> Result<(), AppCommandError> {
     let label = window.label().to_string();
-    let event_name = format!("remote-ws-event-{connection_id}");
     let proxy_arc: Arc<RemoteProxyState> = (*proxy).clone();
     let subscriber = WsSubscriber {
         label: label.clone(),
@@ -1863,7 +1857,7 @@ pub async fn remote_ws_subscribe(
             emit_internal_to_label(
                 &app,
                 &label,
-                &event_name,
+                connection_id,
                 WS_READY_CHANNEL,
                 &binding.connection.config_revision,
             );
@@ -1910,7 +1904,7 @@ pub async fn remote_ws_subscribe(
             emit_internal_to_label(
                 &app,
                 &label,
-                &event_name,
+                connection_id,
                 WS_READY_CHANNEL,
                 &binding.connection.config_revision,
             );
@@ -2037,18 +2031,13 @@ async fn run_ws_task(
     shutdown_rx: watch::Receiver<bool>,
     outbound_rx: mpsc::Receiver<String>,
 ) {
-    let event_name = format!("remote-ws-event-{connection_id}");
     run_ws_task_core(
         proxy,
         connection_id,
         db,
         entry,
         (shutdown_rx, outbound_rx),
-        |label, envelope| {
-            if let Err(error) = app.emit_to(EventTarget::webview(label), &event_name, envelope) {
-                tracing::error!("[RemoteProxy] emit_to {label} for {event_name} failed: {error}");
-            }
-        },
+        |label, envelope| emit_frame_to_label(&app, connection_id, label, envelope),
         || std::future::ready(()),
     )
     .await;
@@ -2396,7 +2385,7 @@ async fn backoff_sleep(shutdown_rx: &mut watch::Receiver<bool>, fail_count: u32)
 /// this connection. The remote codeg-server's `ws.rs` emits frames shaped
 /// `{ "channel": "...", "payload": ... }` (see `WebEventBroadcaster`).
 /// We re-emit the payload as-is into the Tauri event named
-/// `remote-ws-event-{connection_id}`, but only to webview labels listed in
+/// `remote-ws-event-{connection_id}-{label}`, but only to webview labels listed in
 /// the subscriber set — never broadcast.
 /// The issuing binding fences ready writes, subscriber selection, and the
 /// actual IPC emit under the same read gate as registration. The revision in
@@ -2456,7 +2445,7 @@ async fn deliver_ws_envelope_locked(
 fn emit_internal_to_label(
     app: &AppHandle,
     label: &str,
-    event_name: &str,
+    connection_id: i32,
     channel: &'static str,
     config_revision: &str,
 ) {
@@ -2465,8 +2454,22 @@ fn emit_internal_to_label(
         "payload": Value::Null,
         "configRevision": config_revision,
     });
-    if let Err(e) = app.emit_to(EventTarget::webview(label), event_name, &envelope) {
-        tracing::error!("[RemoteProxy] emit_to {label} for {event_name} ({channel}) failed: {e}");
+    emit_frame_to_label(app, connection_id, label, &envelope);
+}
+
+/// Tauri event name for one subscriber webview of one connection. Must match
+/// the name `RemoteDesktopTransport.startWs` listens on. Webview labels only
+/// use characters Tauri also allows in event names, so this is always valid.
+fn remote_ws_event_name(connection_id: i32, label: &str) -> String {
+    format!("remote-ws-event-{connection_id}-{label}")
+}
+
+fn emit_frame_to_label(app: &AppHandle, connection_id: i32, label: &str, envelope: &Value) {
+    // Tauri evaluates an event script in other webviews with the same event
+    // name, even when the target filter leaves them no recipients.
+    let event_name = remote_ws_event_name(connection_id, label);
+    if let Err(e) = app.emit_to(EventTarget::webview(label), &event_name, envelope) {
+        tracing::error!("[RemoteProxy] emit_to {label} for {event_name} failed: {e}");
     }
 }
 
@@ -3287,6 +3290,19 @@ mod tests {
         assert_eq!(labels, vec!["settings"]);
         assert!(!proxy.tasks.lock().await.contains_key(&1));
         assert!(proxy.tasks.lock().await.contains_key(&2));
+    }
+
+    #[test]
+    fn ws_event_name_is_scoped_to_connection_and_webview() {
+        // Same literal the transport tests pin on the listening side.
+        assert_eq!(
+            remote_ws_event_name(17, "main-webview"),
+            "remote-ws-event-17-main-webview"
+        );
+        assert_ne!(
+            remote_ws_event_name(7, "remote-webview-a"),
+            remote_ws_event_name(7, "remote-webview-b")
+        );
     }
 
     // ─── Host pinning for credential-carrying requests ──────────────────

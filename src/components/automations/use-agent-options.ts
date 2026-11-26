@@ -7,10 +7,11 @@ import { toErrorMessage } from "@/lib/app-error"
 import type { AgentOptionsSnapshot, AgentType } from "@/lib/types"
 
 // Module-scope probe cache, isolated from the chat selectors (same approach as
-// delegation-agent-defaults). 30s TTL absorbs rapid re-opens without a stale
-// snapshot surviving a real config change. The inflight map dedups concurrent
-// callers so the editor + its config section share a single probe.
+// delegation-agent-defaults). The TTL absorbs rapid re-opens, and the size
+// limit bounds snapshots for folders and models that are never revisited.
+// The inflight map lets the editor and its config section share a probe.
 const CACHE_TTL_MS = 30_000
+const MAX_CACHED_SNAPSHOTS = 32
 
 interface CachedSnapshot {
   snapshot: AgentOptionsSnapshot
@@ -29,6 +30,14 @@ const inflight = new Map<string, Promise<AgentOptionsSnapshot>>()
 
 const clientIds = new WeakMap<BackendApi, number>()
 let nextClientId = 0
+function rememberSnapshot(key: string, entry: CachedSnapshot): void {
+  snapshotCache.delete(key)
+  snapshotCache.set(key, entry)
+  if (snapshotCache.size > MAX_CACHED_SNAPSHOTS) {
+    const oldest = snapshotCache.keys().next()
+    if (!oldest.done) snapshotCache.delete(oldest.value)
+  }
+}
 
 function cacheKey(
   agent: AgentType,
@@ -57,6 +66,7 @@ function readCache(
     snapshotCache.delete(key)
     return null
   }
+  rememberSnapshot(key, entry)
   return entry.snapshot
 }
 
@@ -73,7 +83,7 @@ function fetchOptions(
       .describeAgentOptions(agent, folderPath, model ? { model } : null)
       .then((snapshot) => {
         if (inflight.get(key) === promise) {
-          snapshotCache.set(key, { snapshot, ts: Date.now() })
+          rememberSnapshot(key, { snapshot, ts: Date.now() })
           inflight.delete(key)
         }
         return snapshot

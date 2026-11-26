@@ -68,6 +68,7 @@ import {
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import { useMessageQueue, type QueuedMessage } from "@/hooks/use-message-queue"
 import { useToolBoundarySteering } from "@/hooks/use-tool-boundary-steering"
+import { useTouchSelectionMenuGuard } from "@/hooks/use-touch-selection-menu-guard"
 import {
   MessageListView,
   type LiveRunsSource,
@@ -173,7 +174,10 @@ import {
   ExportTooLongError,
 } from "@/lib/export-conversation"
 import { useExportLabels } from "@/lib/use-export-labels"
-import { resolveActiveSessionDetails } from "./active-session-details"
+import {
+  projectRuntimeSessionDetails,
+  resolveActiveSessionDetailsFromSnapshot,
+} from "./active-session-details"
 import { ConversationDetailHeader } from "./conversation-detail-header"
 import { SessionDetailsDialog } from "./session-details-dialog"
 
@@ -399,17 +403,29 @@ const ConversationTabView = memo(function ConversationTabView({
     number | null
   >(null)
   const dbConversationId = conversationId ?? createdConversationId
-  const [persistedPaperId, setPersistedPaperId] = useState<string | undefined>()
-  const academicPaperId = ownTab?.academicPaperId ?? persistedPaperId
+  const [paperLink, setPaperLink] = useState<{
+    backend: typeof backendAcademic
+    conversationId: number
+    paperId?: string
+  }>()
+  const academicPaperId =
+    ownTab?.academicPaperId ??
+    (paperLink?.backend === backendAcademic &&
+    paperLink.conversationId === dbConversationId
+      ? paperLink.paperId
+      : undefined)
   useEffect(() => {
     let cancelled = false
-    setPersistedPaperId(undefined)
     if (dbConversationId == null) return
     void backendAcademic
       .academicConversationPaper(dbConversationId)
       .then((paper) => {
         if (!cancelled) {
-          setPersistedPaperId(paper?.id)
+          setPaperLink({
+            backend: backendAcademic,
+            conversationId: dbConversationId,
+            paperId: paper?.id,
+          })
           useTabStore
             .getState()
             .setTabAcademicPaper(tabId, dbConversationId, paper?.id)
@@ -425,18 +441,22 @@ const ConversationTabView = memo(function ConversationTabView({
 
   const [draftAgentType, setDraftAgentType] = useState<AgentType>(agentType)
   const selectedAgent = conversationId != null ? agentType : draftAgentType
-  // A new conversation seeds from localStorage so the React state reflects
-  // the user's saved mode for this agent immediately on mount:
-  // `handleModeChange` updates only React state and localStorage, not the
-  // agent — the agent gets synced inside `handleSend` by diffing `modeId`
-  // against `modes.current_mode_id`.
+  // Seed from localStorage so the React state reflects the user's saved
+  // mode for this agent immediately on mount. Without this seed, a reuse-
+  // path connect (idle window after a refresh, before the agent is GC'd)
+  // would silently fall back to whatever `current_mode_id` the backend
+  // happens to be on: `handleModeChange` updates only React state and
+  // localStorage, not the agent — the agent gets synced inside
+  // `handleSend` by diffing `modeId` against `modes.current_mode_id`.
+  // A null seed here means that diff is "agent default vs null", which
+  // resolves the displayed mode through `conn.modes.current_mode_id`
+  // and never triggers the catch-up `setMode`.
   //
-  // A persisted conversation seeds null instead, so the displayed mode
-  // resolves through `conn.modes.current_mode_id` and no catch-up `setMode`
-  // fires. The backend resumes a session in its OWN last mode (recorded per
-  // session, ahead of this device's saved default), which may have been
-  // picked on another device; seeding this device's default here would
-  // show it and then silently switch the conversation to it on send.
+  // Drafts only (codeg#1179): a persisted conversation keeps no local mode
+  // pick — its composer reads the connection's recorded pick
+  // (`conn.composerModeId`), else the mode the backend restored from the
+  // conversation's own stored selection. Seeding it from the per-agent
+  // default would import another conversation's mode at the next send.
   const [modeId, setModeId] = useState<string | null>(() =>
     conversationId != null ? null : getSavedModeId(agentType)
   )
@@ -867,13 +887,54 @@ const ConversationTabView = memo(function ConversationTabView({
   // the transcript tells them apart, badging from what this agent last
   // advertised in this folder while the list is unknown.
   const connectionCommands = connIsForOtherAgent ? null : conn.availableCommands
+  // A persisted conversation follows the backend's record of the composer's
+  // pending pick; a draft its local pick (codeg#1179).
+  const isPersistedConversation = dbConversationId != null
+  // `modeId` stays null for a persisted conversation, except as the fallback
+  // when the server predates the composer record (the send applies it then).
+  const composerPick = isPersistedConversation
+    ? connIsForOtherAgent
+      ? null
+      : (conn.composerModeId ?? modeId)
+    : modeId
   const selectedModeId = useMemo(() => {
     if (connectionModes.length === 0) return null
-    if (modeId && connectionModes.some((mode) => mode.id === modeId)) {
-      return modeId
+    if (
+      composerPick &&
+      connectionModes.some((mode) => mode.id === composerPick)
+    ) {
+      return composerPick
     }
     return effectiveModes?.current_mode_id ?? connectionModes[0]?.id ?? null
-  }, [effectiveModes, connectionModes, modeId])
+  }, [effectiveModes, connectionModes, composerPick])
+  // For the first send's draft → persisted hand-over (read inside an async
+  // continuation, after the row exists).
+  const draftModeIdRef = useRef(modeId)
+  const appliedModeIdRef = useRef(effectiveModes?.current_mode_id ?? null)
+  const connRef = useRef(conn)
+  useEffect(() => {
+    draftModeIdRef.current = modeId
+    appliedModeIdRef.current = effectiveModes?.current_mode_id ?? null
+    connRef.current = conn
+  })
+  // Whether a pick here is still a DRAFT's — the only picks that write the
+  // new-conversation default. Decided synchronously at pick time: no row id
+  // yet AND no row creation in flight (a failed create re-opens it).
+  const isDraftForDefaults = useCallback(
+    () => dbConvIdRef.current == null && !createConversationPendingRef.current,
+    []
+  )
+  const handleConfigOptionChange = useCallback(
+    (configId: string, valueId: string) => {
+      // The first send is being admitted: the prompt runs with what was
+      // showing at submit.
+      if (connRef.current.selectorsLocked) return
+      handleSetConfigOption(configId, valueId, {
+        saveAsDefault: isDraftForDefaults(),
+      })
+    },
+    [handleSetConfigOption, isDraftForDefaults]
+  )
   // Read by the queue auto-flush for items that were queued before this tab knew
   // its modes (it runs from a timer, so it must not close over a stale value).
   const selectedModeIdRef = useRef(selectedModeId)
@@ -1335,6 +1396,36 @@ const ConversationTabView = memo(function ConversationTabView({
       const title = promptDraftTitleSeed(draft, sharedT("attachedResources"))
       const chatSend = sendOwnTab?.isChat === true
       const chatExistingDir = sendOwnTab?.workingDir
+      // Lock the selectors for the whole first-send attempt (codeg#1179):
+      // the prompt runs with — and the new row records — exactly the
+      // selection showing at submit. One `finally` releases it on every exit.
+      const firstSendLock = connRef.current.beginFirstSend()
+      let handOver: Promise<unknown> | null = null
+      // Draft → persisted: hand the draft's mode pick to the connection's
+      // composer record in the same step that publishes the row id, so the
+      // composer (and a message queued meanwhile) keeps showing it until the
+      // agent's mode reached it.
+      const handOverDraftMode = () => {
+        const pick = draftModeIdRef.current
+        if (!pick || pick === appliedModeIdRef.current) {
+          // Nothing pending: the persisted conversation follows its
+          // connection from here; a leftover local pick would resurface as
+          // a stale fallback once a later pick is cleared.
+          setModeId(null)
+          return
+        }
+        handOver = connRef.current
+          .setComposerMode(pick, { initial: true })
+          // Recorded (or vetoed in favour of another surface's pick): the
+          // connection's record is the source from now on.
+          .then(() => {
+            if (mountedRef.current) setModeId(null)
+          })
+          .catch((e: unknown) =>
+            // An older server: keep the local pick, the send applies it.
+            console.error("[ConversationTabView] composer hand-over:", e)
+          )
+      }
 
       void (async () => {
         try {
@@ -1352,6 +1443,7 @@ const ConversationTabView = memo(function ConversationTabView({
             newConversationId = res.conversationId
             sendFolderId = res.folderId
             dbConvIdRef.current = newConversationId
+            handOverDraftMode()
             setExternalId(effectiveConversationId, sessionIdRef.current ?? null)
             // Bind the DB id BEFORE the prompt goes out. The mirror effect
             // below also binds, but only after a re-render — this closes that
@@ -1385,6 +1477,7 @@ const ConversationTabView = memo(function ConversationTabView({
               academicPaperId
             )
             dbConvIdRef.current = newConversationId
+            handOverDraftMode()
             // Set external ID on the stable virtual session (no migration needed —
             // effectiveConversationId never changes, so the session stays in place).
             // DB persistence of external_id is now backend-driven from
@@ -1414,7 +1507,7 @@ const ConversationTabView = memo(function ConversationTabView({
           // Now that the row exists, kick off the actual prompt with the
           // conversation_id pinned so the backend adopts our row instead of
           // creating a duplicate one.
-          lifecycleSend(draft, selectedModeIdArg, {
+          await lifecycleSend(draft, selectedModeIdArg, {
             folderId: sendFolderId,
             conversationId: newConversationId,
             clientMessageId: optimisticTurn.id,
@@ -1447,6 +1540,8 @@ const ConversationTabView = memo(function ConversationTabView({
           }
         } finally {
           createConversationPendingRef.current = false
+          if (handOver) await handOver
+          connRef.current.releaseFirstSend(firstSendLock)
         }
       })()
     },
@@ -1687,8 +1782,21 @@ const ConversationTabView = memo(function ConversationTabView({
 
   const handleModeChange = useCallback(
     (newModeId: string) => {
+      if (connRef.current.selectorsLocked) return
+      if (!isDraftForDefaults()) {
+        // An existing conversation: record the pick on its connection (the
+        // backend persists it on the row and every attached client follows);
+        // the send applies it. Never the new-conversation default.
+        connRef.current.setComposerMode(newModeId).catch((e: unknown) => {
+          // An older server without the composer record: keep the pick
+          // locally, as before — the send applies it.
+          console.error("[ConversationTabView] setComposerMode:", e)
+          setModeId(newModeId)
+        })
+        return
+      }
       setModeId(newModeId)
-      // Persist mode selection to localStorage immediately. Use effectiveModes
+      // A draft's pick IS the new-conversation default. Use effectiveModes
       // (reconciled to selectedAgent) rather than the raw connection modes, so a
       // mode change made during a cross-agent switch window can't save the
       // previous agent's mode shape under the selected agent.
@@ -1699,7 +1807,7 @@ const ConversationTabView = memo(function ConversationTabView({
         })
       }
     },
-    [effectiveModes, selectedAgent, saveModePreference]
+    [effectiveModes, isDraftForDefaults, selectedAgent, saveModePreference]
   )
 
   const handleAnswerQuestion = useCallback(
@@ -2298,6 +2406,7 @@ const ConversationTabView = memo(function ConversationTabView({
           availableCommands={connectionCommands}
           connStatus={connStatus}
           isActive={isActive}
+          isVisible={isVisible}
           sendSignal={sendSignal}
           detailLoading={detailLoading}
           detailError={detailError}
@@ -2511,7 +2620,7 @@ const ConversationTabView = memo(function ConversationTabView({
       selectorsLoading={selectorsLoading}
       selectedModeId={selectedModeId}
       onModeChange={handleModeChange}
-      onConfigOptionChange={handleSetConfigOption}
+      onConfigOptionChange={handleConfigOptionChange}
       agentType={selectedAgent}
       availableCommands={connectionCommands}
       // The previous agent's prediction is no use to the one just picked.
@@ -2659,7 +2768,7 @@ const ConversationTabView = memo(function ConversationTabView({
                 selectorsLoading={selectorsLoading}
                 selectedModeId={selectedModeId}
                 onModeChange={handleModeChange}
-                onConfigOptionChange={handleSetConfigOption}
+                onConfigOptionChange={handleConfigOptionChange}
                 agentType={selectedAgent}
                 availableCommands={connectionCommands}
                 attachmentTabId={tabId}
@@ -3022,21 +3131,22 @@ export function ConversationDetailPanel() {
     activeConversationTab?.runtimeConversationId ??
     activeConversationTab?.conversationId ??
     null
-  const activeRuntimeSession = useConversationRuntimeStore((s) =>
-    activeRuntimeId != null
-      ? (s.byConversationId.get(activeRuntimeId) ?? null)
-      : null
+  // A persistent metadata consumer's previous hook snapshot can outlive a
+  // removed session. Select its display values before React keeps that snapshot.
+  const activeRuntimeDetails = useConversationRuntimeStore(
+    useShallow((s) =>
+      projectRuntimeSessionDetails(
+        activeRuntimeId != null ? s.byConversationId.get(activeRuntimeId) : null
+      )
+    )
   )
   const {
     summary: activeSessionSummary,
     stats: activeSessionStats,
     model: activeSessionModel,
-  } = resolveActiveSessionDetails(
+  } = resolveActiveSessionDetailsFromSnapshot(
     activeConversationTab,
-    // resolveActiveSessionDetails reads only `getSession(runtimeId)`, and its
-    // internal `runtimeId` equals `activeRuntimeId` (identical computation), so
-    // resolving that single pre-selected session is exact.
-    (id) => (id === activeRuntimeId ? activeRuntimeSession : null),
+    activeRuntimeDetails,
     conversations
   )
 
@@ -3181,6 +3291,9 @@ export function ConversationDetailPanel() {
 
   const tileTabRefs = useRef<Map<string, HTMLDivElement | null>>(new Map())
   const groupContainerRef = useRef<HTMLDivElement | null>(null)
+  // The panel's context menu wraps the transcript, so a touch long-press that
+  // selects text would also open it — modal, over the selection's copy bubble.
+  const panelMenu = useTouchSelectionMenuGuard(groupContainerRef)
 
   // Scroll each TILED group's selected tab into view when the selection (or
   // the group's tiled-ness) changes — the signature string keeps the effect
@@ -3429,11 +3542,15 @@ export function ConversationDetailPanel() {
             status={activeTab.status as ConversationStatus | undefined}
           />
         )}
-        <ContextMenu>
+        <ContextMenu
+          open={panelMenu.open}
+          onOpenChange={panelMenu.onOpenChange}
+        >
           <ContextMenuTrigger asChild>
             <div
               ref={groupContainerRef}
               className="relative min-h-0 flex-1 overflow-hidden"
+              onPointerDownCapture={panelMenu.onPointerDownCapture}
             >
               {/* Flat sibling shells keyed by stable group id + divider
                   overlays — stable across every split/tile flip, otherwise

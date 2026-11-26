@@ -1,6 +1,8 @@
 import type { BackendPlatform } from "@/lib/backend/types"
 import { defaultBackendPlatform as legacyBackendPlatform } from "@/lib/backend/defaults"
 import { isDesktop } from "@/lib/transport"
+import { isUnsupportedCommandError } from "@/lib/harness/errors"
+import { parseItemRef } from "@/lib/harness/item-ref"
 import type { AgentType } from "@/lib/types"
 
 /** A `codeg://` link the backend resolved before the workspace was listening. */
@@ -42,6 +44,41 @@ export async function takePendingDeepLink(
     return target
   } catch (err) {
     console.warn("[deep-link] take_pending_deep_link failed:", err)
+    return null
+  }
+}
+
+/**
+ * Claim the Harness link the desktop app was opened (or re-activated) with —
+ * `codeg://harness/install?ref=<publisher>/<name>` — as the item's address.
+ *
+ * The backend parks it in a slot of its own, beside the conversation one: the
+ * two are told apart by where they wait, not by their shape, and this one is
+ * validated as an item address rather than a conversation target. Otherwise it
+ * is the same handover as {@link takePendingDeepLink}: an atomic take, from
+ * the local desktop workspace only (a link opens the item on this computer, so
+ * a remote workspace window never claims one), and `null` for everything else.
+ *
+ * A backend that has no such command is `null` as well, and worth no more than
+ * a debug line: it is a build from before the command existed, not a failure.
+ */
+export async function takePendingHarnessLink(
+  backendPlatform: BackendPlatform = legacyBackendPlatform
+): Promise<string | null> {
+  if (!isDesktop() || backendPlatform.isRemoteDesktopMode()) return null
+  try {
+    const ref = await backendPlatform
+      .getTransport()
+      .call<unknown>("take_pending_harness_link")
+    // The backend checked it already; it is checked again because it goes on
+    // to the Harness page, and nothing that reaches it is taken on trust.
+    return parseItemRef(ref)?.ref ?? null
+  } catch (err) {
+    if (isUnsupportedCommandError(err)) {
+      console.debug("[deep-link] take_pending_harness_link is not available")
+      return null
+    }
+    console.warn("[deep-link] take_pending_harness_link failed:", err)
     return null
   }
 }

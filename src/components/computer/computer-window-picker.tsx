@@ -448,6 +448,7 @@ export function ComputerWindowPicker({
 
   useEffect(() => {
     if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clears the stale list right before kicking off the fetch on open
       setWindows(null)
       setNotice(null)
       void load()

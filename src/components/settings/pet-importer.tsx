@@ -54,6 +54,7 @@ export function PetImporter({ open, onClose, onDone }: PetImporterProps) {
   }, [backendPlatform])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- importable pet list fetch on open
     if (open) void refresh()
   }, [open, refresh])
 

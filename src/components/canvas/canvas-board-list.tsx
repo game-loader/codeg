@@ -97,15 +97,21 @@ export function CanvasBoardList() {
   )
   const [deleteOpen, setDeleteOpen] = useState(false)
 
-  const openCreate = useCallback(() => setForm({ open: true, board: null }), [])
+  const openCreate = useCallback(
+    () => setForm({ open: true, board: null }),
+    [setForm]
+  )
   const openEdit = useCallback(
     (board: CanvasBoard) => setForm({ open: true, board }),
-    []
+    [setForm]
   )
-  const askDelete = useCallback((summary: CanvasBoardSummary) => {
-    setDeleteTarget(summary)
-    setDeleteOpen(true)
-  }, [])
+  const askDelete = useCallback(
+    (summary: CanvasBoardSummary) => {
+      setDeleteTarget(summary)
+      setDeleteOpen(true)
+    },
+    [setDeleteOpen]
+  )
 
   const visible = useMemo(() => {
     const q = query.trim().toLocaleLowerCase()

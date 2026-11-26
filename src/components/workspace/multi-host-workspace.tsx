@@ -278,7 +278,7 @@ export function MultiHostWorkspace({
   const [connectionsLoaded, setConnectionsLoaded] = useState(false)
   const [splitPercent, setSplitPercent] = useState(50)
   const refreshConnectionsRef = useRef<() => void>(() => {})
-  const restored = useRef(new Set<string>())
+  const [restored] = useState(() => new Set<string>())
   const { isMac } = usePlatform()
 
   const changeLayout = useCallback(
@@ -293,6 +293,7 @@ export function MultiHostWorkspace({
 
   useEffect(() => {
     const saved = readWindowLayout()
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate the persisted window layout with its registry
     setLayout(saved)
     setPendingSelection(saved.selected)
     runtimeRecoveryStore.reload()
@@ -364,9 +365,9 @@ export function MultiHostWorkspace({
                 )
               )
           )
-          for (const token of restored.current) {
+          for (const token of restored) {
             if ([...retired].some((key) => token.startsWith(`${key}:`)))
-              restored.current.delete(token)
+              restored.delete(token)
           }
         }
         changeLayout((previous) =>
@@ -423,7 +424,7 @@ export function MultiHostWorkspace({
       window.removeEventListener("storage", onStorage)
       next.dispose()
     }
-  }, [changeLayout, localName])
+  }, [changeLayout, localName, restored])
 
   useEffect(() => {
     if (registry?.get("local"))
@@ -485,7 +486,7 @@ export function MultiHostWorkspace({
       refreshConnections={() => refreshConnectionsRef.current()}
       splitPercent={splitPercent}
       setSplitPercent={setSplitPercent}
-      restored={restored.current}
+      restored={restored}
       onSummary={onSummary}
       renderWorkspace={renderWorkspace}
       isMac={isMac}

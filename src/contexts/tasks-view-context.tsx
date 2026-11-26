@@ -125,7 +125,7 @@ export function TasksViewProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     // Initial fetch + subscribe for backend-pushed nudges. Same
     // subscribe-then-setState idiom as automations-view-context.
-
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- refetch publishes asynchronously after the backend responds
     void refetch()
     let unsub: (() => void) | undefined
     let cancelled = false

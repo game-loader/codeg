@@ -58,6 +58,8 @@ import type {
   AutomationDraft,
   DeepSeekCatalogModel,
   DeepSeekModelCatalog,
+  DeepSeekProviderRoute,
+  DeepSeekProviderRoutes,
   ForgeChangeDetail,
   ForgeCheckSummaryList,
   ForgeChangedFileList,
@@ -621,15 +623,18 @@ export interface CanvasBoardPatchInput {
   color?: string
 }
 
+/**
+ * The Settings window's pages a caller can open by name. MCP, Skills and Skill
+ * packs are not among them: they are sections of the workspace's Harness page
+ * (`useOpenHarness`). Kept in step with `resolve_settings_route`
+ * (`commands/windows.rs`) and the web `open_settings_window`
+ * (`web/handlers/folders.rs`), where a name they do not know lands on
+ * Appearance.
+ */
 export type SettingsSection =
   | "general"
   | "appearance"
   | "agents"
-  | "mcp"
-  | "skills"
-  | "experts"
-  | "science"
-  | "office-tools"
   | "collaboration"
   | "browser"
   | "computer-use"
@@ -1245,7 +1250,11 @@ export function createBackendApi(binding: BackendApiBinding) {
     workingDir?: string,
     sessionId?: string,
     preferredModeId?: string | null,
-    preferredConfigValues?: Record<string, string> | null
+    preferredConfigValues?: Record<string, string> | null,
+    /** The existing conversation this connect opens (a real row id). Its own
+     *  stored selection then wins over the preferences above, which are only
+     *  the new-conversation default (codeg#1179). */
+    conversationId?: number | null
   ): Promise<string> {
     return transport.call("acp_connect", {
       agentType,
@@ -1253,7 +1262,30 @@ export function createBackendApi(binding: BackendApiBinding) {
       sessionId: sessionId ?? null,
       preferredModeId: preferredModeId ?? null,
       preferredConfigValues: preferredConfigValues ?? null,
+      conversationId: conversationId ?? null,
     })
+  }
+
+  async function acpSetComposerMode(
+    connectionId: string,
+    modeId: string | null,
+    initial = false
+  ): Promise<boolean> {
+    return transport.call("acp_set_composer_mode", {
+      connectionId,
+      modeId,
+      initial,
+    })
+  }
+
+  async function loadDeepSeekProviderRoutes(): Promise<DeepSeekProviderRoutes> {
+    return transport.call("acp_load_deepseek_provider_routes", {})
+  }
+
+  async function updateDeepSeekProviderRoutes(
+    routes: DeepSeekProviderRoute[] | null
+  ): Promise<void> {
+    return transport.call("acp_update_deepseek_provider_routes", { routes })
   }
 
   async function acpPrompt(
@@ -1411,8 +1443,19 @@ export function createBackendApi(binding: BackendApiBinding) {
     })
   }
 
-  async function acpDisconnect(connectionId: string): Promise<void> {
-    return transport.call("acp_disconnect", { connectionId })
+  function acpDisconnect(connectionId: string): Promise<void>
+  function acpDisconnect(
+    connectionId: string,
+    onlyIfIdle: true
+  ): Promise<boolean>
+  function acpDisconnect(
+    connectionId: string,
+    onlyIfIdle?: true
+  ): Promise<void | boolean> {
+    return transport.call(
+      "acp_disconnect",
+      onlyIfIdle ? { connectionId, onlyIfIdle } : { connectionId }
+    )
   }
 
   async function acpTouchConnection(connectionId: string): Promise<boolean> {
@@ -1818,8 +1861,12 @@ export function createBackendApi(binding: BackendApiBinding) {
    * "inheriting the agent's built-in list", not an error; an unreadable one
    * arrives as `error` so the panel can refuse to edit it.
    */
-  async function loadDeepSeekModelCatalog(): Promise<DeepSeekModelCatalog> {
-    return transport.call("acp_load_deepseek_model_catalog", {})
+  async function loadDeepSeekModelCatalog(
+    version?: string | null
+  ): Promise<DeepSeekModelCatalog> {
+    return transport.call("acp_load_deepseek_model_catalog", {
+      version: version ?? null,
+    })
   }
 
   /**
@@ -1832,9 +1879,13 @@ export function createBackendApi(binding: BackendApiBinding) {
    * after it, not the ones already running.
    */
   async function updateDeepSeekModelCatalog(
-    models: DeepSeekCatalogModel[] | null
+    models: DeepSeekCatalogModel[] | null,
+    version?: string | null
   ): Promise<void> {
-    return transport.call("acp_update_deepseek_model_catalog", { models })
+    return transport.call("acp_update_deepseek_model_catalog", {
+      models,
+      version: version ?? null,
+    })
   }
 
   /**
@@ -2283,10 +2334,15 @@ export function createBackendApi(binding: BackendApiBinding) {
   async function acpListAgentSkills(params: {
     agentType: AgentType
     workspacePath?: string | null
+    /** Also list the dangling links under a skill's name (owner `broken`), so
+     *  they can be repaired or removed. Only the Harness page asks: an older
+     *  backend ignores it. */
+    includeBroken?: boolean
   }): Promise<AgentSkillsListResult> {
     return transport.call("acp_list_agent_skills", {
       agentType: params.agentType,
       workspacePath: params.workspacePath ?? null,
+      ...(params.includeBroken ? { includeBroken: true } : {}),
     })
   }
 
@@ -2327,6 +2383,12 @@ export function createBackendApi(binding: BackendApiBinding) {
     content: string
     workspacePath?: string | null
     layout?: AgentSkillLayout | null
+    /**
+     * A new skill: refused (`id_taken`) when the id is already used in any
+     * directory of the scope or in Codeg's store. Without it an existing skill
+     * of that id is updated.
+     */
+    create?: boolean
   }): Promise<AgentSkillItem> {
     return transport.call("acp_save_agent_skill", {
       agentType: params.agentType,
@@ -2335,6 +2397,7 @@ export function createBackendApi(binding: BackendApiBinding) {
       content: params.content,
       workspacePath: params.workspacePath ?? null,
       layout: params.layout ?? null,
+      ...(params.create ? { create: true } : {}),
     })
   }
 
@@ -2358,12 +2421,6 @@ export function createBackendApi(binding: BackendApiBinding) {
     return transport.call("experts_list")
   }
 
-  async function expertsGetInstallStatus(
-    expertId: string
-  ): Promise<ExpertInstallStatus[]> {
-    return transport.call("experts_get_install_status", { expertId })
-  }
-
   /** One round-trip snapshot of every (expert, agent) link state for the matrix. */
   async function expertsListAllInstallStatuses(): Promise<
     ExpertInstallStatus[]
@@ -2374,26 +2431,6 @@ export function createBackendApi(binding: BackendApiBinding) {
   /** Apply a batch of enable/disable ops; returns one result per op. */
   async function expertsApplyLinks(ops: LinkOp[]): Promise<LinkOpResult[]> {
     return transport.call("experts_apply_links", { ops })
-  }
-
-  async function expertsLinkToAgent(params: {
-    expertId: string
-    agentType: AgentType
-  }): Promise<ExpertInstallStatus> {
-    return transport.call("experts_link_to_agent", {
-      expertId: params.expertId,
-      agentType: params.agentType,
-    })
-  }
-
-  async function expertsUnlinkFromAgent(params: {
-    expertId: string
-    agentType: AgentType
-  }): Promise<void> {
-    return transport.call("experts_unlink_from_agent", {
-      expertId: params.expertId,
-      agentType: params.agentType,
-    })
   }
 
   async function expertsReadContent(expertId: string): Promise<string> {
@@ -2412,12 +2449,6 @@ export function createBackendApi(binding: BackendApiBinding) {
     return transport.call("science_list")
   }
 
-  async function scienceGetInstallStatus(
-    skillId: string
-  ): Promise<ExpertInstallStatus[]> {
-    return transport.call("science_get_install_status", { skillId })
-  }
-
   /** One round-trip snapshot of every (science skill, agent) link state. */
   async function scienceListAllInstallStatuses(): Promise<
     ExpertInstallStatus[]
@@ -2430,32 +2461,8 @@ export function createBackendApi(binding: BackendApiBinding) {
     return transport.call("science_apply_links", { ops })
   }
 
-  async function scienceLinkToAgent(params: {
-    skillId: string
-    agentType: AgentType
-  }): Promise<ExpertInstallStatus> {
-    return transport.call("science_link_to_agent", {
-      skillId: params.skillId,
-      agentType: params.agentType,
-    })
-  }
-
-  async function scienceUnlinkFromAgent(params: {
-    skillId: string
-    agentType: AgentType
-  }): Promise<void> {
-    return transport.call("science_unlink_from_agent", {
-      skillId: params.skillId,
-      agentType: params.agentType,
-    })
-  }
-
   async function scienceReadContent(skillId: string): Promise<string> {
     return transport.call("science_read_content", { skillId })
-  }
-
-  async function scienceOpenCentralDir(): Promise<string> {
-    return transport.call("science_open_central_dir")
   }
 
   // ─── Custom (user-authored) skills ──────────────────────────────────────
@@ -2575,26 +2582,6 @@ export function createBackendApi(binding: BackendApiBinding) {
 
   async function officecliSyncSkills(): Promise<SkillSyncReport> {
     return transport.call("officecli_sync_skills")
-  }
-
-  async function officecliSkillLinkToAgent(params: {
-    skillId: string
-    agentType: AgentType
-  }): Promise<ExpertInstallStatus> {
-    return transport.call("officecli_skill_link_to_agent", params)
-  }
-
-  async function officecliSkillUnlinkFromAgent(params: {
-    skillId: string
-    agentType: AgentType
-  }): Promise<void> {
-    return transport.call("officecli_skill_unlink_from_agent", params)
-  }
-
-  async function officecliSkillGetInstallStatus(
-    skillId: string
-  ): Promise<ExpertInstallStatus[]> {
-    return transport.call("officecli_skill_get_install_status", { skillId })
   }
 
   /** One round-trip snapshot of every (skill, agent) link state for the matrix. */
@@ -4506,11 +4493,24 @@ export function createBackendApi(binding: BackendApiBinding) {
 
   async function workTaskUpdate(
     id: number,
-    draft: WorkTaskDraft
+    draft: WorkTaskDraft,
+    /** How the server treats the selector tuple (codeg#1179): untouched keeps
+     *  the CURRENT row's, reset re-resolves the folder's task settings now.
+     *  Older servers ignore both and apply the draft as sent. */
+    flags?: {
+      selectionUntouched?: boolean
+      selectionReset?: boolean
+      /** Only the selector tuple changes; refused if the task's title, folder
+       *  or brief moved since the dialog opened. */
+      selectorOnly?: boolean
+    }
   ): Promise<WorkTask> {
     return transport.call("work_task_update", {
       id,
       draft: { ...draft, config: stripUploadedTaskConfig(draft.config) },
+      selectionUntouched: flags?.selectionUntouched ?? false,
+      selectionReset: flags?.selectionReset ?? false,
+      selectorOnly: flags?.selectorOnly ?? false,
     })
   }
 
@@ -7022,6 +7022,9 @@ export function createBackendApi(binding: BackendApiBinding) {
     getStats,
     getSidebarData,
     acpConnect,
+    acpSetComposerMode,
+    loadDeepSeekProviderRoutes,
+    updateDeepSeekProviderRoutes,
     acpPrompt,
     acpSetMode,
     acpSetConfigOption,
@@ -7108,21 +7111,14 @@ export function createBackendApi(binding: BackendApiBinding) {
     acpSaveAgentSkill,
     acpDeleteAgentSkill,
     expertsList,
-    expertsGetInstallStatus,
     expertsListAllInstallStatuses,
     expertsApplyLinks,
-    expertsLinkToAgent,
-    expertsUnlinkFromAgent,
     expertsReadContent,
     expertsOpenCentralDir,
     scienceList,
-    scienceGetInstallStatus,
     scienceListAllInstallStatuses,
     scienceApplyLinks,
-    scienceLinkToAgent,
-    scienceUnlinkFromAgent,
     scienceReadContent,
-    scienceOpenCentralDir,
     customList,
     customListAllInstallStatuses,
     customApplyLinks,
@@ -7138,9 +7134,6 @@ export function createBackendApi(binding: BackendApiBinding) {
     officecliUninstall,
     officecliListSkills,
     officecliSyncSkills,
-    officecliSkillLinkToAgent,
-    officecliSkillUnlinkFromAgent,
-    officecliSkillGetInstallStatus,
     officecliSkillListAllInstallStatuses,
     officecliSkillApplyLinks,
     officecliSkillReadContent,
@@ -7577,8 +7570,19 @@ export const acpAnswerQuestion: BackendApi["acpAnswerQuestion"] = (...args) =>
 export const acpAnswerPlanApproval: BackendApi["acpAnswerPlanApproval"] = (
   ...args
 ) => getDefaultBackendApi().acpAnswerPlanApproval(...args)
-export const acpDisconnect: BackendApi["acpDisconnect"] = (...args) =>
-  getDefaultBackendApi().acpDisconnect(...args)
+export function acpDisconnect(connectionId: string): Promise<void>
+export function acpDisconnect(
+  connectionId: string,
+  onlyIfIdle: true
+): Promise<boolean>
+export function acpDisconnect(
+  connectionId: string,
+  onlyIfIdle?: true
+): Promise<void | boolean> {
+  return onlyIfIdle
+    ? getDefaultBackendApi().acpDisconnect(connectionId, true)
+    : getDefaultBackendApi().acpDisconnect(connectionId)
+}
 export const acpTouchConnection: BackendApi["acpTouchConnection"] = (...args) =>
   getDefaultBackendApi().acpTouchConnection(...args)
 export const acpListConnections: BackendApi["acpListConnections"] = (...args) =>
@@ -7734,18 +7738,10 @@ export const acpDeleteAgentSkill: BackendApi["acpDeleteAgentSkill"] = (
 ) => getDefaultBackendApi().acpDeleteAgentSkill(...args)
 export const expertsList: BackendApi["expertsList"] = (...args) =>
   getDefaultBackendApi().expertsList(...args)
-export const expertsGetInstallStatus: BackendApi["expertsGetInstallStatus"] = (
-  ...args
-) => getDefaultBackendApi().expertsGetInstallStatus(...args)
 export const expertsListAllInstallStatuses: BackendApi["expertsListAllInstallStatuses"] =
   (...args) => getDefaultBackendApi().expertsListAllInstallStatuses(...args)
 export const expertsApplyLinks: BackendApi["expertsApplyLinks"] = (...args) =>
   getDefaultBackendApi().expertsApplyLinks(...args)
-export const expertsLinkToAgent: BackendApi["expertsLinkToAgent"] = (...args) =>
-  getDefaultBackendApi().expertsLinkToAgent(...args)
-export const expertsUnlinkFromAgent: BackendApi["expertsUnlinkFromAgent"] = (
-  ...args
-) => getDefaultBackendApi().expertsUnlinkFromAgent(...args)
 export const expertsReadContent: BackendApi["expertsReadContent"] = (...args) =>
   getDefaultBackendApi().expertsReadContent(...args)
 export const expertsOpenCentralDir: BackendApi["expertsOpenCentralDir"] = (
@@ -7753,23 +7749,12 @@ export const expertsOpenCentralDir: BackendApi["expertsOpenCentralDir"] = (
 ) => getDefaultBackendApi().expertsOpenCentralDir(...args)
 export const scienceList: BackendApi["scienceList"] = (...args) =>
   getDefaultBackendApi().scienceList(...args)
-export const scienceGetInstallStatus: BackendApi["scienceGetInstallStatus"] = (
-  ...args
-) => getDefaultBackendApi().scienceGetInstallStatus(...args)
 export const scienceListAllInstallStatuses: BackendApi["scienceListAllInstallStatuses"] =
   (...args) => getDefaultBackendApi().scienceListAllInstallStatuses(...args)
 export const scienceApplyLinks: BackendApi["scienceApplyLinks"] = (...args) =>
   getDefaultBackendApi().scienceApplyLinks(...args)
-export const scienceLinkToAgent: BackendApi["scienceLinkToAgent"] = (...args) =>
-  getDefaultBackendApi().scienceLinkToAgent(...args)
-export const scienceUnlinkFromAgent: BackendApi["scienceUnlinkFromAgent"] = (
-  ...args
-) => getDefaultBackendApi().scienceUnlinkFromAgent(...args)
 export const scienceReadContent: BackendApi["scienceReadContent"] = (...args) =>
   getDefaultBackendApi().scienceReadContent(...args)
-export const scienceOpenCentralDir: BackendApi["scienceOpenCentralDir"] = (
-  ...args
-) => getDefaultBackendApi().scienceOpenCentralDir(...args)
 export const customList: BackendApi["customList"] = (...args) =>
   getDefaultBackendApi().customList(...args)
 export const customListAllInstallStatuses: BackendApi["customListAllInstallStatuses"] =
@@ -7804,12 +7789,6 @@ export const officecliListSkills: BackendApi["officecliListSkills"] = (
 export const officecliSyncSkills: BackendApi["officecliSyncSkills"] = (
   ...args
 ) => getDefaultBackendApi().officecliSyncSkills(...args)
-export const officecliSkillLinkToAgent: BackendApi["officecliSkillLinkToAgent"] =
-  (...args) => getDefaultBackendApi().officecliSkillLinkToAgent(...args)
-export const officecliSkillUnlinkFromAgent: BackendApi["officecliSkillUnlinkFromAgent"] =
-  (...args) => getDefaultBackendApi().officecliSkillUnlinkFromAgent(...args)
-export const officecliSkillGetInstallStatus: BackendApi["officecliSkillGetInstallStatus"] =
-  (...args) => getDefaultBackendApi().officecliSkillGetInstallStatus(...args)
 export const officecliSkillListAllInstallStatuses: BackendApi["officecliSkillListAllInstallStatuses"] =
   (...args) =>
     getDefaultBackendApi().officecliSkillListAllInstallStatuses(...args)
@@ -8756,3 +8735,10 @@ export const forgeCheckSummaries: BackendApi["forgeCheckSummaries"] = (
 export const forgeApproveWorkflows: BackendApi["forgeApproveWorkflows"] = (
   ...args
 ) => getDefaultBackendApi().forgeApproveWorkflows(...args)
+
+export const acpSetComposerMode: BackendApi["acpSetComposerMode"] = (...args) =>
+  getDefaultBackendApi().acpSetComposerMode(...args)
+export const loadDeepSeekProviderRoutes: BackendApi["loadDeepSeekProviderRoutes"] =
+  (...args) => getDefaultBackendApi().loadDeepSeekProviderRoutes(...args)
+export const updateDeepSeekProviderRoutes: BackendApi["updateDeepSeekProviderRoutes"] =
+  (...args) => getDefaultBackendApi().updateDeepSeekProviderRoutes(...args)

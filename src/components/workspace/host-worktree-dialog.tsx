@@ -79,6 +79,7 @@ export function HostWorktreeDialog({
   useEffect(() => {
     if (!open) return
     let disposed = false
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- show the pending backend list request on each open or refresh
     setLoading(true)
     setError(null)
     service

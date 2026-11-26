@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createBackendClient } from "./client"
+import { harnessBackendFor } from "@/lib/harness/backend"
+import { createHarnessSlotStore } from "@/lib/harness-slots"
 import { expandHomePath } from "@/lib/file-open-target"
 import type { Transport } from "@/lib/transport"
 import type { BackendClient } from "./types"
@@ -33,6 +35,51 @@ function client(id: number, target = transport(), shell = transport()) {
     }),
   }
 }
+
+it("keeps a pending Harness edit and its events on the owning host when another host opens the same item", async () => {
+  const a = client(1),
+    b = client(2)
+  const first = createHarnessSlotStore(harnessBackendFor(a.client))
+  const second = createHarnessSlotStore(harnessBackendFor(b.client))
+  const args = {
+    itemId: "same",
+    agent: "codex",
+    enabled: true,
+    preflight: false,
+    acks: {},
+    expertsAck: null,
+  } as const
+  let finish!: (value: unknown) => void
+  a.target.call.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve
+      })
+  )
+  const editing = first.backend.pluginInstall.harnessPluginSetEnabled(args)
+  const listener = vi.fn()
+  await second.backend.mcpInstall.onHarnessInstalledChanged(listener)
+  b.target.call.mockResolvedValue({ outcome: "changed" })
+  await second.backend.pluginInstall.harnessPluginSetEnabled({
+    ...args,
+    enabled: false,
+  })
+  finish({ outcome: "changed" })
+  await editing
+  expect(a.target.call).toHaveBeenCalledExactlyOnceWith(
+    "harness_plugin_set_enabled",
+    args
+  )
+  expect(a.target.subscribe).not.toHaveBeenCalled()
+  expect(b.target.call).toHaveBeenCalledExactlyOnceWith(
+    "harness_plugin_set_enabled",
+    { ...args, enabled: false }
+  )
+  expect(b.target.subscribe).toHaveBeenCalledExactlyOnceWith(
+    "harness://installed-changed",
+    expect.any(Function)
+  )
+})
 
 describe("fixed backend clients", () => {
   it("keeps helper caches separate for the same home-relative path", async () => {

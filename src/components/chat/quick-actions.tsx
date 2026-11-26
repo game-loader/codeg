@@ -1,7 +1,5 @@
 "use client"
 
-import { useAgentDisplay } from "@/hooks/use-agent-display"
-import { useBackendApi } from "@/contexts/backend-client-context"
 import {
   useCallback,
   useEffect,
@@ -11,15 +9,15 @@ import {
   type ReactNode,
 } from "react"
 import { useLocale, useTranslations } from "next-intl"
-import { toast } from "sonner"
 import { ChevronLeft, ChevronRight, Lock, type LucideIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
-import { type SettingsSection } from "@/lib/api"
+import { useSkillNotEnabledToast } from "@/components/chat/use-skill-not-enabled-toast"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useBuiltInExperts } from "@/hooks/use-built-in-experts"
 import { useEnabledSkillIds } from "@/hooks/use-enabled-skill-ids"
 import { useWelcomeQuickActions } from "@/hooks/use-appearance"
+import { lockedSkillPlugin, skillInvocationOf } from "@/lib/harness/plugin-list"
 import { getExpertIcon, pickLocalized } from "@/lib/expert-presentation"
 import {
   OFFICE_ACTIONS,
@@ -378,14 +376,11 @@ export function QuickActions({
   agentType,
   initialTab,
 }: QuickActionsProps) {
-  const { getAgentLabel } = useAgentDisplay()
-
-  const backendApi = useBackendApi()
-
   const t = useTranslations("Folder.chat.welcomePanel.quickActions")
   const locale = useLocale()
   const experts = useBuiltInExperts()
-  const { enabledIds, ready, supported } = useEnabledSkillIds(agentType)
+  const { enabledIds, providers, ready, supported } =
+    useEnabledSkillIds(agentType)
   const { showWelcomeQuickActions } = useWelcomeQuickActions()
   const lockHint = t("notEnabled.hint")
 
@@ -399,31 +394,10 @@ export function QuickActions({
   )
 
   // Clicking a locked card: warn (with the agent's name) and offer a one-click
-  // jump to the settings page that manages this skill family — coding cards
-  // open Experts, office cards open Office Tools — rather than injecting a
-  // badge the agent can't act on.
-  const notifyNotEnabled = useCallback(
-    (skillLabel: string, section: SettingsSection) => {
-      const agentLabel = agentType ? getAgentLabel(agentType) : ""
-      toast.warning(
-        t("notEnabled.title", { skill: skillLabel, agent: agentLabel }),
-        {
-          description: t("notEnabled.description"),
-          action: {
-            label: t("notEnabled.action"),
-            onClick: () => {
-              void backendApi
-                .openSettingsWindow(section)
-                .catch((err) =>
-                  console.error("[QuickActions] failed to open settings:", err)
-                )
-            },
-          },
-        }
-      )
-    },
-    [agentType, t, backendApi, getAgentLabel]
-  )
+  // jump to the skill pack that holds it — coding cards open Experts, research
+  // cards Science, office cards Office, on the Harness page — rather than
+  // injecting a badge the agent can't act on.
+  const notifyNotEnabled = useSkillNotEnabledToast(agentType)
 
   // Restore the last-picked tab; persist on change. The lazy initializer reads
   // localStorage on each mount (QuickActions only renders client-side in
@@ -447,7 +421,7 @@ export function QuickActions({
     (action: OfficeAction) => {
       const label = t(action.id as Parameters<typeof t>[0])
       if (isLocked(action.skillId)) {
-        notifyNotEnabled(label, "office-tools")
+        notifyNotEnabled(label, "office")
         return
       }
       onSelect({
@@ -477,16 +451,22 @@ export function QuickActions({
     (item: ExpertListItem) => {
       const label =
         pickLocalized(item.metadata.display_name, locale) || item.metadata.id
-      if (isLocked(item.metadata.id)) {
-        notifyNotEnabled(label, "experts")
+      const id = item.metadata.id
+      if (isLocked(id)) {
+        notifyNotEnabled(label, "experts", lockedSkillPlugin(id, providers))
         return
       }
       // Experts are open-ended coding skills: inject just the leading
       // invocation badge (`$id` on Codex, `/id` elsewhere) and let the user
-      // describe the task (no canned template like office docs).
-      onSelect({ text: "", skill: { id: item.metadata.id, label } })
+      // describe the task (no canned template like office docs). Under the
+      // name the agent sees it by: a plugin installed whole may give it as
+      // `superpowers:<id>`.
+      onSelect({
+        text: "",
+        skill: { id: skillInvocationOf(id, providers), label, expertId: id },
+      })
     },
-    [onSelect, locale, isLocked, notifyNotEnabled]
+    [onSelect, locale, isLocked, notifyNotEnabled, providers]
   )
 
   const { codingFeatured, codingRest } = useMemo(() => {

@@ -181,6 +181,7 @@ export interface RuntimeView {
   tabs: readonly WindowResourceTab[]
   selected: WindowResourceRef | null
   routeId: WorkbenchRouteId
+  harnessUpdates?: number
   sidebarOpen: boolean
   terminalOpen: boolean
   auxOpen: boolean

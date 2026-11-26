@@ -10,6 +10,7 @@ import {
   ListTodo,
   LayoutTemplate,
   Map as MapIcon,
+  DraftingCompass,
   Server,
   MessagesSquare,
   ListChevronsDownUp,
@@ -21,6 +22,7 @@ import {
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
 import { SidebarNavButton } from "@/components/layout/sidebar-nav-button"
+import { HarnessUpdatesBadge } from "@/components/harness/harness-updates-badge"
 import { AcademicSidebar } from "@/components/academic/academic-sidebar"
 import {
   DropdownMenu,
@@ -79,6 +81,7 @@ const ICONS = {
   forge: LayoutTemplate,
   canvas: MapIcon,
   machines: Server,
+  harness: DraftingCompass,
 }
 
 export function UnifiedRuntimeNavigation({
@@ -127,6 +130,16 @@ export function UnifiedRuntimeNavigation({
             key={id}
             icon={ICONS[id]}
             label={t(id)}
+            hint={id === "harness" ? t("harnessHint") : undefined}
+            trailing={
+              id === "harness" &&
+              !!view.harnessUpdates && (
+                <HarnessUpdatesBadge
+                  count={view.harnessUpdates}
+                  className="ml-auto"
+                />
+              )
+            }
             active={view.routeId === id}
             onClick={() => navigate(id)}
           />

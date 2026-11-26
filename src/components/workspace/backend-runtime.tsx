@@ -28,6 +28,7 @@ import {
   useWorkspaceView,
 } from "@/contexts/workspace-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
+import { useOptionalHarnessView } from "@/contexts/harness-view-context"
 import { useSidebarContext } from "@/contexts/sidebar-context"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
@@ -115,6 +116,7 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
   const { activePane, mode, filesMaximized, conversationMaximized } =
     useWorkspaceView()
   const { openConversations, routeId, setRoute } = useWorkbenchRoute()
+  const harnessUpdates = useOptionalHarnessView()?.updatesCount ?? 0
   const sidebar = useSidebarContext()
   const aux = useAuxPanelContext()
   const terminal = useTerminalContext()
@@ -356,6 +358,7 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
       tabs,
       selected,
       routeId,
+      harnessUpdates,
       sidebarOpen: sidebar.isOpen,
       terminalOpen: terminal.isOpen,
       auxOpen: aux.isOpen,
@@ -386,6 +389,7 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
       selected,
       hydrated,
       routeId,
+      harnessUpdates,
       navigate,
       newChat,
       openLocationTool,

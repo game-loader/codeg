@@ -106,6 +106,7 @@ impl Driver {
                     FsAccessPolicy::unrestricted(),
                     HostToolsPolicy::Agent,
                     claude_projects_dir,
+                    crate::parsers::AgentEnv::inherited(),
                     Arc::new(StderrTail::new()),
                 ));
                 let _ = done_tx.send(result);

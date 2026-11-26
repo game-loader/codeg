@@ -20,6 +20,11 @@ import {
 import { CanvasPage, CanvasPageTitle } from "@/components/canvas/canvas-page"
 import { ForgeChromeActions } from "@/components/forge/forge-chrome-actions"
 import { ForgePage, ForgePageTitle } from "@/components/forge/forge-page"
+import { HarnessChromeActions } from "@/components/harness/harness-chrome-actions"
+import {
+  HarnessPage,
+  HarnessPageTitle,
+} from "@/components/harness/harness-page"
 import { TasksChromeActions } from "@/components/tasks/tasks-chrome-actions"
 import { TasksPage, TasksPageTitle } from "@/components/tasks/tasks-page"
 import {
@@ -42,6 +47,7 @@ const WORKBENCH_ROUTES: Partial<Record<WorkbenchRouteId, ComponentType>> = {
   canvas: CanvasPage,
   academic: AcademicPage,
   machines: MachinesPage,
+  harness: HarnessPage,
 }
 
 /** Optional per-route content for the window-chrome strip above the page
@@ -55,6 +61,7 @@ const WORKBENCH_ROUTE_STRIPS: Partial<Record<WorkbenchRouteId, ComponentType>> =
     canvas: CanvasPageTitle,
     academic: AcademicPageTitle,
     machines: MachinesPageTitle,
+    harness: HarnessPageTitle,
   }
 
 /** What a chrome cluster hands its route's buttons: the host's own button
@@ -74,6 +81,7 @@ const WORKBENCH_ROUTE_CHROME_ACTIONS: Partial<
 > = {
   forge: ForgeChromeActions,
   tasks: TasksChromeActions,
+  harness: HarnessChromeActions,
 }
 
 /**

@@ -961,6 +961,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       visibleFileTabs.length === 0 ||
       (maximizedPane === "conversation" && !hasConversationTabs)
     ) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the pane after its tabs close
       setMaximizedPane(null)
     }
   }, [visibleFileTabs.length, hasConversationTabs, maximizedPane])
@@ -3636,7 +3637,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     if (tab.loading || tab.isDirty) return
     const key = conflictKey(tab.path)
     conflictSignatureByKeyRef.current.delete(key)
-
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- discard the watcher conflict after the tab settles
     setExternalConflictQueue((prev) =>
       prev.some((conflict) => conflictKey(conflict.path) === key)
         ? prev.filter((conflict) => conflictKey(conflict.path) !== key)

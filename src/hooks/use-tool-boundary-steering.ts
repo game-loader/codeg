@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef } from "react"
+import { useEffect, useLayoutEffect, useRef } from "react"
 import { useAcpEvent } from "@/contexts/acp-connections-context"
 import type { QueuedMessage } from "@/hooks/use-message-queue"
 
@@ -17,7 +17,9 @@ interface Options {
  * fallback when the turn ends first. The model need not call a feedback tool. */
 export function useToolBoundarySteering(options: Options) {
   const latest = useRef(options)
-  latest.current = options
+  useLayoutEffect(() => {
+    latest.current = options
+  }, [options])
   const busy = useRef(false)
   const generation = useRef(Symbol())
   const completed = useRef(new Set<string>())

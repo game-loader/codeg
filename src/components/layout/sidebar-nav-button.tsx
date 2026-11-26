@@ -4,6 +4,8 @@ import type { ReactNode } from "react"
 import type { LucideIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 
+import { LabelWithHint } from "@/components/layout/label-with-hint"
+
 /**
  * A fixed top-of-sidebar action / route row. `active` marks the row as the
  * current workbench route (selected styling); `trailing` carries a shortcut hint
@@ -16,12 +18,15 @@ export function SidebarNavButton({
   label,
   onClick,
   active,
+  hint,
   trailing,
 }: {
   icon: LucideIcon
   label: string
   onClick: () => void
   active?: boolean
+  /** Small text after the label: what the page holds. */
+  hint?: string
   trailing?: ReactNode
 }) {
   return (
@@ -39,7 +44,11 @@ export function SidebarNavButton({
       )}
     >
       <Icon className="h-[0.875rem] w-[0.875rem] shrink-0 text-muted-foreground" />
-      <span className="truncate">{label}</span>
+      {hint ? (
+        <LabelWithHint label={label} hint={hint} />
+      ) : (
+        <span className="truncate">{label}</span>
+      )}
       {trailing}
     </button>
   )

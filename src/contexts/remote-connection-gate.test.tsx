@@ -34,7 +34,7 @@ vi.mock("@/stores/backend-scoped-store-reset", () => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }))
 vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }))
 vi.mock("@tauri-apps/api/webview", () => ({
-  getCurrentWebview: () => ({ listen: mocks.listen }),
+  getCurrentWebview: () => ({ label: "operation", listen: mocks.listen }),
 }))
 vi.mock("@/lib/transport", async () => {
   const { RemoteDesktopTransport } =
@@ -142,7 +142,7 @@ beforeEach(() => {
           message: "Remote connection configuration changed; reopen",
         }
       }
-      mocks.callbacks.get(`remote-ws-event-${args.connectionId}`)?.({
+      mocks.callbacks.get(`remote-ws-event-${args.connectionId}-operation`)?.({
         payload: {
           configRevision: args.configRevision,
           channel: "__ready__",
@@ -212,12 +212,12 @@ describe("operation popup destination fencing", () => {
     const view = render(popup())
     await screen.findByText("Dirty commit form for A")
     await waitFor(() =>
-      expect(mocks.callbacks.has("remote-ws-event-1")).toBe(true)
+      expect(mocks.callbacks.has("remote-ws-event-1-operation")).toBe(true)
     )
     const captured = mocks.transport!
     act(() => {
       mocks.currentRevision = "revision-b"
-      mocks.callbacks.get("remote-ws-event-1")!({
+      mocks.callbacks.get("remote-ws-event-1-operation")!({
         payload: {
           configRevision: "revision-a",
           channel: "__configuration_changed__",

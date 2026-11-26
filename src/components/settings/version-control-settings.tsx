@@ -285,6 +285,7 @@ export function VersionControlSettings() {
   }, [t, backendApi])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial git/settings/accounts fetch
     loadData().catch(console.error)
   }, [loadData])
 

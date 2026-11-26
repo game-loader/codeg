@@ -146,6 +146,88 @@ import { useStickToBottomContext } from "use-stick-to-bottom"
 
 import { MarkdownImageProvider } from "@/components/ai-elements/markdown-local-image"
 
+function useRenderThreadItem(
+  userTurnHeader: MessageListViewProps["userTurnHeader"],
+  armed: boolean,
+  roundOpen: boolean,
+  epoch: number,
+  handleRoundOpenChange: (open: boolean) => void,
+  onForkFromTurn: MessageListViewProps["onForkFromTurn"],
+  forkBusy: boolean
+) {
+  return useCallback(
+    (item: ThreadRenderItem) => {
+      switch (item.kind) {
+        case "turn": {
+          const pt = item.isRoleTransition ? 16 : 0
+          const phaseLabel =
+            item.group.role === "user" && userTurnHeader
+              ? userTurnHeader(item.group)
+              : null
+          return (
+            <div style={pt > 0 ? { paddingTop: pt } : undefined}>
+              {phaseLabel ? (
+                <div className="flex items-center gap-2 px-1 pb-3 pt-1">
+                  <span aria-hidden="true" className="h-px flex-1 bg-border" />
+                  <span className="shrink-0 rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[0.625rem] font-medium leading-none text-muted-foreground">
+                    {phaseLabel}
+                  </span>
+                  <span aria-hidden="true" className="h-px flex-1 bg-border" />
+                </div>
+              ) : null}
+              <HistoricalMessageGroup
+                group={item.group}
+                dimmed={item.phase === "optimistic"}
+                showStats={item.showStats}
+                previousUserIndex={item.previousUserIndex}
+                isResponseComplete={item.isResponseComplete}
+                sourceTurns={item.sourceTurns}
+                currentRound={item.isLastAssistantRun && armed}
+                roundOpen={roundOpen}
+                onRoundOpenChange={handleRoundOpenChange}
+                foldEpoch={epoch}
+                onForkFromTurn={onForkFromTurn}
+                forkDisabled={forkBusy}
+                isThreadTail={item.isThreadTail}
+              />
+            </div>
+          )
+        }
+        case "typing":
+          // Where the reply will be: under the sent message, as far down as
+          // a reply after a message is (`isRoleTransition`).
+          return (
+            <div style={{ paddingTop: 16 }}>
+              <PendingReply />
+            </div>
+          )
+        case "compaction":
+          // Chrome-less centered divider between turns (no avatar / stats footer).
+          return (
+            <div className="px-1 py-2">
+              <ContextCompactionCard
+                state={item.state}
+                meta={item.meta}
+                summary={item.summary}
+              />
+            </div>
+          )
+        default:
+          return null
+      }
+    },
+    [
+      userTurnHeader,
+      armed,
+      roundOpen,
+      epoch,
+      handleRoundOpenChange,
+      onForkFromTurn,
+      forkBusy,
+    ]
+  )
+}
+
 interface MessageListViewProps {
   conversationId: number
   /** This transcript's working directory, including new-chat drafts. */
@@ -171,6 +253,8 @@ interface MessageListViewProps {
   availableCommands: readonly AvailableCommandInfo[] | null | undefined
   connStatus?: ConnectionStatus | null
   isActive?: boolean
+  /** Whether the mounted transcript is shown, including unfocused tiles. */
+  isVisible?: boolean
   sendSignal?: number
   detailLoading?: boolean
   detailError?: string | null
@@ -1532,6 +1616,7 @@ export function MessageListView({
   availableCommands,
   connStatus,
   isActive = true,
+  isVisible = true,
   sendSignal = 0,
   detailLoading = false,
   detailError = null,
@@ -1634,7 +1719,7 @@ export function MessageListView({
     [sharedT, pageHandoffName]
   )
 
-  const sessionSyncState = session?.syncState ?? "idle"
+  const awaitingPersist = session?.syncState === "awaiting_persist"
 
   // Per-instance turn adapter: caches per-turn `AdaptedMessage` so unchanged
   // historical turns survive every streaming-token re-render with stable refs.
@@ -1812,7 +1897,7 @@ export function MessageListView({
     const lastPhase = timelineTurns[timelineTurns.length - 1]?.phase ?? null
     if (
       lastPhase === "optimistic" &&
-      (connStatus === "prompting" || sessionSyncState === "awaiting_persist")
+      (connStatus === "prompting" || awaitingPersist)
     ) {
       items.push({ key: "pending-typing", kind: "typing" })
     }
@@ -1828,7 +1913,7 @@ export function MessageListView({
   }, [
     adapterText,
     connStatus,
-    sessionSyncState,
+    awaitingPersist,
     timelineTurns,
     turnAdapter,
     groupCache,
@@ -1853,6 +1938,7 @@ export function MessageListView({
     runId: liveMessage?.id ?? null,
   })
   if (fold !== storedFold) setFold(fold)
+  const { armed, roundOpen, epoch } = fold
   const handleRoundOpenChange = useCallback((open: boolean) => {
     setFold((prev) =>
       prev.roundOpen === open ? prev : { ...prev, roundOpen: open }
@@ -1874,76 +1960,14 @@ export function MessageListView({
   // "not right now" instead of dropping its button and shifting the icon row.
   const forkBusy = connStatus === "prompting"
 
-  const renderThreadItem = useCallback(
-    (item: ThreadRenderItem) => {
-      switch (item.kind) {
-        case "turn": {
-          const pt = item.isRoleTransition ? 16 : 0
-          const phaseLabel =
-            item.group.role === "user" && userTurnHeader
-              ? userTurnHeader(item.group)
-              : null
-          return (
-            <div style={pt > 0 ? { paddingTop: pt } : undefined}>
-              {phaseLabel ? (
-                <div className="flex items-center gap-2 px-1 pb-3 pt-1">
-                  <span aria-hidden="true" className="h-px flex-1 bg-border" />
-                  <span className="shrink-0 rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[0.625rem] font-medium leading-none text-muted-foreground">
-                    {phaseLabel}
-                  </span>
-                  <span aria-hidden="true" className="h-px flex-1 bg-border" />
-                </div>
-              ) : null}
-              <HistoricalMessageGroup
-                group={item.group}
-                dimmed={item.phase === "optimistic"}
-                showStats={item.showStats}
-                previousUserIndex={item.previousUserIndex}
-                isResponseComplete={item.isResponseComplete}
-                sourceTurns={item.sourceTurns}
-                currentRound={item.isLastAssistantRun && fold.armed}
-                roundOpen={fold.roundOpen}
-                onRoundOpenChange={handleRoundOpenChange}
-                foldEpoch={fold.epoch}
-                onForkFromTurn={onForkFromTurn}
-                forkDisabled={forkBusy}
-                isThreadTail={item.isThreadTail}
-              />
-            </div>
-          )
-        }
-        case "typing":
-          // Where the reply will be: under the sent message, as far down as
-          // a reply after a message is (`isRoleTransition`).
-          return (
-            <div style={{ paddingTop: 16 }}>
-              <PendingReply />
-            </div>
-          )
-        case "compaction":
-          // Chrome-less centered divider between turns (no avatar / stats footer).
-          return (
-            <div className="px-1 py-2">
-              <ContextCompactionCard
-                state={item.state}
-                meta={item.meta}
-                summary={item.summary}
-              />
-            </div>
-          )
-        default:
-          return null
-      }
-    },
-    [
-      userTurnHeader,
-      fold.armed,
-      fold.roundOpen,
-      fold.epoch,
-      handleRoundOpenChange,
-      onForkFromTurn,
-      forkBusy,
-    ]
+  const renderThreadItem = useRenderThreadItem(
+    userTurnHeader,
+    armed,
+    roundOpen,
+    epoch,
+    handleRoundOpenChange,
+    onForkFromTurn,
+    forkBusy
   )
 
   const emptyState = useMemo(
@@ -2263,6 +2287,7 @@ export function MessageListView({
         asyncTasks: liveRuns?.asyncTasks ?? EMPTY_ASYNC_TASKS,
         foregroundAgents,
         backgroundTasks,
+        nativeShellTasks: agentType === "antigravity",
         findLaunchCard: (toolCallId) => {
           if (!cardThread) return null
           for (let i = cardThread.length - 1; i >= 0; i -= 1) {
@@ -2278,6 +2303,7 @@ export function MessageListView({
         delegationBindings,
       }),
     [
+      agentType,
       liveRuns?.asyncTasks,
       liveRuns?.delegatedChildren,
       foregroundAgents,
@@ -2483,6 +2509,7 @@ export function MessageListView({
         )}
         <SelectionActionBubble
           containerRef={selectionBoxRef}
+          isVisible={isVisible}
           onQuote={onQuoteSelection}
           onAsk={onAskSelection}
           onSaveAsNote={onSaveNoteSelection}

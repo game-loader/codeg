@@ -55,6 +55,23 @@ interface TabBarProps {
 // or once per group shell (with `groupId`) while split. The old standalone
 // mobile variant is gone — mobile shows the conversation detail header instead
 // and navigates tabs from the sidebar.
+function useGroupTabs(
+  tabs: TabItemData[],
+  groupId: string | undefined,
+  groupOf: Parameters<typeof groupOfTab>[0],
+  groupLayout: Parameters<typeof groupOfTab>[1]
+) {
+  return useMemo(
+    () =>
+      groupId == null
+        ? tabs
+        : tabs.filter(
+            (tab) => groupOfTab(groupOf, groupLayout, tab.id) === groupId
+          ),
+    [tabs, groupId, groupOf, groupLayout]
+  )
+}
+
 export function TabBar({ groupId, maximizeControl = false }: TabBarProps) {
   const backendStoreSelection = useBackendStoreSelection()
 
@@ -115,15 +132,7 @@ export function TabBar({ groupId, maximizeControl = false }: TabBarProps) {
     (tabs[0]
       ? groupOfTab(groupOf, groupLayout, tabs[0].id)
       : firstLeafId(groupLayout))
-  const groupTabs = useMemo(
-    () =>
-      groupId == null
-        ? tabs
-        : tabs.filter(
-            (tab) => groupOfTab(groupOf, groupLayout, tab.id) === groupId
-          ),
-    [tabs, groupId, groupOf, groupLayout]
-  )
+  const groupTabs = useGroupTabs(tabs, groupId, groupOf, groupLayout)
   const displayActiveId =
     groupId == null ? activeTabId : (groupSelection[groupId] ?? null)
   const isTileMode = !!tileByGroup[stripGroupId]
@@ -323,7 +332,7 @@ export function TabBar({ groupId, maximizeControl = false }: TabBarProps) {
 
   const handleTouchSortingEnd = useCallback(
     () => setTouchSortingTabId(null),
-    []
+    [setTouchSortingTabId]
   )
 
   // While tabs follow the folder, the unsplit strip stays up for a folder with

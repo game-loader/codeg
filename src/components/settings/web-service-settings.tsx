@@ -369,6 +369,7 @@ export function WebServiceSettings() {
   }, [probePort, backendApi])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial server status fetch
     fetchStatus()
   }, [fetchStatus])
 
@@ -402,6 +403,7 @@ export function WebServiceSettings() {
   useEffect(() => {
     const addresses = status?.addresses ?? []
     if (addresses.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- the pick below reads the remembered host from localStorage, so it stays after mount
       setSelectedAddress(null)
       return
     }

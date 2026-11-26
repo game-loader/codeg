@@ -1349,6 +1349,7 @@ function RunHistory({
   }, [automation.id, backendApi])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- loading flag for the fetch + subscription below
     setLoading(true)
     void load()
     let unsub: (() => void) | undefined

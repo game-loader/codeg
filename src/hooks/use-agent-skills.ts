@@ -5,6 +5,9 @@ import { useCallback, useSyncExternalStore } from "react"
 import { useBackendApi } from "@/contexts/backend-client-context"
 import type { BackendApi } from "@/lib/backend/types"
 import * as legacyBackendApi from "@/lib/api"
+import { useHarnessBackend } from "@/hooks/use-harness-backend"
+import type { HarnessBackend } from "@/lib/harness/backend"
+import type { SkillsChanged } from "@/lib/skills/types"
 import type { AgentSkillItem, AgentType } from "@/lib/types"
 
 /**
@@ -36,9 +39,13 @@ interface SkillsEntry {
   generation: number
   /** A scan whose answer is still wanted is running. */
   loading: boolean
+  /** Kept while nothing read it, so nothing followed its changes: the next
+   *  reader shows it, and scans it again. */
+  stale: boolean
 }
 
 interface SkillsCache {
+  stopChanges?: () => void
   readonly api: BackendApi
   readonly entries: Map<string, SkillsEntry>
   readonly readers: Map<string, Set<() => void>>
@@ -58,6 +65,7 @@ function getCache(api: BackendApi): SkillsCache {
   }
   return cache
 }
+const MAX_INACTIVE_SKILL_LISTS = 32
 let listeningForFocus = false
 
 /** Stable empty answer: a fresh `[]` per read would never compare equal to
@@ -92,6 +100,7 @@ function entryFor(
       skills: null,
       generation: 0,
       loading: false,
+      stale: false,
     }
     cache.entries.set(key, entry)
   }
@@ -114,6 +123,7 @@ function scan(cache: SkillsCache, key: string, entry: SkillsEntry): void {
       (result) => {
         if (stale()) return
         entry.loading = false
+        entry.stale = false
         const skills = result.supported ? result.skills : EMPTY
         // An unchanged list keeps its reference, so a refresh that found nothing
         // new re-renders no reader (nor re-parses a transcript's messages).
@@ -144,11 +154,44 @@ function onWindowFocus() {
   }
 }
 
+// Codeg changed a skill or a link — from this window (the Harness page sits in
+// the same window as the composers, so no focus event follows its changes),
+// from another one, or from another client of the same server. The event
+// names the agents that read a directory that changed; an empty list, or a
+// reconnect after events may have been lost, could be anyone. Their folders
+// that something reads are rescanned; the rest are forgotten, so the next
+// reader scans afresh instead of being served a list from before the change.
+function onSkillsChanged(cache: SkillsCache, change: SkillsChanged | null) {
+  const named =
+    change && change.agents.length > 0 ? new Set(change.agents) : null
+  for (const [key, entry] of cache.entries) {
+    if (named && !named.has(entry.agentType)) continue
+    if (cache.readers.has(key)) scan(cache, key, entry)
+    else cache.entries.delete(key)
+  }
+}
+
+function keepRecentlyClosedList(
+  { entries, readers }: SkillsCache,
+  key: string,
+  entry: SkillsEntry
+) {
+  // Insertion order tracks when a list became inactive. Leave active lists
+  // shared by all readers regardless of how many folders are open.
+  entries.delete(key)
+  entries.set(key, entry)
+  for (const oldest of entries.keys()) {
+    if (entries.size - readers.size <= MAX_INACTIVE_SKILL_LISTS) break
+    if (!readers.has(oldest)) entries.delete(oldest)
+  }
+}
+
 function subscribe(
   cache: SkillsCache,
   agentType: AgentType,
   workspacePath: string | null,
-  onChange: () => void
+  onChange: () => void,
+  backend: HarnessBackend
 ): () => void {
   const [key, entry] = entryFor(cache, agentType, workspacePath)
   let keyReaders = cache.readers.get(key)
@@ -162,18 +205,32 @@ function subscribe(
     window.addEventListener("focus", onWindowFocus)
     listeningForFocus = true
   }
+  cache.stopChanges ??= backend.listenSkillsChanged((change) =>
+    onSkillsChanged(cache, change)
+  )
   // Loaded already (another reader got here first): nothing to fetch. A failed
-  // first scan left `skills` null, so the next reader to mount retries it.
-  if (entry.skills === null && !entry.loading) scan(cache, key, entry)
+  // first scan left `skills` null, so the next reader to mount retries it; a
+  // list kept while nothing read it is shown, and checked again.
+  if ((entry.skills === null || entry.stale) && !entry.loading) {
+    scan(cache, key, entry)
+  }
   return () => {
     keyReaders.delete(onChange)
     if (keyReaders.size === 0 && cache.readers.get(key) === keyReaders) {
       cache.readers.delete(key)
+      keepRecentlyClosedList(cache, key, entry)
     }
     if (cache.readers.size === 0) activeCaches.delete(cache)
     if (activeCaches.size === 0 && listeningForFocus) {
       window.removeEventListener("focus", onWindowFocus)
       listeningForFocus = false
+    }
+    if (cache.readers.size === 0 && cache.stopChanges) {
+      cache.stopChanges()
+      cache.stopChanges = undefined
+      // From here on nothing hears of a change: whatever is kept may go out
+      // of date before the next reader comes.
+      for (const kept of cache.entries.values()) kept.stale = true
     }
   }
 }
@@ -186,14 +243,15 @@ export function useAgentSkills(
   workspacePath?: string | null
 ): AgentSkillItem[] {
   const api = useBackendApi()
+  const backend = useHarnessBackend()
   const cache = getCache(api)
   const normalizedPath = workspacePath ?? null
   const subscribeToFolder = useCallback(
     (onChange: () => void) =>
       agentType
-        ? subscribe(cache, agentType, normalizedPath, onChange)
+        ? subscribe(cache, agentType, normalizedPath, onChange, backend)
         : noReader(),
-    [cache, agentType, normalizedPath]
+    [cache, agentType, normalizedPath, backend]
   )
   const getSnapshot = useCallback(
     () =>

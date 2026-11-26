@@ -1,7 +1,7 @@
 "use client"
 
-import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
 import { useAgentDisplay } from "@/hooks/use-agent-display"
+import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
 import { useBackendStores } from "@/contexts/backend-stores-selection-context"
 import {
   useBackendApi,
@@ -40,6 +40,7 @@ import {
   ListX,
   Loader2,
   MessageSquareReply,
+  MessageSquareShare,
   MessageSquareText,
   Pencil,
   Play,
@@ -85,6 +86,10 @@ import {
   type TaskMessageComposerHandle,
 } from "./task-message-composer"
 import { TaskTranscriptDialog } from "./task-transcript-dialog"
+import {
+  taskConversationSettling,
+  useOpenTaskConversation,
+} from "./use-open-task-conversation"
 import {
   duplicateActiveSource,
   duplicateActiveSourceLabel,
@@ -135,6 +140,7 @@ import {
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import type {
+  WorkTaskConversationSelection,
   AgentType,
   PromptInputBlock,
   WorkTask,
@@ -218,11 +224,10 @@ export function TaskDetailSheet({
   onEdit,
   onSchedule,
 }: TaskDetailSheetProps) {
-  const { getAgentLabel } = useAgentDisplay()
-
   const backendStores = useBackendStores({ workspace: legacyWorkspace })
   const useAppWorkspaceStore = backendStores.workspace
 
+  const { getAgentLabel } = useAgentDisplay()
   const backendApi = useBackendApi()
   const backendPlatform = useBackendPlatform()
 
@@ -271,6 +276,40 @@ export function TaskDetailSheet({
   const [sessionOpen, setSessionOpen] = useState(false)
   const [diffFile, setDiffFile] = useState<string | null | false>(false)
   const [busy, setBusy] = useState(false)
+  // "Open conversation to change" (codeg#1179): the task's model / options
+  // are its conversation's own, changed with that conversation's selectors —
+  // also from review, before Return / Merge continue it. Resolves the CURRENT
+  // binding at click time; disabled while the binding may still change.
+  const openTaskConversation = useOpenTaskConversation()
+  const [openingConversation, setOpeningConversation] = useState(false)
+  // The bound conversation's own selection, read fresh (the board row does
+  // not carry it), and re-read when the binding or the status moves — an
+  // inline retry can re-link the task while the sheet stays open.
+  const [conversationSelection, setConversationSelection] =
+    useState<WorkTaskConversationSelection | null>(null)
+  const selTaskId = task?.id ?? null
+  const selConversationId = task?.conversation_id ?? null
+  const selStatus = task?.status ?? null
+  useEffect(() => {
+    if (!open || selTaskId == null || selConversationId == null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clears the selection owned by the fetch below
+      setConversationSelection(null)
+      return
+    }
+    let cancelled = false
+    backendApi
+      .workTaskGet(selTaskId)
+      .then((row) => {
+        if (!cancelled)
+          setConversationSelection(row.conversation_selection ?? null)
+      })
+      .catch(() => {
+        if (!cancelled) setConversationSelection(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, selTaskId, selConversationId, selStatus, backendApi])
   /** Synchronous in-flight latch for the follow-up send (see submitFollowUp). */
   const submittingRef = useRef(false)
   const reqRef = useRef(0)
@@ -293,6 +332,7 @@ export function TaskDetailSheet({
   const [convAgentType, setConvAgentType] = useState<AgentType | null>(null)
   useEffect(() => {
     if (!open || conversationId == null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clears the chip owned by the transcript fetch below
       setTokenTotal(null)
       setConvAgentType(null)
       return
@@ -345,6 +385,7 @@ export function TaskDetailSheet({
   useEffect(() => {
     if (!open || taskId == null) return
 
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- per-open reset paired with the fetch + subscription below
     setEvents([])
     setFiles([])
     setComposerOpen(false)
@@ -390,9 +431,19 @@ export function TaskDetailSheet({
   // anyway" and waive a guard the user never saw refuse anything. (The label
   // and the waiver read the same state, so the two can never disagree; this is
   // about not carrying a decision across the moment it was made.)
-  useEffect(() => {
+  // Adjusted during render rather than in an effect, so no commit ever pairs a
+  // stale refusal with the new box/status; the initial null covers mount.
+  const [dupScope, setDupScope] = useState({
+    composerOpen,
+    status: taskStatus,
+  })
+  if (
+    dupScope.composerOpen !== composerOpen ||
+    dupScope.status !== taskStatus
+  ) {
+    setDupScope({ composerOpen, status: taskStatus })
     setRestartDuplicate(null)
-  }, [composerOpen, task?.status])
+  }
 
   /// A restart that consumed the note closes the box with it, so the text
   /// cannot be silently attached to a second restart the user did not mean.
@@ -406,7 +457,7 @@ export function TaskDetailSheet({
         setComposerText("")
         setComposerAttachments(0)
       }),
-    [run]
+    [run, setComposerOpen, setComposerText, setComposerAttachments]
   )
 
   // Conversation truth first — that is the agent that actually ran. Before its
@@ -419,15 +470,32 @@ export function TaskDetailSheet({
   // Snapshot first (it carries the model the run actually used); otherwise the
   // resolved agent's display name, so a task that simply follows the folder's
   // defaults still names its agent beside the icon.
+  //
+  // A task with a conversation runs that conversation's own selection
+  // (codeg#1179), so its model is the conversation's once known — the
+  // snapshot's label only while it names that same value.
   const agentLabel = useMemo(() => {
     const snap = task?.config?.label_snapshot
     const name =
       snap?.agent_label ??
       (agentType ? (getAgentLabel(agentType) ?? agentType) : null)
     if (!name) return null
-    const model = snap?.config_labels?.model
+    const sel =
+      conversationSelection && !conversationSelection.replaces_conversation
+        ? conversationSelection
+        : null
+    const snapModel = snap?.config_labels?.model
+    const convModel = sel?.config_values?.model
+    const model =
+      convModel == null
+        ? sel
+          ? null
+          : snapModel
+        : convModel === task?.config?.config_values?.model && snapModel
+          ? snapModel
+          : convModel
     return model ? `${name} · ${model}` : name
-  }, [task, agentType, getAgentLabel])
+  }, [task, agentType, conversationSelection, getAgentLabel])
 
   // The project's forge remote, for an ordinary reviewed task that could be
   // delivered to a pull request. Read again whenever the sheet opens on one:
@@ -1490,6 +1558,41 @@ export function TaskDetailSheet({
                   label={t("actionViewSession")}
                   busy={false}
                   onClick={() => setSessionOpen(true)}
+                />
+              ) : null}
+              {task.conversation_id != null &&
+              !archived &&
+              conversationSelection?.replaces_conversation === true &&
+              task.status === "review" ? (
+                // A legacy task whose agent changed while bound: Return /
+                // Merge start a NEW conversation with the task's own tuple,
+                // so that tuple is what to change (agent locked).
+                <FooterAction
+                  icon={Pencil}
+                  label={t("actionEditTaskConfig")}
+                  busy={busy}
+                  onClick={() => onEdit(task)}
+                />
+              ) : null}
+              {task.conversation_id != null &&
+              !archived &&
+              conversationSelection?.replaces_conversation !== true ? (
+                <FooterAction
+                  icon={MessageSquareShare}
+                  label={t("conversationSelectionOpen")}
+                  busy={openingConversation || taskConversationSettling(task)}
+                  onClick={() => {
+                    setOpeningConversation(true)
+                    openTaskConversation(task.id)
+                      .then((result) => {
+                        if (result === "opened") onOpenChange(false)
+                        else if (result === "starting")
+                          toast.info(t("conversationSelectionStarting"))
+                        else toast.info(t("conversationSelectionUnavailable"))
+                      })
+                      .catch((e: unknown) => toast.error(toErrorMessage(e)))
+                      .finally(() => setOpeningConversation(false))
+                  }}
                 />
               ) : null}
               {canEdit ? (

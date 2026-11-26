@@ -21,7 +21,7 @@
 
 import { sanitizeCustomCss, sanitizeCustomTheme } from "./custom-style"
 import { isLocalDesktop } from "./platform"
-import { getTransport, type Transport } from "./transport"
+import { getTransport } from "./transport"
 
 /**
  * Must match `APPEARANCE_STORAGE_KEYS` in
@@ -83,7 +83,12 @@ export function readSyncedAppearance(): AppearanceValues {
   return values
 }
 
-type AppearanceTransport = Pick<Transport, "call">
+type AppearanceTransport = {
+  call(
+    command: "config_sync_mirror_appearance",
+    args: { values: AppearanceValues }
+  ): Promise<unknown>
+}
 type ResolveTransport = () => AppearanceTransport
 
 async function mirrorAppearanceNow(
@@ -92,7 +97,7 @@ async function mirrorAppearanceNow(
 ): Promise<void> {
   if (typeof window === "undefined") return
   try {
-    await transport.call<null>("config_sync_mirror_appearance", { values })
+    await transport.call("config_sync_mirror_appearance", { values })
   } catch (err) {
     // A mirror that failed only means the next snapshot carries the previous
     // appearance; the next change retries.

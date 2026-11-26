@@ -219,6 +219,7 @@ export function StashWorkspace({ folderPath }: StashWorkspaceProps) {
   }, [folderPath, backendApi])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- kicks off an async stash fetch (flips the loading flag first)
     loadStashes()
   }, [loadStashes])
 

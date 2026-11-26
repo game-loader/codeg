@@ -52,6 +52,8 @@ function machine(id: number) {
     ] as ExpertInstallStatus[]),
     officecliSkillListAllInstallStatuses: vi.fn().mockResolvedValue([]),
     scienceListAllInstallStatuses: vi.fn().mockResolvedValue([]),
+    customListAllInstallStatuses: vi.fn().mockResolvedValue([]),
+    generativeUiListAllInstallStatuses: vi.fn().mockResolvedValue([]),
     startWorkspaceStateStream: vi.fn().mockResolvedValue(snapshot),
     stopWorkspaceStateStream: vi.fn().mockResolvedValue(undefined),
     getWorkspaceSnapshot: vi.fn().mockResolvedValue(snapshot),
@@ -71,6 +73,11 @@ function machine(id: number) {
   const client = {
     key: `remote:${id}`,
     api,
+    // This fixture represents a host from before the unified inventory.
+    transport: {
+      call: vi.fn().mockRejectedValue({ code: "not_implemented" }),
+      subscribe: platform.subscribe,
+    },
     platform,
   } as unknown as BackendClient
   const wrapper = ({ children }: { children: ReactNode }) => (

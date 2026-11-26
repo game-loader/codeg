@@ -181,6 +181,7 @@ export function GeneralSettings() {
   }, [renderingSettingsLoadable, backendApi])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial settings fetch
     loadSettings().catch((err) => {
       console.error("[Settings] load general settings failed:", err)
     })
