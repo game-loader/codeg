@@ -23,9 +23,11 @@ import {
   useRef,
   useState,
 } from "react"
+import { createPortal } from "react-dom"
 import type { ImperativePanelGroupHandle } from "react-resizable-panels"
 import { FolderTitleBar } from "@/components/layout/folder-title-bar"
 import { Sidebar } from "@/components/layout/sidebar"
+import { WorkspaceDocumentTitle } from "@/components/layout/workspace-document-title"
 import { StatusBar } from "@/components/layout/status-bar"
 import {
   AppWorkspaceProvider,
@@ -34,7 +36,6 @@ import {
 import { AssistantsSync } from "@/stores/assistants-store"
 import { ConversationTagsSync } from "@/stores/conversation-tags-store"
 import { ConversationTagsManagerHost } from "@/components/conversations/conversation-tags-manager"
-import { useActiveFolder } from "@/contexts/active-folder-context"
 import { TaskProvider } from "@/contexts/task-context"
 import { AlertProvider } from "@/contexts/alert-context"
 import { AcpConnectionsProvider } from "@/contexts/acp-connections-context"
@@ -42,16 +43,16 @@ import { DelegationProvider } from "@/contexts/delegation-context"
 import { ConversationRuntimeProvider } from "@/contexts/conversation-runtime-context"
 import { TabProvider } from "@/contexts/tab-context"
 import { useBackendStoreSelection } from "@/contexts/backend-stores-selection-context"
-import {
-  TabKeysSync,
-  WorkbenchRouteConversationSync,
-} from "@/components/workspace/runtime-conversation-bridges"
+import { TabKeysSync } from "@/components/workspace/runtime-conversation-bridges"
 import { SidebarProvider, useSidebarContext } from "@/contexts/sidebar-context"
 import { SearchDialogProvider } from "@/contexts/search-dialog-context"
 import { AutomationsViewProvider } from "@/contexts/automations-view-context"
 import { HarnessViewHost } from "@/components/harness/harness-view-host"
 import { HarnessUpdatesSync } from "@/lib/harness/use-harness-updates"
 import { TasksViewProvider } from "@/contexts/tasks-view-context"
+import { PersonalAgentProvider } from "@/contexts/personal-agent-context"
+import { PersonalAgentViewScope } from "@/components/personal-agent/view-scope"
+import { WorkspaceAssistantsSection } from "@/components/workspace/workspace-assistants-section"
 import { TaskFromMessageHost } from "@/components/tasks/task-from-message-host"
 import {
   WorkbenchRouteProvider,
@@ -59,6 +60,7 @@ import {
 } from "@/contexts/workbench-route-context"
 import {
   WorkbenchRoutePage,
+  WorkbenchRouteChromeActions,
   WorkbenchRouteStrip,
   useHasWorkbenchRouteStrip,
 } from "@/components/workbench/workbench-content"
@@ -101,6 +103,11 @@ import {
 } from "@/components/workspace/deep-link-bootstrap"
 import { HarnessLinkBootstrap } from "@/components/workspace/harness-link-bootstrap"
 import { WorkspaceOpenFolderListener } from "@/components/workspace/workspace-open-folder-listener"
+import { WorkbenchRouteConversationSync } from "@/components/workspace/workbench-route-conversation-sync"
+import { PersonalAgentOpenBridge } from "@/components/personal-agent/open-bridge"
+import { PersonalAgentNotifier } from "@/components/personal-agent-notifier"
+import { PresenceHeartbeat } from "@/components/presence-heartbeat"
+import { useAssistantAvailability } from "@/components/workspace/use-assistant-availability"
 import { WorkspaceRestoreNotices } from "@/components/workspace/workspace-restore-notices"
 import { HeavyPluginsWarmup } from "@/components/ai-elements/heavy-plugins-warmup"
 import {
@@ -120,20 +127,13 @@ import { usePlatform } from "@/hooks/use-platform"
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
 import { OverlayHostHiddenProvider } from "@/components/ui/overlay-host-hidden"
 import { useSearchParams } from "next/navigation"
-import { MultiHostWorkspace } from "@/components/workspace/multi-host-workspace"
+import {
+  MultiHostWorkspace,
+  type RuntimeChrome,
+} from "@/components/workspace/multi-host-workspace"
 import { RuntimeBridge } from "@/components/workspace/backend-runtime"
 import { useWorkspaceRuntimeVisibility } from "@/contexts/workspace-runtime-visibility-context"
 import type { BackendRuntime } from "@/lib/backend/runtime"
-
-function WorkspaceDocumentTitle() {
-  const { activeFolder } = useActiveFolder()
-
-  useEffect(() => {
-    document.title = activeFolder ? `${activeFolder.name} - codeg` : "codeg"
-  }, [activeFolder])
-
-  return null
-}
 
 const TOAST_DURATION_MS = 15000
 const WORKSPACE_PANEL_GROUP_ID = "workspace-panel-group"
@@ -356,7 +356,7 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
     [applyLayout, mode]
   )
 
-  const { isConversations } = useWorkbenchRoute()
+  const { isConversations, routeId } = useWorkbenchRoute()
   const hasRouteStrip = useHasWorkbenchRouteStrip()
   const { isOpen: sidebarOpen } = useSidebarContext()
   const { isOpen: auxOpen } = useAuxPanelContext()
@@ -635,6 +635,14 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
             <ChromeReserve width={leftCornerWidth} line={false} />
             <WorkbenchRouteStrip />
             <div data-tauri-drag-region className="h-full min-w-0 flex-1" />
+            {managed && routeId === "personalAgent" && (
+              <div className="flex shrink-0 items-center gap-1 px-2">
+                <WorkbenchRouteChromeActions
+                  buttonClassName="size-7"
+                  iconClassName="size-4"
+                />
+              </div>
+            )}
           </div>
           <div className="min-h-0 flex-1">
             <WorkbenchRoutePage />
@@ -1272,6 +1280,19 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
     terminalMaxHeight,
     safeMainHeight
   )
+  // A panel's starting size inside the bounds it has now (none while it is
+  // closed): one outside them is what the panels library clamps anyway, and
+  // warns about in the console on every launch.
+  const startSize = (
+    open: boolean,
+    size: number,
+    range: { minSize: number; maxSize: number }
+  ) => (open ? clamp(size, range.minSize, range.maxSize) : 0)
+  // The middle takes the rest, so the starting sizes still add up to the
+  // whole (the library warns about a layout that does not, too).
+  const sidebarStart = startSize(sidebarOpen, 18, sidebarSizeRange)
+  const auxStart = startSize(auxOpen, 18, auxSizeRange)
+  const terminalStart = startSize(terminalOpen, 28, terminalSizeRange)
 
   return (
     <div
@@ -1288,7 +1309,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
         <ResizablePanel
           id={panelId(FOLDER_SHELL_LEFT_PANEL_ID)}
           order={1}
-          defaultSize={managed ? 0 : 18}
+          defaultSize={sidebarStart}
           style={sidebarPanelStyle}
           minSize={sidebarOpen ? sidebarSizeRange.minSize : 0}
           maxSize={sidebarOpen ? sidebarSizeRange.maxSize : 0}
@@ -1314,7 +1335,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
         <ResizablePanel
           id={panelId(FOLDER_SHELL_MAIN_PANEL_ID)}
           order={2}
-          defaultSize={managed ? 82 : 64}
+          defaultSize={Math.max(10, 100 - sidebarStart - auxStart)}
           minSize={10}
         >
           <main
@@ -1333,7 +1354,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
               <ResizablePanel
                 id={panelId(FOLDER_MAIN_WORKSPACE_PANEL_ID)}
                 order={1}
-                defaultSize={72}
+                defaultSize={Math.max(15, 100 - terminalStart)}
                 minSize={15}
               >
                 {workspaceElement}
@@ -1364,7 +1385,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
               <ResizablePanel
                 id={panelId(FOLDER_MAIN_TERMINAL_PANEL_ID)}
                 order={2}
-                defaultSize={28}
+                defaultSize={terminalStart}
                 style={terminalPanelStyle}
                 minSize={terminalOpen ? terminalSizeRange.minSize : 0}
                 maxSize={terminalOpen ? terminalSizeRange.maxSize : 0}
@@ -1388,7 +1409,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
         <ResizablePanel
           id={panelId(FOLDER_SHELL_RIGHT_PANEL_ID)}
           order={3}
-          defaultSize={18}
+          defaultSize={auxStart}
           style={auxPanelStyle}
           minSize={auxOpen ? auxSizeRange.minSize : 0}
           maxSize={auxOpen ? auxSizeRange.maxSize : 0}
@@ -1510,21 +1531,42 @@ function FolderLayoutShell({ children }: { children: React.ReactNode }) {
   )
 }
 
-// Single chokepoint that keeps the workbench route honest: opening or switching
-// to a conversation from ANY entry point (sidebar, ⌘T, search, deep links, pet
-// focus, branch switch, run history …) activates a tab, so leaving a non-default
-// route whenever activeTabId changes covers every opener — present and future —
-// without patching each call site. Re-selecting the ALREADY-active tab does not
-// change activeTabId, so the interactive conversation pickers (sidebar list,
-// search dialog, run history) also call openConversations() directly.
-
 function WorkspaceLayoutInner({
   children,
   runtime,
+  chrome,
 }: {
   children: React.ReactNode
   runtime?: BackendRuntime
+  chrome?: RuntimeChrome
 }) {
+  const personalAgentAvailable = useAssistantAvailability()
+  const workbench = (
+    <WorkbenchRouteProvider personalAgentAvailable={personalAgentAvailable}>
+      {runtime && <RuntimeBridge runtime={runtime} />}
+      <WorkbenchRouteConversationSync />
+      <TaskFromMessageHost />
+      {(!runtime || runtime.client.key === "local") && (
+        <>
+          <DeepLinkBootstrap onOpen={chrome?.activate} />
+          <PetFocusBridge onOpen={chrome?.activate} />
+          <WorkspaceOpenFolderListener />
+          <HarnessLinkBootstrap />
+          {!runtime && <WorkspaceDocumentTitle />}
+        </>
+      )}
+      {personalAgentAvailable && (
+        <>
+          <PresenceHeartbeat />
+          <PersonalAgentNotifier />
+          <PersonalAgentOpenBridge onOpen={chrome?.activate} />
+          {chrome?.assistantsHost &&
+            createPortal(<WorkspaceAssistantsSection />, chrome.assistantsHost)}
+        </>
+      )}
+      <FolderLayoutShell>{children}</FolderLayoutShell>
+    </WorkbenchRouteProvider>
+  )
   return (
     <AppWorkspaceProvider>
       <AlertProvider>
@@ -1545,7 +1587,6 @@ function WorkspaceLayoutInner({
                 <ConversationRuntimeProvider>
                   <WorkspaceProvider>
                     <TabProvider>
-                      {!runtime && <WorkspaceDocumentTitle />}
                       <TabKeysSync />
                       <BrowserEventsBridge />
                       {/* Beside the events bridge and not inside it: that one
@@ -1564,12 +1605,6 @@ function WorkspaceLayoutInner({
                       <BrowserTabsPersistence />
                       <BrowserTabsSuspender />
                       <HeavyPluginsWarmup />
-                      {(!runtime || runtime.client.key === "local") && (
-                        <>
-                          <DeepLinkBootstrap />
-                          <PetFocusBridge />
-                        </>
-                      )}
                       <WorkspaceRestoreNotices />
                       {/* Always mounted: external-change conflicts must be
                             resolvable even with the aux file tree closed. */}
@@ -1595,37 +1630,15 @@ function WorkspaceLayoutInner({
                                           sidebar's badge count, kept current
                                           with the page closed. */}
                                     <HarnessUpdatesSync />
-                                    <WorkbenchRouteProvider>
-                                      {runtime && (
-                                        <RuntimeBridge runtime={runtime} />
-                                      )}
-                                      <WorkbenchRouteConversationSync />
-                                      {/* The task editor a message's "create
-                                            task" opens over the page it is on:
-                                            a transcript shows in a tab, a canvas
-                                            card or a drawer on any route, and
-                                            none of them keeps one of its own. */}
-                                      <TaskFromMessageHost />
-                                      {/* Inside WorkbenchRouteProvider: the
-                                            listener calls openConversations() to
-                                            surface a launcher-opened folder. */}
-                                      {(!runtime ||
-                                        runtime.client.key === "local") && (
-                                        <WorkspaceOpenFolderListener />
-                                      )}
-                                      {/* An "Open in Codeg" link for a Harness
-                                            item opens it here, inside the route
-                                            and the Harness view it needs: the
-                                            page's own ?harness=, or the address
-                                            PetFocusBridge claimed. */}
-                                      {(!runtime ||
-                                        runtime.client.key === "local") && (
-                                        <HarnessLinkBootstrap />
-                                      )}
-                                      <FolderLayoutShell>
-                                        {children}
-                                      </FolderLayoutShell>
-                                    </WorkbenchRouteProvider>
+                                    <PersonalAgentProvider
+                                      enabled={personalAgentAvailable}
+                                    >
+                                      <PersonalAgentViewScope
+                                        enabled={personalAgentAvailable}
+                                      >
+                                        {workbench}
+                                      </PersonalAgentViewScope>
+                                    </PersonalAgentProvider>
                                   </HarnessViewHost>
                                 </TasksViewProvider>
                               </AutomationsViewProvider>
@@ -1657,8 +1670,8 @@ function WorkspaceLayoutEntry({ children }: { children: React.ReactNode }) {
     return (
       <UpdateProvider>
         <MultiHostWorkspace
-          renderWorkspace={(runtime) => (
-            <WorkspaceLayoutInner runtime={runtime}>
+          renderWorkspace={(runtime, chrome) => (
+            <WorkspaceLayoutInner runtime={runtime} chrome={chrome}>
               {children}
             </WorkspaceLayoutInner>
           )}

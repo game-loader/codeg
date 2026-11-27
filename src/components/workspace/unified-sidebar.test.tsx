@@ -266,6 +266,7 @@ vi.mock("@/components/layout/workspace-folder-dialog", () => ({
 vi.mock("./host-worktree-dialog", () => ({ HostWorktreeDialog: () => null }))
 vi.mock("@/contexts/acp-connections-context", () => ({
   useAcpActions: () => ({ disconnectIfIdle: vi.fn() }),
+  useOptionalConnectionStore: () => null,
 }))
 
 function TabFolderSync({ runtime }: { runtime: BackendRuntime }) {

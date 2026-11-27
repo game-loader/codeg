@@ -154,6 +154,8 @@ impl Driver {
                 }],
                 user_message: None,
                 internal_suffix: Vec::new(),
+                reply_token: None,
+                receipt: None,
             })
             .await
             .unwrap();

@@ -150,6 +150,63 @@ async fn association_is_idempotent_validates_folder_and_cannot_be_reassigned() {
 }
 
 #[tokio::test]
+async fn asks_inherit_only_from_the_paper_bound_source_in_their_own_folder() {
+    use super::store;
+    use crate::db::service::{conversation_service as conv, folder_service};
+    use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
+    use crate::models::AgentType::Codex;
+
+    let db = fresh_in_memory_db().await;
+    let conn = &db.conn;
+    let repo = seed_folder(&db, "/tmp/academic-ask-repo").await;
+    let chat = folder_service::add_chat_folder(conn, "/tmp/academic-ask-chat")
+        .await
+        .unwrap()
+        .id;
+    let main = seed_conversation(&db, repo, Codex).await;
+    let scratch = conv::create_chat(conn, chat, Codex, None, None)
+        .await
+        .unwrap();
+    let mut paper = paper_fixture("ask-paper");
+    paper.folder_id = Some(repo);
+    store::save(conn, &paper).await.unwrap();
+    store::bind_conversation(conn, &paper.id, main)
+        .await
+        .unwrap();
+    store::bind_conversation(conn, &paper.id, scratch.id)
+        .await
+        .unwrap();
+
+    let ask = |source, folder| conv::create_ask(conn, source, folder, Codex, None, None);
+    let first = ask(main, repo).await.unwrap();
+    let nested = ask(first.id, repo).await.unwrap();
+    assert_eq!(nested.parent_id, Some(main));
+    let chat_ask = ask(scratch.id, chat).await.unwrap();
+    // Conversion clears the sidebar relationship but keeps the Ask's context.
+    assert!(conv::detach_ask(conn, nested.id).await.unwrap().is_some());
+    for id in [first.id, nested.id, chat_ask.id] {
+        let bound = store::conversation_paper(conn, id).await.unwrap().unwrap();
+        assert_eq!(bound.id, paper.id);
+    }
+
+    let unrelated = ask(scratch.id, repo).await.unwrap();
+    // Even back in the sidebar parent's folder, an Ask uses the immediate
+    // source's association. The original scratch paper must not resurface.
+    let unrelated_nested = ask(unrelated.id, chat).await.unwrap();
+    assert_eq!(unrelated_nested.parent_id, Some(scratch.id));
+    for id in [unrelated.id, unrelated_nested.id] {
+        assert!(store::conversation_context(conn, id)
+            .await
+            .unwrap()
+            .is_none());
+    }
+    // The generic bind still refuses an arbitrary Ask in the paper's repo.
+    assert!(store::bind_conversation(conn, &paper.id, unrelated.id)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
 async fn restart_recovery_preserves_terminal_states_and_associations() {
     let db = database().await;
     let mut active = paper_fixture("active");

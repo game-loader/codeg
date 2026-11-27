@@ -13,6 +13,7 @@ import {
 import type { BackendRuntime } from "@/lib/backend/runtime"
 import type { ConversationStatus, DbConversationSummary } from "@/lib/types"
 import type { CatalogRowActions } from "./project-session-list"
+import type { AttentionIndex } from "@/lib/conversation-attention"
 
 export function OwnedSessionCard({
   runtime,
@@ -20,6 +21,7 @@ export function OwnedSessionCard({
   hostName,
   isCurrent,
   actions,
+  attention,
   depth = 0,
 }: {
   runtime: BackendRuntime
@@ -27,6 +29,7 @@ export function OwnedSessionCard({
   hostName: string
   isCurrent(session: OwnedProjectSession): boolean
   actions: CatalogRowActions
+  attention?: AttentionIndex | null
   depth?: number
 }) {
   const t = useTranslations("MultiHost")
@@ -104,6 +107,7 @@ export function OwnedSessionCard({
     >
       <SidebarConversationCard
         conversation={conversation}
+        awaiting={attention?.get(conversation.id) ?? null}
         isSelected={tab?.id === activeTabId}
         isOpenInTab={!!tab}
         onSelect={() => {
@@ -203,6 +207,7 @@ export function OwnedSessionCard({
           hostName={hostName}
           isCurrent={isCurrent}
           actions={actions}
+          attention={attention}
           depth={depth + 1}
         />
       )}
@@ -222,7 +227,8 @@ function DelegationChildren(props: Parameters<typeof OwnedSessionCard>[0]) {
   const [error, setError] = useState(false)
   const [retry, setRetry] = useState(0)
   const deletedChildIdsRef = useRef(new Set<number>())
-  useSubsessionSync({ setChildrenByParent, deletedChildIdsRef })
+  const rootIdsRef = useRef(new Set<number>())
+  useSubsessionSync({ setChildrenByParent, deletedChildIdsRef, rootIdsRef })
   const cacheMissing = !childrenByParent.has(session.conversation.id)
   useEffect(() => {
     let active = true
@@ -231,9 +237,17 @@ function DelegationChildren(props: Parameters<typeof OwnedSessionCard>[0]) {
       .then((fetched) => {
         if (!active || !isCurrent(session)) return
         setChildrenByParent((previous) => {
+          const listedRoots = new Set(
+            runtime.stores.workspace.getState().conversations.map((c) => c.id)
+          )
           const merged = new Map(
             fetched
-              .filter((c) => !deletedChildIdsRef.current.has(c.id))
+              .filter(
+                (c) =>
+                  !deletedChildIdsRef.current.has(c.id) &&
+                  !rootIdsRef.current.has(c.id) &&
+                  !listedRoots.has(c.id)
+              )
               .map((c) => [c.id, c])
           )
           for (const child of previous.get(session.conversation.id) ?? [])

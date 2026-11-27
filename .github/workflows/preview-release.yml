@@ -144,6 +144,7 @@ jobs:
           sidecar="src-tauri/binaries/codeg-mcp-$BUILD_TARGET"
           test -s "$sidecar"
           "$sidecar" --help | grep -F 'codeg-mcp --parent-connection-id'
+          "src-tauri/binaries/codeg-cli-$BUILD_TARGET" --version | grep -F 'codeg-cli '
           helper_app="src-tauri/binaries/codeg-computer-helper.app"
           test -s "$helper_app/Contents/MacOS/codeg-computer-helper"
           codesign --verify --strict "$helper_app"
@@ -214,13 +215,13 @@ jobs:
           name: frontend-dist
           path: out/
 
-      - name: Build server, MCP companion and computer-use helper
+      - name: Build server, CLI, MCP companion and computer-use helper
         env:
           BUILD_TARGET: ${{ matrix.target }}
         run: |
           cargo build --manifest-path src-tauri/Cargo.toml --locked --release \
-            --no-default-features --features server-bin,mcp-bin,computer-helper \
-            --bin codeg-server --bin codeg-mcp --bin codeg-computer-helper \
+            --no-default-features --features server-bin,cli-bin,mcp-bin,computer-helper \
+            --bin codeg-server --bin codeg-cli --bin codeg-mcp --bin codeg-computer-helper \
             --target "$BUILD_TARGET"
 
       - name: Package and smoke test native executables
@@ -233,14 +234,16 @@ jobs:
           package_dir="staging/$PACKAGE_NAME"
           mkdir -p "$package_dir" release
           cp "src-tauri/target/$BUILD_TARGET/release/codeg-server" "$package_dir/"
+          cp "src-tauri/target/$BUILD_TARGET/release/codeg-cli" "$package_dir/"
           cp "src-tauri/target/$BUILD_TARGET/release/codeg-mcp" "$package_dir/"
           cp "src-tauri/target/$BUILD_TARGET/release/codeg-computer-helper" "$package_dir/"
-          chmod +x "$package_dir/codeg-server" "$package_dir/codeg-mcp" \
+          chmod +x "$package_dir/codeg-server" "$package_dir/codeg-cli" "$package_dir/codeg-mcp" \
             "$package_dir/codeg-computer-helper"
           test -s "$package_dir/codeg-server"
           test -s "$package_dir/codeg-mcp"
           test -s "$package_dir/codeg-computer-helper"
           "$package_dir/codeg-server" --version
+          "$package_dir/codeg-cli" --version | grep -F 'codeg-cli '
           "$package_dir/codeg-mcp" --help | grep -F 'codeg-mcp --parent-connection-id'
           cp -R out "$package_dir/web"
           test -s "$package_dir/web/index.html"

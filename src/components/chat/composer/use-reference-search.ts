@@ -7,11 +7,12 @@ import type { FlatFileEntry } from "@/hooks/use-file-tree"
 import { useBackendApi } from "@/contexts/backend-client-context"
 import type {
   AcpAgentInfo,
-  AssistantInfo,
   DbConversationSummary,
   GitLogEntry,
+  RosterEntry,
 } from "@/lib/types"
-import { useAssistants } from "@/stores/assistants-store"
+import { useRoster } from "@/stores/personal-agent-roster-store"
+import { useOptionalWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { randomUUID } from "@/lib/utils"
 
 import {
@@ -19,6 +20,7 @@ import {
   assistantToSuggestion,
   commitToSuggestion,
   fileToSuggestion,
+  folderToSuggestion,
   sessionToSuggestion,
 } from "./suggestion/adapters"
 import type {
@@ -41,6 +43,7 @@ const MAX_PER_GROUP = 50
 const GIT_LOG_LIMIT = 100
 const EMPTY_SESSIONS: Promise<DbConversationSummary[]> = Promise.resolve([])
 const EMPTY_COMMITS: Promise<GitLogEntry[]> = Promise.resolve([])
+const NO_ASSISTANTS: RosterEntry[] = []
 
 /** Display headings for each group; injected so the host can localize them. */
 export interface ReferenceGroupLabels {
@@ -70,9 +73,17 @@ export interface ReferenceSearchSources {
   files: FlatFileEntry[]
   /** Workspace root the `files` were loaded under; null disables the group. */
   workspaceRoot: string | null
+  /** Whole folders to offer ahead of the files (the workspace's folders, for
+   *  a personal assistant): each a folder reference by its absolute path. */
+  folders?: readonly MentionFolder[]
   agents: AcpAgentInfo[]
-  /** Live assistants in display order (the store's `useAssistants`). */
-  assistants: AssistantInfo[]
+  /** The owner's personal assistants (the roster, `useRoster`). */
+  assistants: RosterEntry[]
+  /** An assistant not offered: the one whose conversation the composer is
+   *  in. */
+  excludeAssistantUid?: string | null
+  /** The primary's name while it has none of its own (localized). */
+  primaryAssistantName?: string
   /** The agents an assistant's own agent is checked against; `agents` when
    *  omitted. Separate so a hidden agent tab need not be built to fill the
    *  assistant one. */
@@ -81,6 +92,12 @@ export interface ReferenceSearchSources {
   commits: GitLogEntry[]
   /** Repo identity for commit URIs; null disables the commit group. */
   repoKey: string | null
+}
+
+/** A folder offered whole in the `@` panel: what it is called, where. */
+export interface MentionFolder {
+  name: string
+  path: string
 }
 
 /** Case-insensitive substring match against an adapted item's searchable text. */
@@ -113,8 +130,19 @@ export function buildReferenceGroups(
   // mention panel's substring semantics and use the extra row for truncation.
   const fileItems: SuggestionItem[] = []
   let fileTruncated = false
+  // The folders first: a whole project is what is meant more often than a
+  // file of the box the search runs in.
+  for (const folder of sources.folders ?? []) {
+    const item = folderToSuggestion(folder)
+    if (!suggestionMatches(item, q)) continue
+    if (fileItems.length >= MAX_PER_GROUP) {
+      fileTruncated = true
+      break
+    }
+    fileItems.push(item)
+  }
   const root = sources.workspaceRoot
-  if (root) {
+  if (root && !fileTruncated) {
     for (const entry of sources.files) {
       if (q && !entry.lowerName.includes(q) && !entry.lowerPath.includes(q)) {
         continue
@@ -136,9 +164,10 @@ export function buildReferenceGroups(
     .filter((item) => suggestionMatches(item, q))
   const agentItems = agentMatches.slice(0, MAX_PER_GROUP)
 
-  // Only an assistant that can be delegated to is mentionable: enabled, and
-  // on an agent that is enabled too (a delegation to one that is not is
-  // refused). The live list already leaves deleted ones out.
+  // Only an assistant that can be handed work is mentionable: not hidden, and
+  // its work on an agent that is enabled (a delegation to one that is not is
+  // refused). One with no brain yet is (D3): its work needs none. The
+  // primary first, then the roster's order.
   const enabledAgents = new Set(
     (sources.assistantAgents ?? sources.agents)
       .filter((agent) => agent.enabled)
@@ -146,12 +175,28 @@ export function buildReferenceGroups(
   )
   const assistantMatches = sources.assistants
     .filter(
-      (assistant) =>
-        assistant.enabled &&
-        assistant.deleted_at === null &&
-        enabledAgents.has(assistant.agent_type)
+      (entry): entry is RosterEntry & { uid: string } =>
+        !!entry.uid &&
+        entry.uid !== sources.excludeAssistantUid &&
+        !entry.roster.hidden &&
+        !!entry.work_agent_type &&
+        enabledAgents.has(entry.work_agent_type)
     )
-    .map(assistantToSuggestion)
+    .sort(
+      (a, b) =>
+        Number(b.kind === "primary") - Number(a.kind === "primary") ||
+        a.roster.sort_order - b.roster.sort_order ||
+        a.id - b.id
+    )
+    .map((entry) =>
+      assistantToSuggestion(
+        entry,
+        entry.persona_unwritten
+          ? null
+          : entry.persona.replace(/^\s*#+\s*/u, "").trim(),
+        sources.primaryAssistantName
+      )
+    )
     .filter((item) => suggestionMatches(item, q))
   const assistantItems = assistantMatches.slice(0, MAX_PER_GROUP)
 
@@ -223,6 +268,12 @@ export interface UseReferenceSearchOptions {
   enabled?: boolean
   /** Localized group headings; English fallbacks when omitted. */
   labels?: ReferenceGroupLabels
+  /** The assistant whose conversation the composer is in: not offered. */
+  excludeAssistantUid?: string | null
+  /** The primary's name while it has none of its own (localized). */
+  primaryAssistantName?: string
+  /** Whole folders offered ahead of the files (`ReferenceSearchSources`). */
+  folders?: readonly MentionFolder[]
 }
 
 /**
@@ -252,12 +303,18 @@ export function useReferenceSearch({
   defaultPath,
   enabled = true,
   labels,
+  excludeAssistantUid = null,
+  primaryAssistantName,
+  folders,
 }: UseReferenceSearchOptions): ReferenceSearch {
   const backendApi = useBackendApi()
   const path = defaultPath || null
 
   const { agents } = useAcpAgents()
-  const assistants = useAssistants()
+  const available =
+    useOptionalWorkbenchRoute()?.personalAgentAvailable !== false
+  const roster = useRoster(available)
+  const assistants = (available ? roster : null) ?? NO_ASSISTANTS
 
   // Mirror every changing source into a ref so `search` can stay identity-stable
   // (see the doc comment). Initialized from the first render so the refs are
@@ -267,9 +324,12 @@ export function useReferenceSearch({
   const generationRef = useRef(0)
   const agentsRef = useRef(agents)
   const assistantsRef = useRef(assistants)
+  const excludeRef = useRef(excludeAssistantUid)
+  const primaryNameRef = useRef(primaryAssistantName)
   const pathRef = useRef(path)
   const enabledRef = useRef(enabled)
   const labelsRef = useRef(labels)
+  const foldersRef = useRef(folders)
 
   // Lazily-fetched network sources, key-cached so repeat searches reuse the
   // in-flight/resolved promise while a folder switch refetches.
@@ -305,8 +365,18 @@ export function useReferenceSearch({
   useEffect(() => {
     agentsRef.current = agents
     assistantsRef.current = assistants
+    excludeRef.current = excludeAssistantUid
+    primaryNameRef.current = primaryAssistantName
     labelsRef.current = labels
-  }, [agents, assistants, labels])
+    foldersRef.current = folders
+  }, [
+    agents,
+    assistants,
+    excludeAssistantUid,
+    primaryAssistantName,
+    labels,
+    folders,
+  ])
 
   // Bust the lazy caches when the window regains focus so a session created in
   // another window (or new commits) show up on the next `@` — matching the
@@ -422,8 +492,11 @@ export function useReferenceSearch({
           {
             files,
             workspaceRoot: path,
+            folders: wants("file") ? foldersRef.current : [],
             agents: wants("agent") ? agentsRef.current : [],
             assistants: wants("assistant") ? assistantsRef.current : [],
+            excludeAssistantUid: excludeRef.current,
+            primaryAssistantName: primaryNameRef.current,
             assistantAgents: wants("assistant") ? agentsRef.current : [],
             sessions,
             commits,

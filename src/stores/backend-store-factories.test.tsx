@@ -490,7 +490,7 @@ describe("backend store factories", () => {
     expect(localStorage.getItem("workspace:tab-groups:v1")).toBeNull()
   })
 
-  it("isolates command/terminal IDs, forge callbacks and parked selection prompts", () => {
+  it("isolates command/terminal IDs, forge callbacks and pending Ask selections", () => {
     const a = backend("remote:1", "A").stores
     const b = backend("remote:2", "B").stores
     a.commandTerminalLinks
@@ -508,18 +508,20 @@ describe("backend store factories", () => {
     a.forgeRefresh.getState().withdraw()
     expect(b.forgeRefresh.getState().refresh).toBe(refresh)
     for (const stores of [a, b])
-      stores.storage.askSelection.parkAskSelectionPrompt("same-tab", {
-        prompt: stores === a ? "A prompt" : "B prompt",
-        agentType: "claude_code",
-        folderId: 1,
-      })
-    a.storage.askSelection.discardAskSelectionPrompts("same-tab")
+      stores.storage.selectorPreferences.setConnectSelection(
+        "same-tab",
+        "claude_code",
+        {
+          model: stores === a ? "A" : "B",
+        }
+      )
+    a.storage.selectorPreferences.clearConnectSelection("same-tab")
     expect(
-      b.storage.askSelection.consumeAskSelectionPrompts("same-tab", {
-        agentType: "claude_code",
-        folderId: 1,
-      })
-    ).toEqual(["B prompt"])
+      b.storage.selectorPreferences.getSavedPrefsForConnect(
+        "claude_code",
+        "same-tab"
+      ).configValues
+    ).toEqual({ model: "B" })
   })
 
   it.each(["remote:1", "remote:2"] as const)(

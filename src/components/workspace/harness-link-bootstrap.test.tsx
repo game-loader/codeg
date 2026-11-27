@@ -27,6 +27,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock("sonner", () => ({ toast: { warning: h.toastWarning } }))
 vi.mock("@/lib/transport", () => ({
+  getActiveRemoteConnectionId: () => (h.remote ? 1 : null),
   isRemoteDesktopMode: () => h.remote,
   getTransport: () => ({ call: vi.fn(), subscribe: async () => () => {} }),
 }))

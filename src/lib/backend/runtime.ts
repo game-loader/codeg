@@ -21,6 +21,7 @@ import {
 } from "@/lib/message-input-draft"
 import { isBackendKey } from "./window-layout"
 import type { ReactNode } from "react"
+import type { AttentionIndex } from "@/lib/conversation-attention"
 
 export interface RecoveryBuffer {
   kind: "file" | "composer"
@@ -182,6 +183,7 @@ export interface RuntimeView {
   selected: WindowResourceRef | null
   routeId: WorkbenchRouteId
   harnessUpdates?: number
+  attention?: AttentionIndex | null
   sidebarOpen: boolean
   terminalOpen: boolean
   auxOpen: boolean

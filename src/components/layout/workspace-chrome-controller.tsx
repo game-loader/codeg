@@ -29,8 +29,8 @@ import {
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useSearchDialog } from "@/contexts/search-dialog-context"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
-
 import {
+  assistantShortcutFromEvent,
   matchShortcutEvent,
   numberedTabIndexFromEvent,
   pickNumberedTabId,
@@ -113,7 +113,7 @@ export function WorkspaceChromeController() {
     openBrowserTab,
     setActivePane,
   } = useWorkspaceActions()
-  const { openConversations } = useWorkbenchRoute()
+  const { openConversations, routeId } = useWorkbenchRoute()
   const { shortcuts } = useShortcutSettings()
   // Search open-state is shared (see search-dialog-context): the trigger lives
   // in the sidebar, but this always-mounted controller owns the dialog and the
@@ -315,6 +315,15 @@ export function WorkspaceChromeController() {
       // mod+shift+tab working at every width — and, crucially, keeps
       // preventDefault firing so mod+w never falls through to closing the OS
       // window. Routing mirrors the old split: conversation pane vs files pane.
+      // On the assistants page its own keys switch assistants on these
+      // chords (`useAssistantShortcuts`); the tabs are under the page there.
+      if (
+        routeId === "personalAgent" &&
+        assistantShortcutFromEvent(e, shortcuts) !== null
+      ) {
+        return
+      }
+
       const { conversation: conversationPaneActive, files: filesPaneActive } =
         tabShortcutTarget(
           mode,
@@ -468,6 +477,7 @@ export function WorkspaceChromeController() {
     handleOpenFolder,
     handleOpenSettings,
     openConversations,
+    routeId,
     openNewConversationTab,
     openChatModeTab,
     openTab,

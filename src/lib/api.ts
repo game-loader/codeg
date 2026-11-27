@@ -27,6 +27,7 @@ import {
 
 import { TurnBusyError, isTurnInProgressRejection } from "./turn-busy"
 
+import { asRewindRefusedError } from "./rewind-refused"
 import { asConversationMovedError } from "./conversation-moved"
 import { rankFileMatches } from "./file-search-match"
 import { randomUUID } from "./utils"
@@ -42,9 +43,54 @@ import type {
   AgentType,
   CliAccessStatus,
   CliToolStatus,
-  AssistantDraft,
   AssistantInfo,
-  AssistantPatch,
+  CardClick,
+  MessageCheck,
+  AskAnswerOutcome,
+  AskPlanDecision,
+  ConversationTarget,
+  DispatchInfo,
+  DispatchMode,
+  ItemActResult,
+  ItemInfo,
+  PersonalAgentDraft,
+  PersonalAgentFile,
+  PersonalAgentInfo,
+  PersonalAgentSnapshot,
+  PersonalAgentApplied,
+  PersonalAgentOutputDoc,
+  RosterAct,
+  RosterEntry,
+  StepLine,
+  BotCreateDraft,
+  BotDeleteOptions,
+  BotImpact,
+  BotMade,
+  PersonalAgentSettingChange,
+  PersonalAgentPresence,
+  ProposalRule,
+  ProposalRuleView,
+  PersonalAgentHistoryResults,
+  PersonalAgentHistoryScope,
+  PersonalAgentGrades,
+  PersonalAgentHistoryStatus,
+  PersonalAgentProfile,
+  PersonalAgentProfileOp,
+  PersonalAgentToday,
+  PersonalAgentActivity,
+  Routine,
+  RoutineAction,
+  RoutineDraft,
+  RoutineRun,
+  PersonalAgentMeetProject,
+  PersonalAgentChoicePick,
+  PersonalAgentStats,
+  TimelineChanges,
+  TimelineCursor,
+  TimelinePage,
+  ThreadView,
+  TimelineRow,
+  StopReply,
   ForgeAutoScanReport,
   ForgeAutoStatus,
   ForgeApproveResult,
@@ -286,6 +332,77 @@ export function stripUploadedImagePayloads(
     return block
   })
 }
+
+/** An edited message's rewind target, riding on its own prompt: the backend
+ *  cuts the agent's session back to just before the message it replaces and
+ *  admits the prompt in the same step ("edit and resend", claude-agent-acp
+ *  0.112.0 / codex-acp 2.12.0; see `crate::acp::rewind`). The message is
+ *  named by the agent's id for it and checked by its text. */
+export interface PromptRewindTarget {
+  agentMessageId: string
+  text: string
+}
+
+/** What {@link createAskConversation} created, and where. */
+export interface CreateAskConversationResult {
+  conversationId: number
+  folderId: number
+  /** The conversation the ask was filed under — for an ask asked from another
+   *  ask, that ask's own main conversation, not the one passed in. */
+  parentConversationId: number
+}
+
+/** What the owner can answer on a native card. */
+export type NoticeAction =
+  | "accept"
+  | "dismiss"
+  | "undo"
+  | `undo:${number}`
+  | `stop:${number}`
+  | "unwatch"
+  | "done"
+  | "snooze:15m"
+  | "snooze:1h"
+  | "snooze:tomorrow"
+  | "hand_over"
+  | `accept:${string}`
+  | "skip"
+  | "hand"
+  | "next"
+  | "revise"
+  | "recheck"
+  | "retry"
+  | "resume"
+  // codeg's proposal rule cards (6.7): their next steps, and "don't suggest
+  // these" on any suggestion.
+  | "mute"
+  | "check"
+  | "remind"
+  | "open"
+  | "summary"
+  | "close"
+  // A watched pull request's card (7.4): have its task fix it, hand it the
+  // feedback.
+  | "fix"
+  | "forward"
+  | "rebase"
+  // The weekly review's questions (6.6): show changes first; hide or (once
+  // the page deleted it) delete an idle work assistant.
+  | "ask_first"
+  | "hide"
+  | "delete"
+  // A plan's card (7.6): start (or go on), stop, end; a step confirmed or
+  // canceled; a change taken back (`undo:<change>`).
+  | "start"
+  | "stop"
+  | "cancel"
+  | `confirm:${number}`
+  | `cancel_step:${number}`
+  // A tidy-up's or a process skill's card (7.7, 7.8): a draft applied (or
+  // let go with "dismiss"), a skill turned off or on (and "delete").
+  | "apply"
+  | "disable"
+  | "enable"
 
 export interface ForkResult {
   forkedSessionId: string
@@ -1293,7 +1410,8 @@ export function createBackendApi(binding: BackendApiBinding) {
     blocks: PromptInputBlock[],
     folderId: number | null = null,
     conversationId: number | null = null,
-    clientMessageId: string | null = null
+    clientMessageId: string | null = null,
+    rewind: PromptRewindTarget | null = null
   ): Promise<void> {
     try {
       await transport.call("acp_prompt", {
@@ -1307,10 +1425,11 @@ export function createBackendApi(binding: BackendApiBinding) {
         folderId,
         conversationId,
         clientMessageId,
+        ...(rewind ? { rewind } : {}),
       })
     } catch (e) {
       if (isTurnInProgressRejection(e)) throw new TurnBusyError()
-      throw asConversationMovedError(e) ?? e
+      throw asConversationMovedError(e) ?? asRewindRefusedError(e) ?? e
     }
   }
 
@@ -4175,6 +4294,52 @@ export function createBackendApi(binding: BackendApiBinding) {
   }
 
   /**
+   * Create an ask conversation ("ask about this selection") in `folderId` — the
+   * folder its agent is running in — as a child of `parentConversationId`
+   * (`kind: "ask"`), so the sidebar nests it under that conversation and its
+   * Session Details lists it. Asking from inside an ask conversation links to
+   * that one's main conversation.
+   */
+  async function createAskConversation(
+    parentConversationId: number,
+    folderId: number,
+    agentType: AgentType,
+    title?: string
+  ): Promise<CreateAskConversationResult> {
+    return transport.call("create_ask_conversation", {
+      parentConversationId,
+      folderId,
+      agentType,
+      title: title ?? null,
+    })
+  }
+
+  /** The ask conversations of `parentConversationId`, newest first. */
+  async function listAskConversations(
+    parentConversationId: number
+  ): Promise<DbConversationSummary[]> {
+    return transport.call("list_ask_conversations", {
+      parentConversationId,
+    })
+  }
+
+  /** The check conversations of `parentConversationId` — the personal agent
+   *  checking a message of it — newest first. */
+  async function listCheckConversations(
+    parentConversationId: number
+  ): Promise<DbConversationSummary[]> {
+    return transport.call("list_check_conversations", {
+      parentConversationId,
+    })
+  }
+
+  /** Turn an ask (or check) conversation into an ordinary one (it becomes a
+   *  root of the sidebar). */
+  async function detachAskConversation(conversationId: number): Promise<void> {
+    return transport.call("detach_ask_conversation", { conversationId })
+  }
+
+  /**
    * Create a folderless "chat mode" conversation. The backend lazily creates a
    * dated per-conversation scratch dir and a dedicated hidden chat folder
    * backing it, then the conversation. Returns the new conversation id plus that
@@ -6824,29 +6989,747 @@ export function createBackendApi(binding: BackendApiBinding) {
     return transport.call("assistant_list", {})
   }
 
-  async function assistantCreate(
-    draft: AssistantDraft
-  ): Promise<AssistantInfo> {
-    return transport.call("assistant_create", { draft })
+  // ─── Personal agent ────────────────────────────────────────────────────────
+  // Reads work in every process; actions go to the process running the agent
+  // and fail elsewhere with `errors.engineElsewhere`.
+
+  async function personalAgentGet(
+    bot?: number | null
+  ): Promise<PersonalAgentSnapshot> {
+    return transport.call("personal_agent_get", { botId: bot ?? null })
   }
 
-  /** Apply an edit; only the fields present change. */
-  async function assistantUpdate(
-    id: number,
-    patch: AssistantPatch
-  ): Promise<AssistantInfo> {
-    return transport.call("assistant_update", { id, patch })
+  async function personalAgentSave(
+    draft: PersonalAgentDraft,
+    bot?: number | null
+  ): Promise<PersonalAgentInfo> {
+    return transport.call("personal_agent_save", {
+      draft,
+      botId: bot ?? null,
+    })
   }
 
-  /** Soft-delete; resolves to the tombstone. */
-  async function assistantDelete(id: number): Promise<AssistantInfo> {
-    return transport.call("assistant_delete", { id })
+  /** A page older than `beforeId` (the newest without), never cutting a turn
+   *  — or, with `sinceId`, every row from `sinceId` up to `beforeId` (none and
+   *  `too_far` when that is more than one read returns). */
+  async function personalAgentTimeline(
+    beforeId?: number | null,
+    limit?: number,
+    sinceId?: number | null,
+    bot?: number | null
+  ): Promise<TimelinePage> {
+    return transport.call("personal_agent_timeline", {
+      beforeId: beforeId ?? null,
+      limit: limit ?? null,
+      sinceId: sinceId ?? null,
+      botId: bot ?? null,
+    })
   }
 
-  /** Persist the order after a drag (the complete list, first to last);
-   *  resolves to the rows whose position changed. */
-  async function assistantReorder(ids: number[]): Promise<AssistantInfo[]> {
-    return transport.call("assistant_reorder", { ids })
+  /** Rows by id (at most 100). */
+  async function personalAgentTimelineRows(
+    ids: number[],
+    bot?: number | null
+  ): Promise<TimelineRow[]> {
+    return transport.call("personal_agent_timeline_rows", {
+      ids,
+      botId: bot ?? null,
+    })
+  }
+
+  /** Rows changed since `since` (inclusive), or past `after`, from `minId` up. */
+  async function personalAgentTimelineUpdatedSince(
+    since: string | null,
+    after: TimelineCursor | null,
+    minId: number | null,
+    bot?: number | null
+  ): Promise<TimelineChanges> {
+    return transport.call("personal_agent_timeline_updated_since", {
+      since,
+      after,
+      minId,
+      botId: bot ?? null,
+    })
+  }
+
+  async function personalAgentSend(
+    text: string,
+    blocks?: unknown[] | null,
+    replyTo?: number | null,
+    bot?: number | null,
+    /** The button of the quoted reply's card it came from (9.2). */
+    card?: CardClick | null,
+    /** The assistant's question it answers (`ItemInfo.id`). */
+    answersItem?: number | null
+  ): Promise<TimelineRow> {
+    return transport.call("personal_agent_send", {
+      text,
+      blocks: blocks && blocks.length > 0 ? blocks : null,
+      replyTo: replyTo ?? null,
+      botId: bot ?? null,
+      card: card ?? null,
+      answersItem: answersItem ?? null,
+    })
+  }
+
+  /** Record what a button of a card in an assistant's reply did (9.2): the
+   *  reply row, as it now is. */
+  async function personalAgentCardAct(
+    bot: number | null | undefined,
+    rowId: number,
+    element: string,
+    act: { action: "pa.item"; label?: string | null; op?: string | null }
+  ): Promise<TimelineRow> {
+    return transport.call("personal_agent_card_act", {
+      botId: bot ?? null,
+      rowId,
+      element,
+      action: act.action,
+      label: act.label ?? null,
+      op: act.op ?? null,
+    })
+  }
+
+  async function personalAgentCancel(bot?: number | null): Promise<void> {
+    return transport.call("personal_agent_cancel", { botId: bot ?? null })
+  }
+
+  /** "Stop everything": all the assistant has going — its turn, the work it
+   *  dispatched, the messages nobody started on. */
+  async function personalAgentStopAll(bot?: number | null): Promise<void> {
+    return transport.call("personal_agent_stop_all", { botId: bot ?? null })
+  }
+
+  /** Change settings item by item: the account's preferences and team, or
+   *  assistant `bot`'s own. Returns what changed. */
+  async function personalAgentSettingsPatch(
+    changes: PersonalAgentSettingChange[],
+    bot?: number | null
+  ): Promise<PersonalAgentApplied[]> {
+    return transport.call("personal_agent_settings_patch", {
+      changes,
+      botId: bot ?? null,
+    })
+  }
+
+  /** The owner's assistants, primary first. */
+  /** The roster: every assistant with how the owner arranged it and its
+   *  live state (8.3). */
+  async function personalAgentBots(): Promise<RosterEntry[]> {
+    return transport.call("personal_agent_bots", {})
+  }
+
+  /** The documents an assistant wrote in its working directory, newest
+   *  first. */
+  async function personalAgentOutputs(
+    botId?: number | null
+  ): Promise<PersonalAgentOutputDoc[]> {
+    return transport.call("personal_agent_outputs", { botId })
+  }
+
+  /** One of those documents, as text. */
+  async function personalAgentOutputRead(
+    botId: number | null | undefined,
+    path: string
+  ): Promise<string> {
+    return transport.call("personal_agent_output_read", { botId, path })
+  }
+
+  /** Arrange an assistant on the roster (4.14). */
+  async function personalAgentRosterAct(
+    botId: number,
+    act: RosterAct
+  ): Promise<void> {
+    return transport.call("personal_agent_roster_act", { botId, act })
+  }
+
+  /** The steps the brain's turn in flight went through. */
+  async function personalAgentTurnSteps(
+    botId?: number | null
+  ): Promise<StepLine[]> {
+    return transport.call("personal_agent_turn_steps", { botId })
+  }
+
+  /** Settle one of an assistant's open matters: done, dropped, later (it
+   *  waits on time, no due), or snoozed until `until` — `15m`, `1h`,
+   *  `tomorrow` (tomorrow morning) or an ISO 8601 time with its offset. A
+   *  snooze without `until` is `later`. */
+  async function personalAgentItemAct(
+    botId: number | null | undefined,
+    itemId: number,
+    act: "done" | "skip" | "drop" | "later" | "snooze",
+    until?: "15m" | "1h" | "tomorrow" | (string & {}),
+    /** Where the owner did it: the activity panel (taken back with the
+     *  result's `undo`) or a card the assistant drew. */
+    from: "panel" | "card" = "panel",
+    /** The matter's `updated_at` as the button read it: refused
+     *  (`matterErrors.changed`) when it was written since. */
+    expectUpdatedAt: string | null = null
+  ): Promise<ItemActResult> {
+    return transport.call("personal_agent_item_act", {
+      botId,
+      itemId,
+      act,
+      until: until ?? null,
+      from,
+      expectUpdatedAt,
+    })
+  }
+
+  /** Take back the owner's act on a matter from the panel (`undo`, the token
+   *  the act gave): within ten minutes, while nothing changed since. */
+  async function personalAgentItemUndo(
+    botId: number | null | undefined,
+    itemId: number,
+    undo: number
+  ): Promise<ItemInfo> {
+    return transport.call("personal_agent_item_undo", {
+      botId,
+      itemId,
+      undo,
+    })
+  }
+
+  /** One codeg window's beat (6.2, 1.12): whether it has the focus, and how
+   *  long since the last key or pointer input in it (`null`: none yet).
+   *  Whether the owner is in codeg after it. */
+  async function personalAgentPresence(
+    window: string,
+    focused: boolean,
+    idleMs: number | null,
+    typedMs: number | null = null,
+    viewing: number | null = null,
+    /** The session (conversation) this window's workspace has in front. */
+    viewingConversation: number | null = null
+  ): Promise<PersonalAgentPresence> {
+    return transport.call("personal_agent_presence", {
+      window,
+      focused,
+      idleMs,
+      typedMs,
+      viewing,
+      viewingConversation,
+    })
+  }
+
+  /** Hand this device's notification switch and "hide contents" to the
+   *  desktop backend, which posts the assistants' notifications itself
+   *  (1.13). The local shell's: they are this screen's settings. */
+  async function notificationPrefsSync(
+    enabled: boolean,
+    hideBody: boolean
+  ): Promise<void> {
+    return getShellTransport().call("notification_prefs_sync", {
+      enabled,
+      hideBody,
+    })
+  }
+
+  /** An assistant's avatar as PNGs (base64, no `data:` prefix): the icon of
+   *  the notifications the desktop backend posts (1.13), and the strip of
+   *  frames its menu bar shows (10.10). `null`: it has none — an old one
+   *  goes. */
+  async function personalAgentAvatarPng(
+    botId: number,
+    png: string | null,
+    tray: string | null
+  ): Promise<void> {
+    return transport.call("personal_agent_avatar_png", {
+      botId,
+      png,
+      tray,
+    })
+  }
+
+  /** The "about you" page (1.12): the owner's time zone, the record's switch,
+   *  whether they are in codeg, and the hours codeg sees. */
+  /** "Today" (6.3): what waits on the owner anywhere in codeg, what the
+   *  assistants keep an eye on, the rest of the day, what was done today. */
+  async function personalAgentToday(): Promise<PersonalAgentToday> {
+    return transport.call("personal_agent_today", {})
+  }
+
+  /** The activity tab's one list (C1): "today", the assistant's open
+   *  matters and its routines, merged into four groups by the server, read
+   *  from one snapshot. A part that could not be read fails it all. */
+  async function personalAgentActivity(
+    bot?: number | null
+  ): Promise<PersonalAgentActivity> {
+    return transport.call("personal_agent_activity", { botId: bot ?? null })
+  }
+
+  /** An assistant's routines, with their latest runs (6.9). */
+  async function personalAgentRoutines(
+    bot?: number | null
+  ): Promise<Routine[]> {
+    return transport.call("personal_agent_routines", { botId: bot ?? null })
+  }
+
+  /** A routine's runs, newest first. */
+  async function personalAgentRoutineRuns(
+    routineId: number,
+    limit?: number
+  ): Promise<RoutineRun[]> {
+    return transport.call("personal_agent_routine_runs", {
+      routineId,
+      limit: limit ?? null,
+    })
+  }
+
+  /** Save a routine from the editor: made (and run once as a trial) when
+   *  `routineId` is null, else changed. `noticeId`: the card it came from. */
+  async function personalAgentRoutineSave(
+    bot: number | null | undefined,
+    routineId: number | null,
+    draft: RoutineDraft,
+    noticeId?: number | null
+  ): Promise<Routine> {
+    return transport.call("personal_agent_routine_save", {
+      botId: bot ?? null,
+      routineId,
+      draft,
+      noticeId: noticeId ?? null,
+    })
+  }
+
+  /** Run a routine now, pause, resume or delete it. */
+  /** codeg's proposal rules (6.7): muted from a card, lowered after the
+   *  owner kept dismissing their cards, and how their cards fared. */
+  async function personalAgentRules(): Promise<ProposalRuleView[]> {
+    return transport.call("personal_agent_rules", {})
+  }
+
+  /** Put a rule codeg lowered back where it was. */
+  async function personalAgentRuleReset(
+    rule: ProposalRule
+  ): Promise<ProposalRuleView[]> {
+    return transport.call("personal_agent_rule_reset", { rule })
+  }
+
+  async function personalAgentRoutineAct(
+    bot: number | null | undefined,
+    routineId: number,
+    action: RoutineAction
+  ): Promise<Routine> {
+    return transport.call("personal_agent_routine_act", {
+      botId: bot ?? null,
+      routineId,
+      action,
+    })
+  }
+
+  async function personalAgentProfile(): Promise<PersonalAgentProfile> {
+    return transport.call("personal_agent_profile", {})
+  }
+
+  /** The owner changes their profile (5.3): their hours, a project codeg is
+   *  not to mind, or clearing what codeg learned. The page comes back anew. */
+  async function personalAgentProfileUpdate(
+    op: PersonalAgentProfileOp
+  ): Promise<PersonalAgentProfile> {
+    return transport.call("personal_agent_profile_update", { op })
+  }
+
+  /** Each assistant's grade over the last 30 days. */
+  async function personalAgentGrades(): Promise<PersonalAgentGrades> {
+    return transport.call("personal_agent_grades", {})
+  }
+
+  /** The time machine (8.2): what was said and done before, as the
+   *  assistants' `history_search` finds it. `since` is `YYYY-MM-DD` or `7d`. */
+  async function personalAgentHistorySearch(params: {
+    query: string
+    scope?: PersonalAgentHistoryScope
+    since?: string
+    projectId?: number
+    limit?: number
+  }): Promise<PersonalAgentHistoryResults> {
+    return transport.call("personal_agent_history_search", {
+      query: params.query,
+      scope: params.scope ?? null,
+      since: params.since ?? null,
+      projectId: params.projectId ?? null,
+      limit: params.limit ?? null,
+    })
+  }
+
+  /** How far the time machine's index is. */
+  async function personalAgentHistoryStatus(): Promise<PersonalAgentHistoryStatus> {
+    return transport.call("personal_agent_history_status", {})
+  }
+
+  /** Build the time machine's index again, from nothing, at once. */
+  async function personalAgentHistoryRebuild(): Promise<PersonalAgentHistoryStatus> {
+    return transport.call("personal_agent_history_rebuild", {})
+  }
+
+  /** Stop one piece of handed-out work from its card (8.5), with what the
+   *  card read: the dispatch's version and, for a board task's, the task's
+   *  run and version — a card that read it before it changed is told
+   *  `changed`, and nothing is stopped. */
+  async function personalAgentDispatchStop(
+    botId: number | null | undefined,
+    dispatchId: number,
+    expect: {
+      updatedAt?: string | null
+      runSeq?: number | null
+      taskUpdatedAt?: string | null
+    } = {}
+  ): Promise<StopReply> {
+    return transport.call("personal_agent_dispatch_stop", {
+      botId,
+      dispatchId,
+      expectUpdatedAt: expect.updatedAt ?? null,
+      expectRunSeq: expect.runSeq ?? null,
+      expectTaskUpdatedAt: expect.taskUpdatedAt ?? null,
+    })
+  }
+
+  /** The owner answers a piece of work's question or plan approval on an ask
+   *  card (7.3.1): the card of the assistant answering it, or its mirror.
+   *  The first answer wins; a late one is told whose did. */
+  async function personalAgentAskAnswer(params: {
+    askId: number
+    answer?: QuestionAnswer
+    decision?: AskPlanDecision
+    feedback?: string | null
+  }): Promise<AskAnswerOutcome> {
+    return transport.call("personal_agent_ask_answer", {
+      askId: params.askId,
+      answer: params.answer,
+      decision: params.decision,
+      feedback: params.feedback ?? undefined,
+    })
+  }
+
+  /** Where a conversation opens: its project and agent (a session link in a
+   *  reply). */
+  async function personalAgentConversationTarget(
+    conversationId: number
+  ): Promise<ConversationTarget> {
+    return transport.call("personal_agent_conversation_target", {
+      conversationId,
+    })
+  }
+
+  /** Make a work assistant from a name (4.12). */
+  async function personalAgentBotCreate(
+    draft: BotCreateDraft
+  ): Promise<BotMade> {
+    return transport.call("personal_agent_bot_create", { draft })
+  }
+
+  /** Copy a work assistant (4.14). */
+  async function personalAgentBotCopy(
+    botId: number,
+    name: string,
+    locale: string
+  ): Promise<BotMade> {
+    return transport.call("personal_agent_bot_copy", {
+      botId,
+      name,
+      locale,
+    })
+  }
+
+  /** What deleting a work assistant touches. */
+  async function personalAgentBotImpact(botId: number): Promise<BotImpact> {
+    return transport.call("personal_agent_bot_impact", { botId })
+  }
+
+  async function personalAgentBotDelete(
+    botId: number,
+    options: BotDeleteOptions
+  ): Promise<void> {
+    return transport.call("personal_agent_bot_delete", { botId, options })
+  }
+
+  /** An answer on a choice card: a choice's key (with `projectId` when it asks
+   *  for one), or the owner's own words. */
+  async function personalAgentChoiceAnswer(
+    noticeId: number,
+    answer: {
+      key?: string
+      text?: string
+      projectId?: number | null
+      /** A card of several questions, answered whole (none: skipped). */
+      answers?: PersonalAgentChoicePick[]
+    },
+    bot?: number | null
+  ): Promise<TimelineRow> {
+    return transport.call("personal_agent_choice_answer", {
+      noticeId,
+      key: answer.key ?? null,
+      text: answer.text ?? null,
+      projectId: answer.projectId ?? null,
+      answers: answer.answers ?? null,
+      botId: bot ?? null,
+    })
+  }
+
+  /** The projects the assistants may keep an eye on (`prefs.projects`):
+   *  each open project and its forge as this machine knows it — nothing
+   *  asked of a forge. */
+  async function personalAgentMeetProjects(): Promise<
+    PersonalAgentMeetProject[]
+  > {
+    return transport.call("personal_agent_meet_projects", {})
+  }
+
+  /** [Find one] on the card asking to find one thing: codeg looks in the
+   *  projects watched for one thing to help with at once (5.4). */
+  async function personalAgentStarter(
+    noticeId: number,
+    bot?: number | null
+  ): Promise<TimelineRow> {
+    return transport.call("personal_agent_starter", {
+      noticeId,
+      botId: bot ?? null,
+    })
+  }
+
+  /** A thread between assistants, as assistant `bot` sees it. */
+  async function personalAgentThread(
+    threadId: number,
+    bot?: number | null
+  ): Promise<ThreadView> {
+    return transport.call("personal_agent_thread", {
+      threadId,
+      botId: bot ?? null,
+    })
+  }
+
+  async function personalAgentCompact(bot?: number | null): Promise<void> {
+    return transport.call("personal_agent_compact", { botId: bot ?? null })
+  }
+
+  async function personalAgentNewSession(bot?: number | null): Promise<void> {
+    return transport.call("personal_agent_new_session", {
+      botId: bot ?? null,
+    })
+  }
+
+  async function personalAgentResumeAutoCompact(
+    bot?: number | null
+  ): Promise<void> {
+    return transport.call("personal_agent_resume_auto_compact", {
+      botId: bot ?? null,
+    })
+  }
+
+  async function personalAgentKeepalive(bot?: number | null): Promise<void> {
+    return transport.call("personal_agent_keepalive", { botId: bot ?? null })
+  }
+
+  async function personalAgentResend(
+    rowId: number,
+    bot?: number | null
+  ): Promise<TimelineRow> {
+    return transport.call("personal_agent_resend", {
+      rowId,
+      botId: bot ?? null,
+    })
+  }
+
+  /** The owner has seen the timeline up to row `upTo`. */
+  async function personalAgentMarkSeen(
+    upTo: number,
+    bot?: number | null
+  ): Promise<void> {
+    return transport.call("personal_agent_mark_seen", {
+      upTo,
+      botId: bot ?? null,
+    })
+  }
+
+  /** The owner's answer on a native card: `accept` runs what it holds as the
+   *  card shows it (a proposal; an uncertain step, again), `dismiss` closes it.
+   *  Resolves to the card's row as it now stands — `acting` while what it runs
+   *  is still on its way. */
+  async function personalAgentNoticeAct(
+    noticeId: number,
+    /** `accept` / `dismiss`; a stop card's `stop:<message id>`; a changed
+     *  card's `undo`, or `undo:<assistant id>` for one assistant it made, and
+     *  a suggested team's `accept:<templates>`; a reminder card's `done`,
+     *  `snooze:<15m|1h|tomorrow>` or `hand_over`; getting to know the owner:
+     *  the projects card's `skip`, the first-thing card's `hand` (with its
+     *  words), `next` and `dismiss`, and `done` or `team` on what the
+     *  assistants do on their own; an acceptance card's `revise` (send it
+     *  back with the card's words), `accept` or `recheck` (7.5). */
+    action: NoticeAction,
+    bot?: number | null,
+    /** `hand_over` and `hand`: the owner's words, posted as their message
+     *  quoting the card. */
+    text?: string,
+    /** `hand_over` from a matter's row: the matter's `updated_at` as the
+     *  button read it — refused (`matterErrors.changed`), nothing handed
+     *  over, when it was written since. */
+    expectUpdatedAt: string | null = null
+  ): Promise<TimelineRow> {
+    return transport.call("personal_agent_notice_act", {
+      noticeId,
+      action,
+      botId: bot ?? null,
+      text: text ?? null,
+      expectUpdatedAt,
+    })
+  }
+
+  async function personalAgentAnswerQuestion(
+    questionId: string,
+    answer: QuestionAnswer,
+    bot?: number | null
+  ): Promise<void> {
+    return transport.call("personal_agent_answer_question", {
+      questionId,
+      answer,
+      botId: bot ?? null,
+    })
+  }
+
+  async function personalAgentAnswerPlan(
+    approvalId: string,
+    answer: PlanApprovalAnswer,
+    bot?: number | null
+  ): Promise<void> {
+    return transport.call("personal_agent_answer_plan", {
+      approvalId,
+      answer,
+      botId: bot ?? null,
+    })
+  }
+
+  async function personalAgentRespondPermission(
+    requestId: string,
+    optionId: string,
+    bot?: number | null
+  ): Promise<void> {
+    return transport.call("personal_agent_respond_permission", {
+      requestId,
+      optionId,
+      botId: bot ?? null,
+    })
+  }
+
+  async function personalAgentItems(
+    status?: "active" | "all" | "done",
+    bot?: number | null
+  ): Promise<ItemInfo[]> {
+    return transport.call("personal_agent_items", {
+      status: status ?? null,
+      botId: bot ?? null,
+    })
+  }
+
+  /** Dispatches newest first: these `ids`, or the latest `limit` of `mode`. */
+  async function personalAgentDispatches(
+    mode?: DispatchMode | null,
+    limit?: number | null,
+    ids?: number[] | null,
+    bot?: number | null
+  ): Promise<DispatchInfo[]> {
+    return transport.call("personal_agent_dispatches", {
+      mode: mode ?? null,
+      limit: limit ?? null,
+      ids: ids ?? null,
+      botId: bot ?? null,
+    })
+  }
+
+  async function personalAgentStats(
+    days?: number,
+    bot?: number | null
+  ): Promise<PersonalAgentStats> {
+    return transport.call("personal_agent_stats", {
+      days: days ?? null,
+      botId: bot ?? null,
+    })
+  }
+
+  async function personalAgentFiles(
+    bot?: number | null
+  ): Promise<PersonalAgentFile[]> {
+    return transport.call("personal_agent_files", { botId: bot ?? null })
+  }
+
+  async function personalAgentFileSave(
+    name: string,
+    content: string,
+    bot?: number | null
+  ): Promise<void> {
+    return transport.call("personal_agent_file_save", {
+      name,
+      content,
+      botId: bot ?? null,
+    })
+  }
+
+  /** A memory entry (`memory/<name>.md`), with the lines of the index that
+   *  link to it; or a process skill (`process-skills/<name>/SKILL.md`), its folder. */
+  async function personalAgentFileDelete(
+    name: string,
+    bot?: number | null
+  ): Promise<void> {
+    return transport.call("personal_agent_file_delete", {
+      name,
+      botId: bot ?? null,
+    })
+  }
+
+  /** Turn one of an assistant's process skills (`name`, its folder) on or
+   *  off (7.8): off, it is kept and not loaded. */
+  async function personalAgentSkillSwitch(
+    name: string,
+    on: boolean,
+    bot?: number | null
+  ): Promise<void> {
+    return transport.call("personal_agent_skill_switch", {
+      name,
+      on,
+      botId: bot ?? null,
+    })
+  }
+
+  /** "Is this right?" (10.3): have a message of an ordinary conversation
+   *  checked — its last check, or (with `again`, once that one is over) a new
+   *  one, handed out by the primary at once. `message` is all of it (its
+   *  fingerprint is of all of it); `asked`, the owner's message it answered;
+   *  `quote`, the sentence of it they selected. */
+  async function personalAgentCheckMessage(args: {
+    conversationId: number
+    message: string
+    asked?: string | null
+    quote?: string | null
+    again?: boolean
+  }): Promise<MessageCheck> {
+    return transport.call("personal_agent_check_message", {
+      conversationId: args.conversationId,
+      message: args.message,
+      asked: args.asked ?? null,
+      quote: args.quote ?? null,
+      again: args.again ?? false,
+    })
+  }
+
+  /** The latest check of each message of a conversation (10.3). */
+  async function personalAgentChecks(
+    conversationId: number
+  ): Promise<MessageCheck[]> {
+    return transport.call("personal_agent_checks", { conversationId })
+  }
+
+  /** `null` returns to the data directory's default. `locale` is the UI's: the
+   *  language of the template files of a directory made anew. */
+  async function personalAgentSetWorkdir(
+    path: string | null,
+    locale?: string,
+    bot?: number | null
+  ): Promise<PersonalAgentInfo> {
+    return transport.call("personal_agent_set_workdir", {
+      path,
+      locale,
+      botId: bot ?? null,
+    })
   }
 
   /** Fetch the message navigator's outline of the history before `beforeIndex`. */
@@ -6995,10 +7878,71 @@ export function createBackendApi(binding: BackendApiBinding) {
   return {
     acpUpdateSystemAgent,
     assistantList,
-    assistantCreate,
-    assistantUpdate,
-    assistantDelete,
-    assistantReorder,
+    personalAgentGet,
+    personalAgentSave,
+    personalAgentTimeline,
+    personalAgentTimelineRows,
+    personalAgentTimelineUpdatedSince,
+    personalAgentSend,
+    personalAgentCardAct,
+    personalAgentCancel,
+    personalAgentStopAll,
+    personalAgentSettingsPatch,
+    personalAgentBots,
+    personalAgentOutputs,
+    personalAgentOutputRead,
+    personalAgentRosterAct,
+    personalAgentTurnSteps,
+    personalAgentItemAct,
+    personalAgentItemUndo,
+    personalAgentPresence,
+    notificationPrefsSync,
+    personalAgentAvatarPng,
+    personalAgentToday,
+    personalAgentActivity,
+    personalAgentRoutines,
+    personalAgentRoutineRuns,
+    personalAgentRoutineSave,
+    personalAgentRules,
+    personalAgentRuleReset,
+    personalAgentRoutineAct,
+    personalAgentProfile,
+    personalAgentProfileUpdate,
+    personalAgentGrades,
+    personalAgentHistorySearch,
+    personalAgentHistoryStatus,
+    personalAgentHistoryRebuild,
+    personalAgentDispatchStop,
+    personalAgentAskAnswer,
+    personalAgentConversationTarget,
+    personalAgentBotCreate,
+    personalAgentBotCopy,
+    personalAgentBotImpact,
+    personalAgentBotDelete,
+    personalAgentChoiceAnswer,
+    personalAgentMeetProjects,
+    personalAgentStarter,
+    personalAgentThread,
+    personalAgentCompact,
+    personalAgentNewSession,
+    personalAgentResumeAutoCompact,
+    personalAgentKeepalive,
+    personalAgentResend,
+    personalAgentMarkSeen,
+    personalAgentNoticeAct,
+    personalAgentAnswerQuestion,
+    personalAgentAnswerPlan,
+    personalAgentRespondPermission,
+    personalAgentItems,
+    personalAgentDispatches,
+    personalAgentStats,
+    personalAgentFiles,
+    personalAgentFileSave,
+    personalAgentFileDelete,
+    personalAgentSkillSwitch,
+    personalAgentCheckMessage,
+    personalAgentChecks,
+    personalAgentSetWorkdir,
     getFolderConversationOutline,
     gitGenerateCommitMessage,
     gitGenerateCommitMessageCancel,
@@ -7304,6 +8248,10 @@ export function createBackendApi(binding: BackendApiBinding) {
     installHyperframesSkills,
     createHyperframesProject,
     createConversation,
+    createAskConversation,
+    listAskConversations,
+    listCheckConversations,
+    detachAskConversation,
     createChatConversation,
     createChatDir,
     updateConversationStatus,
@@ -8164,6 +9112,18 @@ export const createHyperframesProject: BackendApi["createHyperframesProject"] =
   (...args) => getDefaultBackendApi().createHyperframesProject(...args)
 export const createConversation: BackendApi["createConversation"] = (...args) =>
   getDefaultBackendApi().createConversation(...args)
+export const createAskConversation: BackendApi["createAskConversation"] = (
+  ...args
+) => getDefaultBackendApi().createAskConversation(...args)
+export const listAskConversations: BackendApi["listAskConversations"] = (
+  ...args
+) => getDefaultBackendApi().listAskConversations(...args)
+export const listCheckConversations: BackendApi["listCheckConversations"] = (
+  ...args
+) => getDefaultBackendApi().listCheckConversations(...args)
+export const detachAskConversation: BackendApi["detachAskConversation"] = (
+  ...args
+) => getDefaultBackendApi().detachAskConversation(...args)
 export const createChatConversation: BackendApi["createChatConversation"] = (
   ...args
 ) => getDefaultBackendApi().createChatConversation(...args)
@@ -8623,14 +9583,174 @@ export const acpUpdateSystemAgent: BackendApi["acpUpdateSystemAgent"] = (
 ) => getDefaultBackendApi().acpUpdateSystemAgent(...args)
 export const assistantList: BackendApi["assistantList"] = (...args) =>
   getDefaultBackendApi().assistantList(...args)
-export const assistantCreate: BackendApi["assistantCreate"] = (...args) =>
-  getDefaultBackendApi().assistantCreate(...args)
-export const assistantUpdate: BackendApi["assistantUpdate"] = (...args) =>
-  getDefaultBackendApi().assistantUpdate(...args)
-export const assistantDelete: BackendApi["assistantDelete"] = (...args) =>
-  getDefaultBackendApi().assistantDelete(...args)
-export const assistantReorder: BackendApi["assistantReorder"] = (...args) =>
-  getDefaultBackendApi().assistantReorder(...args)
+export const personalAgentGet: BackendApi["personalAgentGet"] = (...args) =>
+  getDefaultBackendApi().personalAgentGet(...args)
+export const personalAgentSave: BackendApi["personalAgentSave"] = (...args) =>
+  getDefaultBackendApi().personalAgentSave(...args)
+export const personalAgentTimeline: BackendApi["personalAgentTimeline"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentTimeline(...args)
+export const personalAgentTimelineRows: BackendApi["personalAgentTimelineRows"] =
+  (...args) => getDefaultBackendApi().personalAgentTimelineRows(...args)
+export const personalAgentTimelineUpdatedSince: BackendApi["personalAgentTimelineUpdatedSince"] =
+  (...args) => getDefaultBackendApi().personalAgentTimelineUpdatedSince(...args)
+export const personalAgentSend: BackendApi["personalAgentSend"] = (...args) =>
+  getDefaultBackendApi().personalAgentSend(...args)
+export const personalAgentCardAct: BackendApi["personalAgentCardAct"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentCardAct(...args)
+export const personalAgentCancel: BackendApi["personalAgentCancel"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentCancel(...args)
+export const personalAgentStopAll: BackendApi["personalAgentStopAll"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentStopAll(...args)
+export const personalAgentSettingsPatch: BackendApi["personalAgentSettingsPatch"] =
+  (...args) => getDefaultBackendApi().personalAgentSettingsPatch(...args)
+export const personalAgentBots: BackendApi["personalAgentBots"] = (...args) =>
+  getDefaultBackendApi().personalAgentBots(...args)
+export const personalAgentOutputs: BackendApi["personalAgentOutputs"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentOutputs(...args)
+export const personalAgentOutputRead: BackendApi["personalAgentOutputRead"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentOutputRead(...args)
+export const personalAgentRosterAct: BackendApi["personalAgentRosterAct"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentRosterAct(...args)
+export const personalAgentTurnSteps: BackendApi["personalAgentTurnSteps"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentTurnSteps(...args)
+export const personalAgentItemAct: BackendApi["personalAgentItemAct"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentItemAct(...args)
+export const personalAgentItemUndo: BackendApi["personalAgentItemUndo"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentItemUndo(...args)
+export const personalAgentPresence: BackendApi["personalAgentPresence"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentPresence(...args)
+export const notificationPrefsSync: BackendApi["notificationPrefsSync"] = (
+  ...args
+) => getDefaultBackendApi().notificationPrefsSync(...args)
+export const personalAgentAvatarPng: BackendApi["personalAgentAvatarPng"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentAvatarPng(...args)
+export const personalAgentToday: BackendApi["personalAgentToday"] = (...args) =>
+  getDefaultBackendApi().personalAgentToday(...args)
+export const personalAgentActivity: BackendApi["personalAgentActivity"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentActivity(...args)
+export const personalAgentRoutines: BackendApi["personalAgentRoutines"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentRoutines(...args)
+export const personalAgentRoutineRuns: BackendApi["personalAgentRoutineRuns"] =
+  (...args) => getDefaultBackendApi().personalAgentRoutineRuns(...args)
+export const personalAgentRoutineSave: BackendApi["personalAgentRoutineSave"] =
+  (...args) => getDefaultBackendApi().personalAgentRoutineSave(...args)
+export const personalAgentRules: BackendApi["personalAgentRules"] = (...args) =>
+  getDefaultBackendApi().personalAgentRules(...args)
+export const personalAgentRuleReset: BackendApi["personalAgentRuleReset"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentRuleReset(...args)
+export const personalAgentRoutineAct: BackendApi["personalAgentRoutineAct"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentRoutineAct(...args)
+export const personalAgentProfile: BackendApi["personalAgentProfile"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentProfile(...args)
+export const personalAgentProfileUpdate: BackendApi["personalAgentProfileUpdate"] =
+  (...args) => getDefaultBackendApi().personalAgentProfileUpdate(...args)
+export const personalAgentGrades: BackendApi["personalAgentGrades"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentGrades(...args)
+export const personalAgentHistorySearch: BackendApi["personalAgentHistorySearch"] =
+  (...args) => getDefaultBackendApi().personalAgentHistorySearch(...args)
+export const personalAgentHistoryStatus: BackendApi["personalAgentHistoryStatus"] =
+  (...args) => getDefaultBackendApi().personalAgentHistoryStatus(...args)
+export const personalAgentHistoryRebuild: BackendApi["personalAgentHistoryRebuild"] =
+  (...args) => getDefaultBackendApi().personalAgentHistoryRebuild(...args)
+export const personalAgentDispatchStop: BackendApi["personalAgentDispatchStop"] =
+  (...args) => getDefaultBackendApi().personalAgentDispatchStop(...args)
+export const personalAgentAskAnswer: BackendApi["personalAgentAskAnswer"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentAskAnswer(...args)
+export const personalAgentConversationTarget: BackendApi["personalAgentConversationTarget"] =
+  (...args) => getDefaultBackendApi().personalAgentConversationTarget(...args)
+export const personalAgentBotCreate: BackendApi["personalAgentBotCreate"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentBotCreate(...args)
+export const personalAgentBotCopy: BackendApi["personalAgentBotCopy"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentBotCopy(...args)
+export const personalAgentBotImpact: BackendApi["personalAgentBotImpact"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentBotImpact(...args)
+export const personalAgentBotDelete: BackendApi["personalAgentBotDelete"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentBotDelete(...args)
+export const personalAgentChoiceAnswer: BackendApi["personalAgentChoiceAnswer"] =
+  (...args) => getDefaultBackendApi().personalAgentChoiceAnswer(...args)
+export const personalAgentMeetProjects: BackendApi["personalAgentMeetProjects"] =
+  (...args) => getDefaultBackendApi().personalAgentMeetProjects(...args)
+export const personalAgentStarter: BackendApi["personalAgentStarter"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentStarter(...args)
+export const personalAgentThread: BackendApi["personalAgentThread"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentThread(...args)
+export const personalAgentCompact: BackendApi["personalAgentCompact"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentCompact(...args)
+export const personalAgentNewSession: BackendApi["personalAgentNewSession"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentNewSession(...args)
+export const personalAgentResumeAutoCompact: BackendApi["personalAgentResumeAutoCompact"] =
+  (...args) => getDefaultBackendApi().personalAgentResumeAutoCompact(...args)
+export const personalAgentKeepalive: BackendApi["personalAgentKeepalive"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentKeepalive(...args)
+export const personalAgentResend: BackendApi["personalAgentResend"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentResend(...args)
+export const personalAgentMarkSeen: BackendApi["personalAgentMarkSeen"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentMarkSeen(...args)
+export const personalAgentNoticeAct: BackendApi["personalAgentNoticeAct"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentNoticeAct(...args)
+export const personalAgentAnswerQuestion: BackendApi["personalAgentAnswerQuestion"] =
+  (...args) => getDefaultBackendApi().personalAgentAnswerQuestion(...args)
+export const personalAgentAnswerPlan: BackendApi["personalAgentAnswerPlan"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentAnswerPlan(...args)
+export const personalAgentRespondPermission: BackendApi["personalAgentRespondPermission"] =
+  (...args) => getDefaultBackendApi().personalAgentRespondPermission(...args)
+export const personalAgentItems: BackendApi["personalAgentItems"] = (...args) =>
+  getDefaultBackendApi().personalAgentItems(...args)
+export const personalAgentDispatches: BackendApi["personalAgentDispatches"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentDispatches(...args)
+export const personalAgentStats: BackendApi["personalAgentStats"] = (...args) =>
+  getDefaultBackendApi().personalAgentStats(...args)
+export const personalAgentFiles: BackendApi["personalAgentFiles"] = (...args) =>
+  getDefaultBackendApi().personalAgentFiles(...args)
+export const personalAgentFileSave: BackendApi["personalAgentFileSave"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentFileSave(...args)
+export const personalAgentFileDelete: BackendApi["personalAgentFileDelete"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentFileDelete(...args)
+export const personalAgentSkillSwitch: BackendApi["personalAgentSkillSwitch"] =
+  (...args) => getDefaultBackendApi().personalAgentSkillSwitch(...args)
+export const personalAgentCheckMessage: BackendApi["personalAgentCheckMessage"] =
+  (...args) => getDefaultBackendApi().personalAgentCheckMessage(...args)
+export const personalAgentChecks: BackendApi["personalAgentChecks"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentChecks(...args)
+export const personalAgentSetWorkdir: BackendApi["personalAgentSetWorkdir"] = (
+  ...args
+) => getDefaultBackendApi().personalAgentSetWorkdir(...args)
 export const getFolderConversationOutline: BackendApi["getFolderConversationOutline"] =
   (...args) => getDefaultBackendApi().getFolderConversationOutline(...args)
 export const gitGenerateCommitMessage: BackendApi["gitGenerateCommitMessage"] =

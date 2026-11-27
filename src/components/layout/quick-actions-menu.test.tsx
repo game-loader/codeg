@@ -189,6 +189,8 @@ const AUTOMATIONS_ROW = /^Automations/
 const FORGE_ROW = "Repository panel"
 // The Harness row's label is followed by what the page holds.
 const HARNESS_ROW = "Harness EngineeringSkills · MCP"
+// The personal agent's row carries a "Beta" capsule after its label.
+const PA_ROW = "Personal agentBeta"
 
 beforeEach(() => {
   desktop = true
@@ -213,7 +215,12 @@ describe("Quick actions, in the status bar's account menu", () => {
     expect(trigger).toHaveAccessibleDescription("Quick actions")
     expect(screen.queryByRole("button", { name: "Quick actions" })).toBeNull()
     const rows = topRows()
-    expect(rows[0]).toBe("Automations2")
+    expect(rows[0]).toBe(PA_ROW)
+    expect(
+      screen
+        .getByRole("menuitem", { name: /^Personal agent/ })
+        .querySelector("[data-beta-badge]")
+    ).not.toBeNull()
     expect(rows[rows.length - 1]).toBe("Sign in to SRN")
   })
 
@@ -222,6 +229,7 @@ describe("Quick actions, in the status bar's account menu", () => {
     expect(layout()).toEqual([
       "head",
       "—",
+      PA_ROW,
       "Automations2",
       "To-dos",
       FORGE_ROW,
@@ -417,6 +425,7 @@ describe("Quick actions, in the status bar's account menu", () => {
     expect(layout()).toEqual([
       "head",
       "—",
+      PA_ROW,
       "Automations2",
       "To-dos",
       FORGE_ROW,
@@ -447,6 +456,7 @@ describe("Quick actions, in the status bar's account menu", () => {
     remoteWindow = true
     await mountAndOpen()
     expect(topRows()).toEqual([
+      PA_ROW,
       "Automations2",
       "To-dos",
       FORGE_ROW,
@@ -524,6 +534,10 @@ describe("Quick actions, in the status bar's account menu", () => {
     await reopen()
     await clickItem(/^Harness Engineering/)
     expect(mocks.setRoute).toHaveBeenCalledWith("harness")
+
+    await reopen()
+    await clickItem(/^Personal agent/)
+    expect(mocks.setRoute).toHaveBeenCalledWith("personalAgent")
 
     await reopen()
     await clickItem("Show pet")

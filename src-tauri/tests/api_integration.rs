@@ -1039,29 +1039,11 @@ async fn a_server_that_shares_its_screen_answers_its_web_clients() {
 // Assistants
 // ────────────────────────────────────────────────────────────────────────────
 
-fn assistant_draft(name: &str) -> Value {
-    json!({
-        "name": name,
-        "description": "Reviews diffs",
-        "avatar": { "kind": "monogram", "color": "violet" },
-        "agent_config": {
-            "agent_type": "codex",
-            "agent_options": { "config_values": { "model": "gpt-5.5" } },
-            "label_snapshot": {
-                "agent": "Codex CLI",
-                "mode": null,
-                "options": [
-                    { "id": "model", "kind": "select", "name": "Model", "value_label": "GPT-5.5" }
-                ]
-            }
-        },
-        "instructions": "Be terse.",
-        "enabled": true
-    })
-}
-
+/// The collaboration settings' assistants are read only now: their list is
+/// served (old links and delegation children read it), and the commands
+/// that changed them are gone — the owner's assistants took their place.
 #[tokio::test]
-async fn assistants_round_trip_over_http() {
+async fn assistants_are_listed_and_no_longer_changed_over_http() {
     let (server, _data, _static) = build_test_server().await;
     let auth = format!("Bearer {TEST_TOKEN}");
     let call = |path: &'static str, body: Value| {
@@ -1075,65 +1057,67 @@ async fn assistants_round_trip_over_http() {
     assert_eq!(resp.status_code(), 200);
     assert_eq!(resp.json::<Value>(), json!([]));
 
-    let resp = call("/api/assistant_create", json!({ "draft": assistant_draft("Reviewer") })).await;
-    assert_eq!(resp.status_code(), 200);
-    let a: Value = resp.json();
-    assert_eq!(a["name"], "Reviewer");
-    assert_eq!(a["revision"], 1);
-    assert_eq!(a["agent_type"], "codex");
-    assert!(a["deleted_at"].is_null());
-    let a_id = a["id"].as_i64().unwrap();
+    for (path, body) in [
+        ("/api/assistant_create", json!({ "draft": {} })),
+        ("/api/assistant_update", json!({ "id": 1, "patch": {} })),
+        ("/api/assistant_delete", json!({ "id": 1 })),
+        ("/api/assistant_reorder", json!({ "ids": [1] })),
+    ] {
+        let resp = call(path, body).await;
+        assert_ne!(resp.status_code(), 200, "{path} is gone");
+    }
+}
 
-    let resp = call("/api/assistant_create", json!({ "draft": assistant_draft("Writer") })).await;
-    let b_id = resp.json::<Value>()["id"].as_i64().unwrap();
+#[tokio::test]
+async fn ask_routes_require_auth_and_use_the_receiving_backends_conversations() {
+    use codeg_lib::db::test_helpers::{seed_conversation, seed_folder};
+    use codeg_lib::models::AgentType;
 
-    // A duplicate name is a conflict carrying its i18n key.
-    let resp = call("/api/assistant_create", json!({ "draft": assistant_draft("writer") })).await;
-    assert_eq!(resp.status_code(), 409);
-    assert_eq!(resp.json::<Value>()["i18n_key"], "errors.duplicateName");
+    let (server, state, data, _static) = build_test_server_with_state().await;
+    let folder_id = seed_folder(&state.db, data.path().to_str().unwrap()).await;
+    let parent_id = seed_conversation(&state.db, folder_id, AgentType::Codex).await;
+    let auth = format!("Bearer {TEST_TOKEN}");
+    let ask = json!({
+        "parentConversationId": parent_id,
+        "folderId": folder_id,
+        "agentType": "codex",
+    });
+    let parent = json!({ "parentConversationId": parent_id });
 
-    // An incomplete selection never lands.
-    let mut incomplete = assistant_draft("Other");
-    incomplete["agent_config"]["agent_options"]["config_values"] = json!({});
-    let resp = call("/api/assistant_create", json!({ "draft": incomplete })).await;
-    assert_eq!(resp.status_code(), 400);
-    assert_eq!(resp.json::<Value>()["i18n_key"], "errors.invalidAgentOptions");
+    for (path, args) in [
+        ("/api/create_ask_conversation", &ask),
+        ("/api/list_ask_conversations", &parent),
+        ("/api/list_check_conversations", &parent),
+        ("/api/personal_agent_check_message", &parent),
+        ("/api/acp_fork", &parent),
+    ] {
+        assert_eq!(
+            server.post(path).json(args).await.status_code(),
+            401,
+            "{path}"
+        );
+    }
 
-    let resp = call(
-        "/api/assistant_update",
-        json!({ "id": a_id, "patch": { "enabled": false } }),
-    )
-    .await;
-    assert_eq!(resp.status_code(), 200);
-    let updated: Value = resp.json();
-    assert_eq!(updated["enabled"], false);
-    assert_eq!(updated["revision"], 2);
-    assert_eq!(updated["instructions"], "Be terse.");
+    let response = server
+        .post("/api/create_ask_conversation")
+        .add_header("authorization", auth.clone())
+        .json(&ask)
+        .await;
+    assert_eq!(response.status_code(), 200);
+    let created: Value = response.json();
+    assert_eq!(created["parentConversationId"], parent_id);
+    assert_eq!(created["folderId"], folder_id);
 
-    let resp = call("/api/assistant_reorder", json!({ "ids": [b_id, a_id] })).await;
-    assert_eq!(resp.status_code(), 200);
-    let moved: Value = resp.json();
-    assert_eq!(moved.as_array().unwrap().len(), 2);
-    assert_eq!(moved[0]["id"], b_id);
-
-    let resp = call("/api/assistant_delete", json!({ "id": a_id })).await;
-    assert_eq!(resp.status_code(), 200);
-    assert!(resp.json::<Value>()["deleted_at"].is_string());
-
-    let resp = call("/api/assistant_delete", json!({ "id": a_id })).await;
-    assert_eq!(resp.status_code(), 404);
-
-    // The list keeps the tombstone, in display order.
-    let resp = call("/api/assistant_list", json!({})).await;
-    let list: Value = resp.json();
-    let ids: Vec<i64> = list
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|r| r["id"].as_i64().unwrap())
-        .collect();
-    assert_eq!(ids, vec![b_id, a_id]);
-    assert!(list[1]["deleted_at"].is_string());
+    let response = server
+        .post("/api/list_ask_conversations")
+        .add_header("authorization", auth)
+        .json(&parent)
+        .await;
+    assert_eq!(response.status_code(), 200);
+    let asks: Value = response.json();
+    assert_eq!(asks.as_array().unwrap().len(), 1);
+    assert_eq!(asks[0]["id"], created["conversationId"]);
+    assert_eq!(asks[0]["parent_id"], parent_id);
 }
 
 // ────────────────────────────────────────────────────────────────────────────

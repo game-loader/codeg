@@ -7,6 +7,7 @@ import { ConversationStatusDot } from "@/components/conversations/conversation-s
 import { STRIP_ICON_BTN } from "@/components/tabs/strip-icon-button"
 import { cn, handleMiddleClickClose } from "@/lib/utils"
 import type { ConversationStatus } from "@/lib/types"
+import type { BlockingPromptKind } from "@/lib/blocking-prompts"
 import {
   windowResourceKey,
   type WindowResourceRef,
@@ -20,6 +21,7 @@ export interface WindowResourceTab {
   running?: boolean
   status?: ConversationStatus
   isPinned?: boolean
+  awaiting?: BlockingPromptKind
 }
 
 export function MultiHostTabs({
@@ -47,6 +49,7 @@ export function MultiHostTabs({
 }) {
   const t = useTranslations("MultiHost")
   const tTabs = useTranslations("Folder.conversationCard")
+  const tSidebar = useTranslations("Folder.sidebar")
   const stripRef = useRef<HTMLDivElement>(null)
   const selectedKey = selected ? windowResourceKey(selected) : null
   const activeIndex = tabs.findIndex(
@@ -121,6 +124,12 @@ export function MultiHostTabs({
             >
               {tab.ref.kind === "conversation" ? (
                 <ConversationStatusDot
+                  attention={tab.awaiting}
+                  title={
+                    tab.awaiting
+                      ? tSidebar(`statusAwaiting.${tab.awaiting}`)
+                      : undefined
+                  }
                   status={
                     tab.status ?? (tab.running ? "in_progress" : undefined)
                   }

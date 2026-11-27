@@ -113,7 +113,7 @@ describe("existing consumers bind to resource providers", () => {
     expect(b.api.getFolder).not.toHaveBeenCalled()
   })
 
-  it("stores drafts, selection prompts, closed tabs and canvas views independently for equal IDs", () => {
+  it("stores drafts, Ask model selections and canvas views independently for equal IDs", () => {
     const a = runtime(1),
       b = runtime(2)
     const first = getCanvasViewStorage(a.stores.storage),
@@ -124,28 +124,28 @@ describe("existing consumers bind to resource providers", () => {
     expect(other.loadCanvasViewport(1)).toEqual({ x: 50, y: 60, zoom: 2 })
     first.forgetCanvasBoardViewState(1)
     expect(other.loadCanvasViewport(1)).toEqual({ x: 50, y: 60, zoom: 2 })
-    a.stores.storage.askSelection.parkAskSelectionPrompt("same-tab", {
-      prompt: "A",
-      agentType: "codex",
-      folderId: 1,
-    })
-    b.stores.storage.askSelection.parkAskSelectionPrompt("same-tab", {
-      prompt: "B",
-      agentType: "codex",
-      folderId: 1,
-    })
+    for (const [host, model] of [
+      [a, "A"],
+      [b, "B"],
+    ] as const) {
+      host.stores.storage.selectorPreferences.setConnectSelection(
+        "same-tab",
+        "codex",
+        { model }
+      )
+    }
     expect(
-      a.stores.storage.askSelection.consumeAskSelectionPrompts("same-tab", {
-        agentType: "codex",
-        folderId: 1,
-      })
-    ).toEqual(["A"])
+      a.stores.storage.selectorPreferences.getSavedPrefsForConnect(
+        "codex",
+        "same-tab"
+      ).configValues
+    ).toEqual({ model: "A" })
     expect(
-      b.stores.storage.askSelection.consumeAskSelectionPrompts("same-tab", {
-        agentType: "codex",
-        folderId: 1,
-      })
-    ).toEqual(["B"])
+      b.stores.storage.selectorPreferences.getSavedPrefsForConnect(
+        "codex",
+        "same-tab"
+      ).configValues
+    ).toEqual({ model: "B" })
     expect(
       a.stores.storage.drafts.buildNewConversationDraftStorageKey("same-tab")
     ).not.toBe(

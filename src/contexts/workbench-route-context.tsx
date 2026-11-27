@@ -4,10 +4,17 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
 } from "react"
+
+import { getActiveRemoteConnectionId } from "@/lib/transport"
+import { useWorkbenchRouteStore } from "@/stores/workbench-route-store"
+import { useOptionalBackendClient } from "@/contexts/backend-client-context"
+import type { BackendKey } from "@/lib/backend/types"
+import { useWorkspaceRuntimeVisibility } from "@/contexts/workspace-runtime-visibility-context"
 
 /**
  * The view occupying the main content region. `"conversations"` is the default
@@ -20,6 +27,7 @@ import {
  */
 export type WorkbenchRouteId =
   | "conversations"
+  | "personalAgent"
   | "automations"
   | "tasks"
   | "forge"
@@ -31,6 +39,7 @@ export type WorkbenchRouteId =
 
 interface WorkbenchRouteContextValue {
   routeId: WorkbenchRouteId
+  personalAgentAvailable: boolean
   /** Convenience for the common branch — `routeId === "conversations"`. */
   isConversations: boolean
   setRoute: (id: WorkbenchRouteId) => void
@@ -48,9 +57,12 @@ const WorkbenchRouteContext = createContext<WorkbenchRouteContextValue | null>(
  * (which unmounts when collapsed) while the content swap is owned by
  * WorkspaceContent — both read this single source of truth.
  *
- * State is in-memory only: a reload lands back on the conversation workspace.
- * That is deliberate; static export rules out URL route segments, and the
- * established pattern here is in-memory context rather than query params.
+ * State is in-memory, but for one thing kept for next time: which of the two
+ * home views — the conversations or the assistants page — was shown last,
+ * which the window opens on again (a reload included). Every other route is
+ * a place visited from one of them and is not kept. Static export rules out
+ * URL route segments, and the established pattern here is in-memory context
+ * rather than query params.
  */
 export function useWorkbenchRoute() {
   const ctx = useOptionalWorkbenchRoute()
@@ -74,20 +86,85 @@ export function useOptionalWorkbenchRoute(): WorkbenchRouteContextValue | null {
   return useContext(WorkbenchRouteContext)
 }
 
-export function WorkbenchRouteProvider({ children }: { children: ReactNode }) {
-  const [routeId, setRouteId] = useState<WorkbenchRouteId>("conversations")
+/** The home views: the one shown last is opened on next time. */
+const HOME_ROUTES: ReadonlySet<WorkbenchRouteId> = new Set([
+  "conversations",
+  "personalAgent",
+])
 
-  const setRoute = useCallback((id: WorkbenchRouteId) => setRouteId(id), [])
+/** Per backend: a remote workspace's window keeps its own. */
+function lastViewKey(backendKey?: BackendKey): string {
+  const remoteId = backendKey
+    ? backendKey === "local"
+      ? null
+      : backendKey.slice("remote:".length)
+    : getActiveRemoteConnectionId()
+  return `workspace:last-view:${remoteId ? `remote-${remoteId}` : "local"}`
+}
+
+/** The home view shown last here, or the conversations. */
+export function lastHomeRoute(key = lastViewKey()): WorkbenchRouteId {
+  try {
+    const kept = window.localStorage.getItem(key)
+    return kept === "personalAgent" ? kept : "conversations"
+  } catch {
+    return "conversations"
+  }
+}
+
+function keepHomeRoute(id: WorkbenchRouteId, key: string) {
+  if (!HOME_ROUTES.has(id)) return
+  try {
+    window.localStorage.setItem(key, id)
+  } catch {
+    // Not kept; this window shows it all the same.
+  }
+}
+
+export function WorkbenchRouteProvider({
+  children,
+  personalAgentAvailable = true,
+}: {
+  children: ReactNode
+  personalAgentAvailable?: boolean
+}) {
+  const backend = useOptionalBackendClient()
+  const { managed } = useWorkspaceRuntimeVisibility()
+  const storageKey = lastViewKey(backend?.key)
+  const [requestedRoute, setRouteId] = useState(() => lastHomeRoute(storageKey))
+  // Await the capability probe without overwriting the saved assistant view.
+  const routeId =
+    requestedRoute === "personalAgent" && !personalAgentAvailable
+      ? "conversations"
+      : requestedRoute
+  useEffect(() => {
+    if (personalAgentAvailable) keepHomeRoute(routeId, storageKey)
+  }, [personalAgentAvailable, routeId, storageKey])
+
+  const setRoute = useCallback(
+    (id: WorkbenchRouteId) => {
+      if (id !== "personalAgent" || personalAgentAvailable) setRouteId(id)
+    },
+    [personalAgentAvailable]
+  )
   const openConversations = useCallback(() => setRouteId("conversations"), [])
+  // Told outside React too: the presence heartbeat reports the session in
+  // front only while the conversations are what this window shows.
+  useEffect(() => {
+    if (managed || backend) return
+    useWorkbenchRouteStore.setState({ route: routeId })
+    return () => useWorkbenchRouteStore.setState({ route: null })
+  }, [backend, managed, routeId])
 
   const value = useMemo<WorkbenchRouteContextValue>(
     () => ({
       routeId,
+      personalAgentAvailable,
       isConversations: routeId === "conversations",
       setRoute,
       openConversations,
     }),
-    [routeId, setRoute, openConversations]
+    [routeId, personalAgentAvailable, setRoute, openConversations]
   )
 
   return (
@@ -114,6 +191,7 @@ export function WorkbenchRouteActionsProvider({
   const value = useMemo(
     () => ({
       routeId,
+      personalAgentAvailable: true,
       isConversations: routeId === "conversations",
       setRoute: navigate,
       openConversations,

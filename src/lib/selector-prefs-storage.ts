@@ -11,11 +11,6 @@
  * conversation never changes another, and changing the default never changes
  * an existing conversation.
  *
- * Structure hash is stored alongside values — when the saved value no
- * longer exists in the current option set (item renamed / removed) the
- * backend's `set_session_config_option` will reject the application and
- * the stale value is naturally dropped on the next user pick.
- *
  * Preferences are shipped to the backend at `acp_connect` time (see
  * `getSavedPrefsForConnect`) which applies them to the agent BEFORE
  * the initial `session_modes` / `session_config_options` events are
@@ -26,7 +21,7 @@
 
 import type { SessionModeStateInfo } from "@/lib/types"
 
-const STORAGE_KEY = "codeg:selector-prefs"
+export const SELECTOR_PREFS_STORAGE_KEY = "codeg:selector-prefs"
 
 interface SelectorPrefs {
   modeId?: string
@@ -34,25 +29,6 @@ interface SelectorPrefs {
 }
 
 type AllPrefs = Record<string, SelectorPrefs>
-
-function readAll(): AllPrefs {
-  if (typeof window === "undefined") return {}
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    return raw ? (JSON.parse(raw) as AllPrefs) : {}
-  } catch {
-    return {}
-  }
-}
-
-function writeAll(all: AllPrefs) {
-  if (typeof window === "undefined") return
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(all))
-  } catch {
-    /* ignore */
-  }
-}
 
 /**
  * Built-in agent types that took over a custom agent, mapped to the custom
@@ -69,24 +45,6 @@ function prefsOf(all: AllPrefs, agentType: string): SelectorPrefs | undefined {
   if (own) return own
   const retired = RETIRED_CUSTOM_AGENTS.get(agentType)
   return retired ? all[retired] : undefined
-}
-
-function updatePrefs(
-  agentType: string,
-  fn: (prefs: SelectorPrefs) => SelectorPrefs
-) {
-  const all = readAll()
-  const existing = prefsOf(all, agentType)
-  // Re-project onto the current schema so legacy fields (`modesHash` /
-  // `configHash` from before the backend took ownership of preference
-  // application) don't survive across writes. Without this an upgrade
-  // user's first save would re-persist the stale hash bytes forever.
-  const normalized: SelectorPrefs = {
-    modeId: existing?.modeId,
-    configValues: existing?.configValues,
-  }
-  all[agentType] = fn(normalized)
-  writeAll(all)
 }
 
 /**
@@ -147,58 +105,133 @@ function healLegacyValues(
   return { ...values, model: model.slice(0, open) }
 }
 
-// ── Read ──
+export function createSelectorPrefsStorage(
+  read: () => string | null,
+  write: (value: string) => void
+) {
+  let disposed = false
+  // A surface may choose options before it connects. Keep those picks in
+  // memory for this storage instance only; the saved default stays intact.
+  const connectSelections = new Map<
+    string,
+    { agentType: string; configValues: Record<string, string> }
+  >()
 
-/** Read saved mode id for an agent (no validation, just the raw value). */
-export function getSavedModeId(agentType: string): string | null {
-  return prefsOf(readAll(), agentType)?.modeId ?? null
-}
+  function readAll(): AllPrefs {
+    if (disposed) return {}
+    try {
+      const raw = read()
+      const all: unknown = raw ? JSON.parse(raw) : null
+      return all && typeof all === "object" && !Array.isArray(all)
+        ? (all as AllPrefs)
+        : {}
+    } catch {
+      return {}
+    }
+  }
 
-/**
- * Read all saved preferences for an agent. Returned shape mirrors what
- * the backend `acp_connect` command accepts (`preferred_mode_id` +
- * `preferred_config_values`). Null/empty fields are normalized so the
- * call site can pass the result through unchanged.
- *
- * The backend applies these on the freshly-attached session before any
- * `session_modes` / `session_config_options` event is emitted, so the
- * frontend never needs to "intercept event and overwrite, then sync back".
- */
-export function getSavedPrefsForConnect(agentType: string): {
-  modeId: string | null
-  configValues: Record<string, string> | null
-} {
-  const prefs = prefsOf(readAll(), agentType)
-  if (!prefs) return { modeId: null, configValues: null }
-  const configValues =
-    prefs.configValues && Object.keys(prefs.configValues).length > 0
-      ? healLegacyValues(prefs.configValues)
-      : null
+  function updatePrefs(
+    agentType: string,
+    update: (prefs: SelectorPrefs) => SelectorPrefs
+  ) {
+    if (disposed) return
+    const all = readAll()
+    const existing = prefsOf(all, agentType)
+    // Project onto the current schema to drop legacy hash fields on writes.
+    all[agentType] = update({
+      modeId: existing?.modeId,
+      configValues: existing?.configValues,
+    })
+    try {
+      write(JSON.stringify(all))
+    } catch {
+      /* device storage may be unavailable */
+    }
+  }
+
   return {
-    modeId: prefs.modeId ?? null,
-    configValues,
+    preferences: {
+      getSavedModeId(agentType: string): string | null {
+        return prefsOf(readAll(), agentType)?.modeId ?? null
+      },
+      /** Apply a surface's picks over the saved default for the same agent. */
+      getSavedPrefsForConnect(
+        agentType: string,
+        contextKey?: string
+      ): {
+        modeId: string | null
+        configValues: Record<string, string> | null
+      } {
+        const prefs = prefsOf(readAll(), agentType)
+        const saved =
+          prefs?.configValues && Object.keys(prefs.configValues).length > 0
+            ? healLegacyValues(prefs.configValues)
+            : null
+        const own =
+          contextKey != null ? connectSelections.get(contextKey) : null
+        return {
+          modeId: prefs?.modeId ?? null,
+          configValues:
+            own?.agentType === agentType
+              ? { ...saved, ...own.configValues }
+              : saved,
+        }
+      },
+      setConnectSelection(
+        contextKey: string,
+        agentType: string,
+        configValues: Record<string, string>
+      ) {
+        if (disposed) return
+        if (Object.keys(configValues).length === 0) {
+          connectSelections.delete(contextKey)
+          return
+        }
+        connectSelections.set(contextKey, { agentType, configValues })
+      },
+      clearConnectSelection(contextKey: string) {
+        connectSelections.delete(contextKey)
+      },
+      saveModePreference(agentType: string, modes: SessionModeStateInfo) {
+        updatePrefs(agentType, (prefs) => ({
+          ...prefs,
+          modeId: modes.current_mode_id,
+        }))
+      },
+      saveConfigPreference(
+        agentType: string,
+        configId: string,
+        valueId: string
+      ) {
+        updatePrefs(agentType, (prefs) => ({
+          ...prefs,
+          configValues: { ...prefs.configValues, [configId]: valueId },
+        }))
+      },
+    },
+    dispose() {
+      disposed = true
+      connectSelections.clear()
+    },
   }
 }
 
-// ── Save (user actions only) ──
+const { preferences: standalonePreferences } = createSelectorPrefsStorage(
+  () =>
+    typeof window === "undefined"
+      ? null
+      : localStorage.getItem(SELECTOR_PREFS_STORAGE_KEY),
+  (value) => {
+    if (typeof window !== "undefined")
+      localStorage.setItem(SELECTOR_PREFS_STORAGE_KEY, value)
+  }
+)
 
-export function saveModePreference(
-  agentType: string,
-  modes: SessionModeStateInfo
-) {
-  updatePrefs(agentType, (prefs) => ({
-    ...prefs,
-    modeId: modes.current_mode_id,
-  }))
-}
-
-export function saveConfigPreference(
-  agentType: string,
-  configId: string,
-  valueId: string
-) {
-  updatePrefs(agentType, (prefs) => ({
-    ...prefs,
-    configValues: { ...prefs.configValues, [configId]: valueId },
-  }))
-}
+export const {
+  getSavedModeId,
+  getSavedPrefsForConnect,
+  setConnectSelection,
+  clearConnectSelection,
+  saveModePreference,
+  saveConfigPreference,
+} = standalonePreferences

@@ -105,6 +105,7 @@ export interface MultiHostSidebarProps extends CatalogRowActions {
   onRefresh(key: BackendKey, generation: number): void
   onManageConnections(): void
   renderNavigation?(items: SidebarNavItemVisibility): ReactNode
+  onAssistantsHost?(host: HTMLDivElement | null): void
 }
 
 /** Numeric folder IDs only have meaning inside their containing machine. */
@@ -126,6 +127,7 @@ export function MultiHostSidebar({
   onRefresh,
   onManageConnections,
   renderNavigation,
+  onAssistantsHost,
   renderSession,
   onLocationTool,
 }: MultiHostSidebarProps) {
@@ -392,6 +394,13 @@ export function MultiHostSidebar({
         onChange={setRawTagFilter}
       />
       <div className="min-h-0 flex-1 overflow-y-auto p-2 flex flex-col">
+        {onAssistantsHost && (
+          <div
+            ref={onAssistantsHost}
+            data-backend-key={focusedHost}
+            style={{ order: sectionOrder.indexOf("assistants") }}
+          />
+        )}
         <div style={{ order: sectionOrder.indexOf("folders") }}>
           {preferences.mode === "projects" && (
             <MultiHostProjects

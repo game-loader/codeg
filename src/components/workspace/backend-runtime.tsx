@@ -44,6 +44,7 @@ import type { ConversationStatus, DbConversationSummary } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { FileTabAddMenu } from "@/components/files/file-workspace-tab-bar"
 import { RuntimeTabMenu } from "./runtime-tab-menu"
+import { useConversationAttentionIndex } from "@/hooks/use-conversation-attention"
 
 /** A stable host node: focus/split changes update style, never its providers. */
 export function BackendRuntimeView({
@@ -111,6 +112,7 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
   const conversations = stores.tabs((state) => state.tabs)
   const activeTabId = stores.tabs((state) => state.activeTabId)
   const hydrated = stores.tabs((state) => state.tabsHydrated)
+  const attention = useConversationAttentionIndex()
   const { fileTabs, activeFileTabId } = useWorkspaceFileTabs()
   const workspace = useWorkspaceActions()
   const { activePane, mode, filesMaximized, conversationMaximized } =
@@ -187,6 +189,10 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
         running: tab.status === "in_progress",
         status: tab.status as ConversationStatus | undefined,
         isPinned: tab.isPinned,
+        awaiting:
+          tab.conversationId == null
+            ? undefined
+            : attention?.get(tab.conversationId),
       })
     ),
     ...fileTabs.map(
@@ -359,6 +365,7 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
       selected,
       routeId,
       harnessUpdates,
+      attention,
       sidebarOpen: sidebar.isOpen,
       terminalOpen: terminal.isOpen,
       auxOpen: aux.isOpen,
@@ -390,6 +397,7 @@ export function RuntimeBridge({ runtime }: { runtime: BackendRuntime }) {
       hydrated,
       routeId,
       harnessUpdates,
+      attention,
       navigate,
       newChat,
       openLocationTool,

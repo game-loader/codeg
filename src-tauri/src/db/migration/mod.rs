@@ -63,6 +63,9 @@ mod m20261106_000001_work_task_source_key;
 mod m20261112_000001_work_task_writeback_drafts;
 mod m20261116_000001_srn_web;
 mod m20261123_000001_conversation_selector_state;
+mod m20261125_000001_personal_agent;
+mod m20261125_000002_personal_agent_item_closure;
+mod m20261125_000003_personal_agent_indexes;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -132,6 +135,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20261112_000001_work_task_writeback_drafts::Migration),
             Box::new(m20261116_000001_srn_web::Migration),
             Box::new(m20261123_000001_conversation_selector_state::Migration),
+            Box::new(m20261125_000001_personal_agent::Migration),
+            Box::new(m20261125_000002_personal_agent_item_closure::Migration),
+            Box::new(m20261125_000003_personal_agent_indexes::Migration),
         ]
     }
 }
@@ -180,12 +186,34 @@ mod integration_tests {
     ];
 
     struct PreviousMultiHost;
-    struct PreviousUpstream;
+    struct MultiHostBeforePersonalAgent;
+    struct Upstream049;
+
+    const UPSTREAM_0_49_MIGRATIONS: &[&str] = &[
+        "m20261125_000001_personal_agent",
+        "m20261125_000002_personal_agent_item_closure",
+        "m20261125_000003_personal_agent_indexes",
+    ];
+    const CUSTOM_MIGRATIONS: &[&str] = &[
+        "m20260920_000001_academic",
+        "m20261011_000001_remote_connection_revision",
+        "m20261015_000001_session_selector_state",
+    ];
+
+    #[async_trait::async_trait]
+    impl MigratorTrait for MultiHostBeforePersonalAgent {
+        fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+            Migrator::migrations()
+                .into_iter()
+                .filter(|migration| !UPSTREAM_0_49_MIGRATIONS.contains(&migration.name()))
+                .collect()
+        }
+    }
 
     #[async_trait::async_trait]
     impl MigratorTrait for PreviousMultiHost {
         fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-            Migrator::migrations()
+            MultiHostBeforePersonalAgent::migrations()
                 .into_iter()
                 .filter(|migration| {
                     migration.name() != "m20261006_000001_conversation_tag"
@@ -197,14 +225,11 @@ mod integration_tests {
     }
 
     #[async_trait::async_trait]
-    impl MigratorTrait for PreviousUpstream {
+    impl MigratorTrait for Upstream049 {
         fn migrations() -> Vec<Box<dyn MigrationTrait>> {
             Migrator::migrations()
                 .into_iter()
-                .filter(|migration| {
-                    migration.name() != "m20261011_000001_remote_connection_revision"
-                        && migration.name() != "m20261015_000001_session_selector_state"
-                })
+                .filter(|migration| !CUSTOM_MIGRATIONS.contains(&migration.name()))
                 .collect()
         }
     }
@@ -215,11 +240,17 @@ mod integration_tests {
         assert!(manager.has_table("conversation_tag").await.unwrap());
         assert!(manager.has_table("conversation_tag_link").await.unwrap());
         assert!(manager.has_table("session_selector_state").await.unwrap());
+        assert!(manager.has_table("academic_conversation").await.unwrap());
+        assert!(manager.has_table("personal_agent").await.unwrap());
+        assert!(manager.has_column("conversation", "bot_uid").await.unwrap());
         assert!(manager
             .has_column("remote_workspace_connection", "config_revision")
             .await
             .unwrap());
-        assert!(Migrator::get_pending_migrations(db).await.unwrap().is_empty());
+        assert!(Migrator::get_pending_migrations(db)
+            .await
+            .unwrap()
+            .is_empty());
         Migrator::up(db, None).await.unwrap();
     }
 
@@ -231,9 +262,16 @@ mod integration_tests {
     }
 
     #[tokio::test]
-    async fn upgrades_existing_upstream_database_with_connection_revisions() {
+    async fn upgrades_existing_multi_host_database_to_personal_agents() {
         let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
-        PreviousUpstream::up(&db, None).await.unwrap();
+        MultiHostBeforePersonalAgent::up(&db, None).await.unwrap();
+        assert_combined_schema(&db).await;
+    }
+
+    #[tokio::test]
+    async fn upgrades_existing_upstream_049_database_with_custom_migrations() {
+        let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
+        Upstream049::up(&db, None).await.unwrap();
         assert_combined_schema(&db).await;
     }
 }

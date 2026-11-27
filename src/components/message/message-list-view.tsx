@@ -5,6 +5,7 @@ import { useConversationRuntimeActions as standaloneUseConversationRuntimeAction
 import { useConversationRuntimeStore as legacyConversationRuntime } from "@/stores/conversation-runtime-store"
 import { useAppWorkspaceStore as legacyWorkspace } from "@/stores/app-workspace-store"
 import { useBackendStores } from "@/contexts/backend-stores-selection-context"
+import { useBackendEventScope } from "@/hooks/use-runtime-event-scope"
 import {
   memo,
   useCallback,
@@ -14,6 +15,7 @@ import {
   useRef,
   useState,
   type ComponentProps,
+  type ReactNode,
 } from "react"
 import {
   isLiveTurnId,
@@ -51,6 +53,12 @@ import { KnownInvocationsProvider } from "./known-invocations-context"
 import { DelegationStatusIndexProvider } from "./delegation-status-index-context"
 import { useTranscriptKnownInvocations } from "./use-transcript-known-invocations"
 import { ReplyArtifacts } from "./reply-artifacts"
+import {
+  CheckMarks,
+  MessageChecksProvider,
+  useMessageChecks,
+  type CheckAsk,
+} from "./message-checks"
 import { UserResourceLinks } from "./user-resource-links"
 import { UserImageAttachments } from "./user-image-attachments"
 import {
@@ -87,12 +95,14 @@ import {
   CheckIcon,
   CopyIcon,
   Loader2,
+  PencilIcon,
   Plus,
   RefreshCw,
   ListTodo,
 } from "lucide-react"
 import { useCreateTaskFromMessage } from "./use-create-task-from-message"
 import { Button } from "@/components/ui/button"
+import { Textarea } from "@/components/ui/textarea"
 import { useTranslations } from "next-intl"
 import {
   buildPlanKey,
@@ -133,6 +143,7 @@ import { useConversationOutline } from "@/hooks/use-conversation-outline"
 import {
   publishTranscriptInsights,
   retractTranscriptInsights,
+  transcriptInsightsKey,
   useTranscriptNavDemanded,
   type TranscriptInsights,
   type TranscriptInsightsActions,
@@ -153,7 +164,9 @@ function useRenderThreadItem(
   epoch: number,
   handleRoundOpenChange: (open: boolean) => void,
   onForkFromTurn: MessageListViewProps["onForkFromTurn"],
-  forkBusy: boolean
+  forkBusy: boolean,
+  onEditUserTurn: MessageListViewProps["onEditUserTurn"],
+  firstUserTurnId: string | null
 ) {
   return useCallback(
     (item: ThreadRenderItem) => {
@@ -189,6 +202,14 @@ function useRenderThreadItem(
                 onForkFromTurn={onForkFromTurn}
                 forkDisabled={forkBusy}
                 isThreadTail={item.isThreadTail}
+                previousUserGroup={item.previousUserGroup}
+                checkKey={item.key}
+                onEditUserTurn={onEditUserTurn}
+                editable={
+                  item.group.role === "user" &&
+                  isEditableUserTurn(item.sourceTurns?.[0], firstUserTurnId)
+                }
+                editDisabled={forkBusy}
               />
             </div>
           )
@@ -224,6 +245,8 @@ function useRenderThreadItem(
       handleRoundOpenChange,
       onForkFromTurn,
       forkBusy,
+      onEditUserTurn,
+      firstUserTurnId,
     ]
   )
 }
@@ -295,12 +318,19 @@ interface MessageListViewProps {
    */
   onQuoteSelection?: (text: string) => void
   /**
-   * Ask a question about a text selection made in this transcript: the host
-   * opens a new conversation on the same agent and sends the quoted selection
-   * followed by the question. Enables the "ask" entry on the selection bubble,
-   * on the same terms as `onQuoteSelection`. MUST be referentially stable.
+   * Ask a question about a text selection made in this transcript: the
+   * selection bubble's "ask" entry opens what this returns — the host's ask
+   * composer, holding the selection — in place of its buttons (see
+   * `SelectionActionBubble.renderAskComposer`). Enables the entry on the same
+   * terms as `onQuoteSelection`. MUST be referentially stable.
    */
-  onAskSelection?: (selection: string, question: string) => void
+  renderAskComposer?: (selection: string, close: () => void) => ReactNode
+  /**
+   * This surface sits beside the ask conversation drawer (the conversation
+   * page mounts it): a check's "how it was checked" opens the check's
+   * conversation there. Elsewhere it opens in a tab of its own.
+   */
+  checksOpenInDrawer?: boolean
   /**
    * Keep a text selection from this transcript as a note next to it. Only the
    * canvas has a board to put one on, so every other surface omits it and the
@@ -318,6 +348,16 @@ interface MessageListViewProps {
    * (see `forkBusy`) rather than making every reply's footer flicker.
    */
   onForkFromTurn?: (turnId: string) => void
+  /**
+   * Edit one of the user's sent messages and send it again in its place
+   * ("edit and resend": the session is cut back to just before it, see
+   * `PromptRewindTarget`). Resolves whether it went through, so the inline editor
+   * knows to close. Undefined hides the affordance — pass it only where the
+   * connection can rewind (`supportsRewind`).
+   *
+   * Like fork, a turn in flight greys the button out rather than hiding it.
+   */
+  onEditUserTurn?: (turnId: string, text: string) => Promise<boolean>
   /**
    * The connection's work that can outlive a turn, for the "N running" chip
    * on the live activity row above the composer (see `LiveRunsChip`). Every
@@ -371,6 +411,9 @@ export type ThreadRenderItem =
       showStats: boolean
       isRoleTransition: boolean
       previousUserIndex: number | null
+      /** The owner's message this reply answers (the closest user turn
+       *  before it): what a check of the reply is handed (10.3). */
+      previousUserGroup: ResolvedMessageGroup | null
       /** The newest assistant reply in the thread. Together with the view's
        *  `armed` flag this is what makes a run "the current round" — see the
        *  fold state below. */
@@ -1347,6 +1390,122 @@ export function markThreadTail(items: ThreadRenderItem[]): void {
 }
 
 /**
+ * Whether a user message can be edited and resent in place. The agent names a
+ * rewind point by the message's own record, which the parser puts on the turn
+ * as `agent_message_id`; a message this session sent gets it from the
+ * post-turn reparse (`computeTurnMetadataPatches`), so its edit appears once
+ * the transcript has caught up with it. The first message has nothing before
+ * it to rewind to — both adapters refuse it. Exported for tests.
+ */
+export function isEditableUserTurn(
+  turn: MessageTurn | null | undefined,
+  firstUserTurnId: string | null
+): boolean {
+  if (!turn || turn.role !== "user") return false
+  if (turn.id === firstUserTurnId) return false
+  return !!turn.agent_message_id
+}
+
+const UserMessageEditButton = memo(function UserMessageEditButton({
+  disabled,
+  onClick,
+}: {
+  disabled: boolean
+  onClick: () => void
+}) {
+  const t = useTranslations("Folder.chat.messageList")
+  return (
+    <MessageAction
+      tooltip={disabled ? t("editMessageBusy") : t("editMessage")}
+      className="opacity-0 group-hover/user-msg:opacity-100 transition-opacity self-end"
+      onClick={disabled ? undefined : onClick}
+      aria-disabled={disabled || undefined}
+      size="icon-xs"
+    >
+      <PencilIcon size={12} />
+    </MessageAction>
+  )
+})
+
+/**
+ * The inline editor a sent message turns into. Enter sends (Shift+Enter is a
+ * new line, and an IME composition is never cut short), Escape cancels. The
+ * send stays pending until the rewind answered, and the editor stays open when
+ * it did not go through, so nothing the user typed is lost.
+ */
+function UserMessageEditor({
+  initialText,
+  disabled,
+  onCancel,
+  onSubmit,
+}: {
+  initialText: string
+  disabled: boolean
+  onCancel: () => void
+  onSubmit: (text: string) => Promise<void>
+}) {
+  const t = useTranslations("Folder.chat.messageList")
+  const [text, setText] = useState(initialText)
+  const [pending, setPending] = useState(false)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+  }, [])
+  const canSend = !disabled && !pending && text.trim().length > 0
+  const submit = async () => {
+    if (!canSend) return
+    setPending(true)
+    try {
+      await onSubmit(text)
+    } finally {
+      setPending(false)
+    }
+  }
+  return (
+    <div className="ml-auto flex w-full max-w-[min(100%,42rem)] flex-col gap-2">
+      <Textarea
+        ref={textareaRef}
+        value={text}
+        aria-label={t("editMessage")}
+        className="max-h-80 overflow-y-auto"
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault()
+            onCancel()
+            return
+          }
+          if (
+            e.key === "Enter" &&
+            !e.shiftKey &&
+            !e.nativeEvent.isComposing &&
+            e.keyCode !== 229
+          ) {
+            e.preventDefault()
+            void submit()
+          }
+        }}
+      />
+      <div className="flex items-center justify-end gap-2">
+        <span className="mr-auto text-xs text-muted-foreground">
+          {t("editMessageHint")}
+        </span>
+        <Button variant="ghost" size="sm" onClick={onCancel} disabled={pending}>
+          {t("editMessageCancel")}
+        </Button>
+        <Button size="sm" onClick={() => void submit()} disabled={!canSend}>
+          {pending ? <Loader2 className="size-3.5 animate-spin" /> : null}
+          {t("editMessageSend")}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+/**
  * Whether forking at this reply would land somewhere other than where the user
  * pointed — so the affordance greys out until it wouldn't.
  *
@@ -1387,6 +1546,11 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   onForkFromTurn,
   forkDisabled = false,
   isThreadTail = false,
+  previousUserGroup = null,
+  checkKey,
+  onEditUserTurn,
+  editable = false,
+  editDisabled = false,
 }: {
   group: ResolvedMessageGroup
   dimmed?: boolean
@@ -1403,11 +1567,24 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   /** Whether nothing follows this group in the thread — the one position where
    *  a turn the backend cannot name still forks where the user pointed. */
   isThreadTail?: boolean
+  /** The owner's message this reply answers (10.3). */
+  previousUserGroup?: ResolvedMessageGroup | null
+  /** The reply's key in the thread: a selection in it is checked as a
+   *  sentence of it (10.3). */
+  checkKey?: string
+  /** See `MessageListViewProps.onEditUserTurn`. */
+  onEditUserTurn?: (turnId: string, text: string) => Promise<boolean>
+  /** Whether this user message can be edited (`isEditableUserTurn`). */
+  editable?: boolean
+  /** A turn is in flight: the edit button greys out. */
+  editDisabled?: boolean
 }) {
   // A message the user has just sent rises into the thread. Decided once, as
   // it mounts on its way (`dimmed`): the virtual list bringing a stored one
   // back never replays it.
   const [risesIn] = useState(dimmed && group.role === "user")
+  const [editing, setEditing] = useState(false)
+  const checks = useMessageChecks()
   if (group.role === "system") {
     // A failed turn's line is the agent's account of the failure, not a
     // message the system sent: it closes the round in place, unboxed.
@@ -1423,6 +1600,16 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
     ? sourceTurns[sourceTurns.length - 1]
     : null
   const forkPointUnnamed = isForkPointUnnamed(forkPoint, isThreadTail)
+  const replyText =
+    group.role === "assistant" && isResponseComplete
+      ? extractTextFromParts(group.parts)
+      : ""
+  const askedOf = () =>
+    previousUserGroup ? askedTextOf(previousUserGroup) : null
+  // A user group is one turn; it is what "edit" names.
+  const editTurn =
+    group.role === "user" && sourceTurns?.length ? sourceTurns[0] : null
+  const canEdit = !!onEditUserTurn && editable && !dimmed && editTurn !== null
 
   return (
     // Dimmed while the message is on its way (not yet stored); it brightens
@@ -1433,13 +1620,35 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
       <Message
         from={group.role}
         className={risesIn ? "chat-enter-rise" : undefined}
+        data-check-key={
+          checks && group.role === "assistant" && isResponseComplete
+            ? checkKey
+            : undefined
+        }
       >
         {group.role === "user" && group.images.length > 0 ? (
           <UserImageAttachments images={group.images} className="self-end" />
         ) : null}
-        {group.role === "user" ? (
+        {group.role === "user" && editing && editTurn && onEditUserTurn ? (
+          <UserMessageEditor
+            initialText={unescapeComposerText(
+              extractTextFromParts(group.parts)
+            )}
+            disabled={editDisabled}
+            onCancel={() => setEditing(false)}
+            onSubmit={async (text) => {
+              if (await onEditUserTurn(editTurn.id, text)) setEditing(false)
+            }}
+          />
+        ) : group.role === "user" ? (
           <div className="group/user-msg flex w-fit ml-auto max-w-full items-start gap-1">
             <UserMessageTaskButton parts={group.parts} />
+            {canEdit ? (
+              <UserMessageEditButton
+                disabled={editDisabled}
+                onClick={() => setEditing(true)}
+              />
+            ) : null}
             <UserMessageCopyButton parts={group.parts} />
             <MessageContent>
               <CollapsibleUserMessage parts={group.parts} />
@@ -1462,6 +1671,9 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
           <UserResourceLinks resources={group.resources} className="self-end" />
         ) : null}
       </Message>
+      {checks && replyText ? (
+        <CheckMarks text={replyText} askedOf={askedOf} />
+      ) : null}
       {showStats && group.role === "assistant" && sourceTurns && (
         <ReplyArtifacts
           sourceTurns={sourceTurns}
@@ -1478,7 +1690,7 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
           isResponseComplete={isResponseComplete}
           // The row shows nothing until the reply is done; joining all of a
           // long reply's prose on every batch while it streams bought nothing.
-          copyText={isResponseComplete ? extractTextFromParts(group.parts) : ""}
+          copyText={replyText}
           completedAt={group.completed_at}
           forkDisabled={forkDisabled || forkPointUnnamed}
           forkDisabledReason={forkPointUnnamed ? "unnamed" : "busy"}
@@ -1498,11 +1710,27 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
                 }
               : undefined
           }
+          onCheck={
+            checks && replyText
+              ? () =>
+                  checks.check({
+                    message: replyText,
+                    asked: askedOf(),
+                    quote: null,
+                  })
+              : undefined
+          }
         />
       )}
     </div>
   )
 })
+
+/** The owner's message, as it reads (its composer escaping undone). */
+function askedTextOf(group: ResolvedMessageGroup): string | null {
+  const text = unescapeComposerText(extractTextFromParts(group.parts)).trim()
+  return text || null
+}
 
 /** No parts yet: the reply the pending one stands for has said nothing. */
 const NO_PARTS: AdaptedContentPart[] = []
@@ -1528,50 +1756,33 @@ const PendingReply = memo(function PendingReply() {
   )
 })
 
-type LiveStatsMessage = ComponentProps<typeof LiveTurnStats>["message"]
-
-interface LiveActivityContent {
-  /** The running turn, `null` when none runs. */
-  message: LiveStatsMessage
-  runs: LiveRunsList
-}
-
 /**
  * The live activity row above the composer: the running turn's figures and the
- * "N running" chip. While it shows (`show`) it draws what is live — so a turn
- * that ends with work still running leaves the chip alone on the row. While it
- * slides away it keeps its last content, so that leaves with the row instead
- * of blanking it first. Mounted only while the row is, so a new turn starts
- * from its own.
+ * "N running" chip — what is live, so a turn that ends with work still running
+ * leaves the chip alone on the row. Mounted only while the row is, so a new
+ * turn starts from its own.
  */
-function HeldLiveActivityBar({
-  show,
+function LiveActivityBar({
   message,
   runs,
   onStopAsyncTask,
   agentName,
-}: LiveActivityContent & {
-  show: boolean
+}: {
+  /** The running turn, `null` when none runs. */
+  message: ComponentProps<typeof LiveTurnStats>["message"]
+  runs: LiveRunsList
   onStopAsyncTask?: (taskId: string) => Promise<boolean>
   agentName?: string
 }) {
-  const [held, setHeld] = useState<LiveActivityContent>(() => ({
-    message,
-    runs,
-  }))
-  if (show && (held.message !== message || held.runs !== runs)) {
-    setHeld({ message, runs })
-  }
-  const shown = show ? { message, runs } : held
-  if (!shown.message && shown.runs.count === 0) return <div className="h-8" />
+  if (!message && runs.count === 0) return <div className="h-8" />
   return (
     <LiveTurnStats
-      message={shown.message}
+      message={message}
       trailing={
-        shown.runs.count > 0 ? (
+        runs.count > 0 ? (
           <LiveRunsChip
-            runs={shown.runs}
-            interactive={show}
+            runs={runs}
+            interactive
             onStopAsyncTask={onStopAsyncTask}
             agentName={agentName}
           />
@@ -1627,12 +1838,18 @@ export function MessageListView({
   insightsInSidebar = false,
   userTurnHeader = null,
   onQuoteSelection,
-  onAskSelection,
+  renderAskComposer,
+  checksOpenInDrawer = false,
   onSaveNoteSelection,
   onForkFromTurn,
+  onEditUserTurn,
   liveRuns = null,
 }: MessageListViewProps) {
   const backendStoreSelection = useBackendStoreSelection()
+  const insightsKey = transcriptInsightsKey(
+    conversationId,
+    useBackendEventScope()
+  )
 
   const backendStores = useBackendStores({
     conversationRuntime: legacyConversationRuntime,
@@ -1832,6 +2049,7 @@ export function MessageListView({
         showStats: false,
         isRoleTransition: false,
         previousUserIndex: null,
+        previousUserGroup: null,
         isLastAssistantRun: false,
         isThreadTail: false,
         sourceTurns: singletonSourceTurns(allTurns[i]),
@@ -1852,6 +2070,7 @@ export function MessageListView({
     // previousUserIndex points at the closest preceding user turn (used by the
     // post-stream stats row's "jump to previous user message" button).
     let lastUserIdx: number | null = null
+    let lastUserGroup: ResolvedMessageGroup | null = null
     let lastAssistantItem: AssistantTurnItem | null = null
     for (let idx = 0; idx < items.length; idx++) {
       const item = items[idx]
@@ -1862,6 +2081,7 @@ export function MessageListView({
       item.showStats = false
       item.isRoleTransition = false
       item.previousUserIndex = null
+      item.previousUserGroup = null
       item.isLastAssistantRun = false
       item.isThreadTail = false
 
@@ -1875,11 +2095,13 @@ export function MessageListView({
 
       if (item.group.role === "user") {
         lastUserIdx = idx
+        lastUserGroup = item.group
       }
 
       // showStats: only on the last assistant turn before a non-assistant or end
       if (item.group.role === "assistant") {
         lastAssistantItem = item
+        item.previousUserGroup = lastUserGroup
         const next = items[idx + 1]
         if (!next || next.kind !== "turn" || next.group.role !== "assistant") {
           item.showStats = true
@@ -1939,11 +2161,14 @@ export function MessageListView({
   })
   if (fold !== storedFold) setFold(fold)
   const { armed, roundOpen, epoch } = fold
-  const handleRoundOpenChange = useCallback((open: boolean) => {
-    setFold((prev) =>
-      prev.roundOpen === open ? prev : { ...prev, roundOpen: open }
-    )
-  }, [])
+  const handleRoundOpenChange = useCallback(
+    (open: boolean) => {
+      setFold((prev) =>
+        prev.roundOpen === open ? prev : { ...prev, roundOpen: open }
+      )
+    },
+    [setFold]
+  )
 
   const historicalPlanEntries = useMemo(
     () => extractLatestPlanEntriesFromMessages(nonStreamingAdapted),
@@ -1959,6 +2184,16 @@ export function MessageListView({
   // its gate in `conversation-detail-panel`), and every reply's footer says
   // "not right now" instead of dropping its button and shifting the icon row.
   const forkBusy = connStatus === "prompting"
+  // The conversation's first user message is the one no rewind can reach.
+  // Only knowable while the window starts at the top: a paged window's first
+  // user turn is not the conversation's.
+  const firstUserTurnId = useMemo(() => {
+    if (!onEditUserTurn) return null
+    if (isWindowedDetail(detail) && detail.turns_offset > 0) return null
+    return (
+      timelineTurns.find((entry) => entry.turn.role === "user")?.turn.id ?? null
+    )
+  }, [onEditUserTurn, detail, timelineTurns])
 
   const renderThreadItem = useRenderThreadItem(
     userTurnHeader,
@@ -1967,7 +2202,9 @@ export function MessageListView({
     epoch,
     handleRoundOpenChange,
     onForkFromTurn,
-    forkBusy
+    forkBusy,
+    onEditUserTurn,
+    firstUserTurnId
   )
 
   const emptyState = useMemo(
@@ -2039,15 +2276,40 @@ export function MessageListView({
   const scrollApiRef = useRef<MessageScrollContextValue | null>(null)
   // The per-message rows are computed only while the side panel shows them:
   // grouping them parses every turn's diffs.
-  const navDemanded = useTranscriptNavDemanded(
-    conversationId,
-    insightsInSidebar
-  )
+  const navDemanded = useTranscriptNavDemanded(insightsKey, insightsInSidebar)
 
   // Positioning box for the text-selection bubble. It is the transcript's outer
   // (non-scrolling) frame, so the bubble is clipped to the message area and
   // never overlaps the composer or the tab strip.
   const selectionBoxRef = useRef<HTMLDivElement | null>(null)
+  // The thread as last rendered, for a selection checked as a sentence of
+  // its reply (10.3): read at the click, not on every render.
+  const threadItemsRef = useRef(threadItems)
+  useEffect(() => {
+    threadItemsRef.current = threadItems
+  }, [threadItems])
+  const resolveCheck = useCallback(
+    (key: string): Omit<CheckAsk, "quote"> | null => {
+      const item = threadItemsRef.current.find((i) => i.key === key)
+      if (
+        !item ||
+        item.kind !== "turn" ||
+        item.group.role !== "assistant" ||
+        !item.isResponseComplete
+      ) {
+        return null
+      }
+      const message = extractTextFromParts(item.group.parts)
+      if (!message.trim()) return null
+      return {
+        message,
+        asked: item.previousUserGroup
+          ? askedTextOf(item.previousUserGroup)
+          : null,
+      }
+    },
+    []
+  )
 
   // The loaded user messages: how many, and where each renders. Cheap — no
   // diff parsing — so the message count and the jumps can use it while
@@ -2239,12 +2501,12 @@ export function MessageListView({
   const insightsOwner = useId()
   useEffect(() => {
     if (transcriptInsights == null) return
-    publishTranscriptInsights(conversationId, insightsOwner, transcriptInsights)
-  }, [conversationId, insightsOwner, transcriptInsights])
+    publishTranscriptInsights(insightsKey, insightsOwner, transcriptInsights)
+  }, [insightsKey, insightsOwner, transcriptInsights])
   useEffect(() => {
     if (!insightsInSidebar) return
-    return () => retractTranscriptInsights(conversationId, insightsOwner)
-  }, [insightsInSidebar, conversationId, insightsOwner])
+    return () => retractTranscriptInsights(insightsKey, insightsOwner)
+  }, [insightsInSidebar, insightsKey, insightsOwner])
 
   // --- The live activity row ------------------------------------------------
   const turnLive = liveMessage !== null && connStatus === "prompting"
@@ -2314,14 +2576,16 @@ export function MessageListView({
   )
   const activityShown = turnLive || liveRunList.count > 0
   // Slides in over the composer as a turn starts or work starts running past
-  // one, and out once neither is left, so the transcript above eases up and
-  // back instead of jumping. Drawn under the loading and load-error states
-  // too: what runs is the connection's, not the transcript's, and its stop
-  // must not wait on the history loading.
+  // one, so the transcript above eases up instead of jumping. Goes at once
+  // when neither is left, in the same commit the composer turns idle: a slide
+  // shut is drawn and timed on the main thread, so whatever stalls that thread
+  // as a turn ends left the row and its figures up over a composer that had
+  // already finished. Drawn under the loading and load-error states too:
+  // what runs is the connection's, not the transcript's, and its stop must not
+  // wait on the history loading.
   const activityRow = (
-    <SlideSlot className="shrink-0" show={activityShown}>
-      <HeldLiveActivityBar
-        show={activityShown}
+    <SlideSlot className="shrink-0" show={activityShown} closeAtOnce>
+      <LiveActivityBar
         message={turnLive ? liveMessage : null}
         runs={liveRunList}
         onStopAsyncTask={liveRuns?.onStopAsyncTask}
@@ -2507,12 +2771,13 @@ export function MessageListView({
             />
           </div>
         )}
-        <SelectionActionBubble
+        <CheckableSelectionBubble
           containerRef={selectionBoxRef}
           isVisible={isVisible}
           onQuote={onQuoteSelection}
-          onAsk={onAskSelection}
+          renderAskComposer={renderAskComposer}
           onSaveAsNote={onSaveNoteSelection}
+          resolveCheck={resolveCheck}
         />
       </div>
     </SessionViewerHost>
@@ -2522,11 +2787,40 @@ export function MessageListView({
     <MarkdownImageProvider rootPath={resolvedImageRoot}>
       <ModelLabelProvider value={modelLabel}>
         <DelegationStatusIndexProvider value={delegationStatusIndex}>
-          <KnownInvocationsProvider value={knownInvocations}>
-            {thread}
-          </KnownInvocationsProvider>
+          <MessageChecksProvider
+            conversationId={conversationId}
+            openInDrawer={checksOpenInDrawer}
+          >
+            <KnownInvocationsProvider value={knownInvocations}>
+              {thread}
+            </KnownInvocationsProvider>
+          </MessageChecksProvider>
         </DelegationStatusIndexProvider>
       </ModelLabelProvider>
     </MarkdownImageProvider>
   )
+}
+
+/** The selection bubble, with "Check" for a sentence of a reply where the
+ *  conversation's checks are offered (10.3). */
+function CheckableSelectionBubble({
+  resolveCheck,
+  ...props
+}: ComponentProps<typeof SelectionActionBubble> & {
+  resolveCheck: (key: string) => Omit<CheckAsk, "quote"> | null
+}) {
+  const checks = useMessageChecks()
+  const check = checks?.check
+  const onCheck = useMemo(
+    () =>
+      check
+        ? (text: string, from: Element) => {
+            const key = from.getAttribute("data-check-key")
+            const ask = key ? resolveCheck(key) : null
+            if (ask) check({ ...ask, quote: text })
+          }
+        : undefined,
+    [check, resolveCheck]
+  )
+  return <SelectionActionBubble {...props} onCheck={onCheck} />
 }

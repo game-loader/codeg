@@ -75,6 +75,12 @@ import { WorkbenchRouteActionsProvider } from "@/contexts/workbench-route-contex
 import { UnifiedRuntimeNavigation } from "./unified-sidebar-controls"
 import { OwnedSessionCard } from "./owned-session-card"
 import { UNIFIED_SIDEBAR_TOGGLE_EVENT } from "@/lib/unified-sidebar-events"
+import { SHOW_SIDEBAR_ASSISTANTS_EVENT } from "@/components/personal-agent/sidebar-assistants"
+
+export interface RuntimeChrome {
+  assistantsHost: HTMLDivElement | null
+  activate(): void
+}
 
 interface HostSummary extends HostFolderCatalog {
   generation: number
@@ -244,7 +250,7 @@ function RecoveryBuffers() {
 export function MultiHostWorkspace({
   renderWorkspace,
 }: {
-  renderWorkspace(runtime: BackendRuntime): ReactNode
+  renderWorkspace(runtime: BackendRuntime, chrome?: RuntimeChrome): ReactNode
 }) {
   const t = useTranslations("MultiHost")
   const [localName] = useState(() => t("local"))
@@ -262,9 +268,13 @@ export function MultiHostWorkspace({
   const [machinesOpen, setMachinesOpen] = useState(true)
   useEffect(() => {
     const toggle = () => setMachinesOpen((open) => !open)
+    const showAssistants = () => setMachinesOpen(true)
     window.addEventListener(UNIFIED_SIDEBAR_TOGGLE_EVENT, toggle)
-    return () =>
+    window.addEventListener(SHOW_SIDEBAR_ASSISTANTS_EVENT, showAssistants)
+    return () => {
       window.removeEventListener(UNIFIED_SIDEBAR_TOGGLE_EVENT, toggle)
+      window.removeEventListener(SHOW_SIDEBAR_ASSISTANTS_EVENT, showAssistants)
+    }
   }, [])
   const [manageOpen, setManageOpen] = useState(false)
   const [repositoryTarget, setRepositoryTarget] =
@@ -566,11 +576,14 @@ function WindowWorkspace({
   setSplitPercent(value: number): void
   restored: Set<string>
   onSummary(key: BackendKey, summary: HostSummary): void
-  renderWorkspace(runtime: BackendRuntime): ReactNode
+  renderWorkspace(runtime: BackendRuntime, chrome?: RuntimeChrome): ReactNode
   isMac: boolean
 }) {
   const t = useTranslations("MultiHost")
   const tChrome = useTranslations("Folder.folderTitleBar")
+  const [assistantsHost, setAssistantsHost] = useState<HTMLDivElement | null>(
+    null
+  )
   const hosts = useSyncExternalStore(
     registry.subscribe,
     registry.getSnapshot,
@@ -630,6 +643,7 @@ function WindowWorkspace({
     })
     .map((tab) => ({
       ...tab,
+      awaiting: undefined,
       machineName:
         registry.descriptor(tab.ref.backendKey)?.name ?? tab.machineName,
     }))
@@ -768,7 +782,7 @@ function WindowWorkspace({
       return
     // The restored selection is consumed once the scoped tab exists.
     setPendingSelection(null)
-    view.select(ref)
+    if (view.routeId !== "personalAgent") view.select(ref)
   }, [registry, summaries, focused, pendingSelection, setPendingSelection])
 
   const activateHost = (key: BackendKey) => {
@@ -919,6 +933,7 @@ function WindowWorkspace({
             <OwnedSessionCard
               runtime={runtime}
               session={session}
+              attention={summaries.get(session.backendKey)?.view?.attention}
               hostName={runtime.client.name}
               isCurrent={(row) =>
                 resolveCatalogRuntime(
@@ -1024,22 +1039,26 @@ function WindowWorkspace({
         >
           <Search className="size-4" />
         </Button>
-        <Button
-          size="icon"
-          variant="ghost"
-          aria-label={tChrome("toggleTerminal")}
-          onClick={() => focusedView?.toggleTerminal()}
-        >
-          <SquareTerminal className="size-4" />
-        </Button>
-        <Button
-          size="icon"
-          variant="ghost"
-          aria-label={tChrome("toggleAuxPanel")}
-          onClick={() => focusedView?.toggleAux()}
-        >
-          <PanelRight className="size-4" />
-        </Button>
+        {focusedView?.routeId !== "personalAgent" && (
+          <>
+            <Button
+              size="icon"
+              variant="ghost"
+              aria-label={tChrome("toggleTerminal")}
+              onClick={() => focusedView?.toggleTerminal()}
+            >
+              <SquareTerminal className="size-4" />
+            </Button>
+            <Button
+              size="icon"
+              variant="ghost"
+              aria-label={tChrome("toggleAuxPanel")}
+              onClick={() => focusedView?.toggleAux()}
+            >
+              <PanelRight className="size-4" />
+            </Button>
+          </>
+        )}
         <Button
           size="icon"
           variant="ghost"
@@ -1130,6 +1149,7 @@ function WindowWorkspace({
             onNewSession={newSession}
             onOpenConversation={openConversation}
             renderSession={renderSession}
+            onAssistantsHost={setAssistantsHost}
             onLocationTool={(key, folder, generation, tool) => {
               const runtime = resolveCatalogRuntime(
                 registry,
@@ -1235,7 +1255,16 @@ function WindowWorkspace({
               >
                 <RuntimeObserver runtime={runtime} onChange={onSummary} />
                 <div className="relative h-full min-h-0">
-                  {renderWorkspace(runtime)}
+                  {renderWorkspace(runtime, {
+                    assistantsHost:
+                      visible && host.key === focused && machinesOpen
+                        ? assistantsHost
+                        : null,
+                    activate: () => {
+                      if (registry.get(host.key) === runtime)
+                        activateHost(host.key)
+                    },
+                  })}
                 </div>
                 {(host.status === "offline" ||
                   host.status === "unauthorized") && (

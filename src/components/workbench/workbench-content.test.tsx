@@ -38,6 +38,11 @@ vi.mock("@/components/canvas/canvas-page", () => ({
   CanvasPage: () => <div>PAGE canvas</div>,
   CanvasPageTitle: () => <div>TITLE canvas</div>,
 }))
+vi.mock("@/components/personal-agent/personal-agent-page", () => ({
+  PersonalAgentPage: () => <div>PAGE personalAgent</div>,
+  PersonalAgentPageTitle: () => <div>TITLE personalAgent</div>,
+  PersonalAgentChromeActions: () => <div>ACTIONS personalAgent</div>,
+}))
 vi.mock("@/components/harness/harness-chrome-actions", () => ({
   HarnessChromeActions: () => <div>ACTIONS harness</div>,
 }))
@@ -60,6 +65,7 @@ import {
 } from "./workbench-content"
 
 const FULL_PAGE_ROUTES: WorkbenchRouteId[] = [
+  "personalAgent",
   "automations",
   "tasks",
   "forge",

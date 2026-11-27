@@ -81,10 +81,12 @@ interface PublishedInsights {
   insights: TranscriptInsights
 }
 
+type TranscriptKey = number | string
+
 interface TranscriptInsightsState {
-  byConversationId: ReadonlyMap<number, PublishedInsights>
+  byConversationId: ReadonlyMap<TranscriptKey, PublishedInsights>
   /** How many mounted surfaces currently show a conversation's navigator rows. */
-  navDemand: ReadonlyMap<number, number>
+  navDemand: ReadonlyMap<TranscriptKey, number>
 }
 
 export const useTranscriptInsightsStore = create<TranscriptInsightsState>(
@@ -331,7 +333,7 @@ export function mergeTranscriptInsights(
 /** Publish (or update) a conversation's insights. The latest publisher owns
  *  the entry. */
 export function publishTranscriptInsights(
-  conversationId: number,
+  conversationId: TranscriptKey,
   owner: string,
   insights: TranscriptInsights
 ): void {
@@ -347,7 +349,7 @@ export function publishTranscriptInsights(
 
 /** Drop a conversation's insights — only if `owner` still owns them. */
 export function retractTranscriptInsights(
-  conversationId: number,
+  conversationId: TranscriptKey,
   owner: string
 ): void {
   useTranscriptInsightsStore.setState((state) => {
@@ -364,7 +366,7 @@ export function retractTranscriptInsights(
  * Ask for a conversation's navigator rows. Returns the release; the rows stay
  * computed while anyone holds a request.
  */
-export function demandTranscriptNav(conversationId: number): () => void {
+export function demandTranscriptNav(conversationId: TranscriptKey): () => void {
   const adjust = (delta: number) =>
     useTranscriptInsightsStore.setState((state) => {
       const count = (state.navDemand.get(conversationId) ?? 0) + delta
@@ -384,7 +386,7 @@ export function demandTranscriptNav(conversationId: number): () => void {
 
 /** Whether a surface currently wants this conversation's navigator rows. */
 export function useTranscriptNavDemanded(
-  conversationId: number,
+  conversationId: TranscriptKey,
   enabled: boolean
 ): boolean {
   return useTranscriptInsightsStore(
@@ -398,7 +400,7 @@ export function useTranscriptNavDemanded(
  * built from them) so the result keeps its identity between changes.
  */
 export function useTranscriptInsightsPart<T>(
-  conversationId: number | null,
+  conversationId: TranscriptKey | null,
   pick: (insights: TranscriptInsights) => T
 ): T | null {
   return useTranscriptInsightsStore((state) => {
@@ -406,4 +408,13 @@ export function useTranscriptInsightsPart<T>(
     const published = state.byConversationId.get(conversationId)
     return published ? pick(published.insights) : null
   })
+}
+
+export function transcriptInsightsKey<T extends number | null>(
+  conversationId: T,
+  backendScope: string | undefined
+): T | string {
+  return backendScope && conversationId != null
+    ? `${backendScope}:${conversationId}`
+    : conversationId
 }

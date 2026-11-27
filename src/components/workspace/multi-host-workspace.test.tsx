@@ -9,6 +9,7 @@ import {
   within,
 } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createPortal } from "react-dom"
 import { MultiHostWorkspace } from "./multi-host-workspace"
 import { ConversationDetailPanel } from "@/components/conversations/conversation-detail-panel"
 import { useBackendClient } from "@/contexts/backend-client-context"
@@ -393,7 +394,16 @@ function hostNode(key: BackendKey) {
 async function mount() {
   const result = render(
     <MultiHostWorkspace
-      renderWorkspace={(runtime) => <Probe runtime={runtime} />}
+      renderWorkspace={(runtime, chrome) => (
+        <>
+          <Probe runtime={runtime} />
+          {chrome?.assistantsHost &&
+            createPortal(
+              <span>{runtime.client.key} roster</span>,
+              chrome.assistantsHost
+            )}
+        </>
+      )}
     />
   )
   await screen.findByTestId("probe-remote:2")
@@ -495,6 +505,64 @@ it.each(["Projects", "Machines"])(
 )
 
 describe("single-window machine integration", () => {
+  it("keeps the assistant roster in the sidebar of its focused owner", async () => {
+    await mount()
+    expect(screen.getByText("local roster").closest("aside")).not.toBeNull()
+    fireEvent.click(
+      screen.getByRole("tab", { name: "Same conversation Machine B" })
+    )
+    expect(screen.queryByText("local roster")).toBeNull()
+    expect(screen.getByText("remote:2 roster").closest("aside")).not.toBeNull()
+    fireEvent.click(
+      screen.getByRole("tab", {
+        name: `Same conversation ${messages.MultiHost.local}`,
+      })
+    )
+    expect(screen.getByText("local roster").closest("aside")).not.toBeNull()
+    expect(screen.queryByText("remote:2 roster")).toBeNull()
+  })
+
+  it("shows live attention only on the owner of a duplicated conversation id", async () => {
+    await mount()
+    const runtime = mocks.runtimes.get("remote:1")!
+    const view = runtime.getSnapshot()!
+    act(() => {
+      runtime.publishView({
+        ...view,
+        attention: new Map([[1, "question"]]),
+        tabs: view.tabs.map((tab) =>
+          tab.ref.kind === "conversation"
+            ? { ...tab, awaiting: "question" }
+            : tab
+        ),
+      })
+    })
+    const selector = '[data-attention="question"]'
+    expect(
+      screen
+        .getByRole("tab", { name: "Same conversation Machine A" })
+        .querySelector(selector)
+    ).not.toBeNull()
+    expect(
+      screen
+        .getByRole("tab", { name: "Same conversation Machine B" })
+        .querySelector(selector)
+    ).toBeNull()
+    const rows = (owner: BackendKey) => [
+      ...document.querySelectorAll(`[data-session-owner="${owner}"]`),
+    ]
+    expect(rows("remote:1").some((row) => row.querySelector(selector))).toBe(
+      true
+    )
+    expect(rows("remote:2").some((row) => row.querySelector(selector))).toBe(
+      false
+    )
+    act(() => {
+      runtime.publishView(view)
+    })
+    expect(document.querySelector(selector)).toBeNull()
+  })
+
   it("retains all provider trees through machine selection, both splits and collapse", async () => {
     const result = await mount()
     showMachines()

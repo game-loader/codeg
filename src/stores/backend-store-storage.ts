@@ -3,13 +3,7 @@ import type { ClosedWorkspaceTab } from "@/lib/closed-tab-stack"
 import * as legacyContext from "@/lib/last-active-context-storage"
 import type { LastActiveContext } from "@/lib/last-active-context-storage"
 import * as legacyDrafts from "@/lib/message-input-draft"
-import * as legacySelection from "@/lib/ask-selection-handoff"
-import type {
-  AskSelectionDrainState,
-  ParkedAskPrompt,
-} from "@/lib/ask-selection-handoff"
 import * as legacySelectorPreferences from "@/lib/selector-prefs-storage"
-import type { SessionModeStateInfo } from "@/lib/types"
 
 /** Device-local resource state; callers can reuse these keys during migration. */
 export function createBackendStoreStorage(backendKey: string) {
@@ -84,34 +78,6 @@ export function createBackendStoreStorage(backendKey: string) {
       persistStack()
     },
   }
-  const parked = new Map<string, ParkedAskPrompt[]>()
-  const askSelection = {
-    parkAskSelectionPrompt(tabId: string, entry: ParkedAskPrompt) {
-      if (disposed) return
-      parked.set(tabId, [...(parked.get(tabId) ?? []), entry])
-      if (typeof window !== "undefined")
-        window.dispatchEvent(
-          new CustomEvent(legacySelection.ASK_SELECTION_PARKED_EVENT, {
-            detail: { tabId, backendKey },
-          })
-        )
-    },
-    consumeAskSelectionPrompts(
-      tabId: string,
-      state: AskSelectionDrainState
-    ): string[] {
-      const queued = parked.get(tabId) ?? []
-      const matches = (entry: ParkedAskPrompt) =>
-        entry.agentType === state.agentType && entry.folderId === state.folderId
-      const held = queued.filter((entry) => !matches(entry))
-      if (held.length) parked.set(tabId, held)
-      else parked.delete(tabId)
-      return queued.filter(matches).map((entry) => entry.prompt)
-    },
-    discardAskSelectionPrompts(tabId: string) {
-      parked.delete(tabId)
-    },
-  }
   // Composer migration can use these exact keys. The factory never touches the
   // legacy composer module's pending writes or runs its realm-wide sweep.
   // Keep the scoped prefix outside `draft:`, which the default idle sweep owns.
@@ -170,49 +136,13 @@ export function createBackendStoreStorage(backendKey: string) {
       }
     },
   }
-  type SelectorPreference = {
-    modeId?: string
-    configValues?: Record<string, string>
-  }
-  function readSelectorPreferences(): Record<string, SelectorPreference> {
-    try {
-      const value: unknown = JSON.parse(read("codeg:selector-prefs") ?? "{}")
-      return value && typeof value === "object" && !Array.isArray(value)
-        ? (value as Record<string, SelectorPreference>)
-        : {}
-    } catch {
-      return {}
-    }
-  }
-  const selectorPreferences = {
-    getSavedModeId(agentType: string): string | null {
-      return readSelectorPreferences()[agentType]?.modeId ?? null
-    },
-    getSavedPrefsForConnect(agentType: string): {
-      modeId: string | null
-      configValues: Record<string, string> | null
-    } {
-      const prefs = readSelectorPreferences()[agentType]
-      return {
-        modeId: prefs?.modeId ?? null,
-        configValues: prefs?.configValues ?? null,
-      }
-    },
-    saveModePreference(agentType: string, modes: SessionModeStateInfo) {
-      const all = readSelectorPreferences()
-      all[agentType] = { ...all[agentType], modeId: modes.current_mode_id }
-      write("codeg:selector-prefs", JSON.stringify(all))
-    },
-    saveConfigPreference(agentType: string, configId: string, valueId: string) {
-      const all = readSelectorPreferences()
-      const previous = all[agentType]
-      all[agentType] = {
-        ...previous,
-        configValues: { ...previous?.configValues, [configId]: valueId },
-      }
-      write("codeg:selector-prefs", JSON.stringify(all))
-    },
-  }
+  const { SELECTOR_PREFS_STORAGE_KEY, createSelectorPrefsStorage } =
+    legacySelectorPreferences
+  const { preferences: selectorPreferences, dispose: disposeSelectorPrefs } =
+    createSelectorPrefsStorage(
+      () => read(SELECTOR_PREFS_STORAGE_KEY),
+      (value) => write(SELECTOR_PREFS_STORAGE_KEY, value)
+    )
   return {
     backendKey: backendKey as string | undefined,
     key,
@@ -220,7 +150,6 @@ export function createBackendStoreStorage(backendKey: string) {
     write,
     closedTabs,
     drafts,
-    askSelection,
     selectorPreferences,
     loadLastActiveContext(): LastActiveContext | null {
       try {
@@ -246,7 +175,7 @@ export function createBackendStoreStorage(backendKey: string) {
     dispose() {
       disposed = true
       stack = []
-      parked.clear()
+      disposeSelectorPrefs()
     },
   }
 }
@@ -276,7 +205,6 @@ export const defaultBackendStoreStorage: BackendStoreStorage = {
   },
   closedTabs: legacyClosedTabs,
   drafts: legacyDrafts,
-  askSelection: legacySelection,
   selectorPreferences: legacySelectorPreferences,
   ...legacyContext,
   dispose: () => {},

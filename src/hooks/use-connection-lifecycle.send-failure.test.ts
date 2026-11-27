@@ -18,6 +18,7 @@ import { act, renderHook } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { TurnBusyError } from "@/lib/turn-busy"
+import { RewindRefusedError } from "@/lib/rewind-refused"
 
 const toastError = vi.fn()
 
@@ -185,7 +186,7 @@ describe("useConnectionLifecycle send-failure surfacing", () => {
   })
 
   it("does not toast on a successful send", async () => {
-    sendPrompt.mockResolvedValue(undefined)
+    sendPrompt.mockResolvedValue(true)
 
     const { result } = renderLifecycle()
     await act(async () => {
@@ -194,6 +195,42 @@ describe("useConnectionLifecycle send-failure surfacing", () => {
     })
 
     expect(sendPrompt).toHaveBeenCalledTimes(1)
+    expect(toastError).not.toHaveBeenCalled()
+  })
+
+  it("lets the edit caller handle a refused rewind without a send error toast", async () => {
+    sendPrompt.mockRejectedValue(new RewindRefusedError("beforeCompaction"))
+    const onRewindRefused = vi.fn()
+    const onSendFailed = vi.fn()
+    const { result } = renderLifecycle()
+
+    await act(async () => {
+      await result.current.handleSend(draft(), null, {
+        onRewindRefused,
+        onSendFailed,
+      })
+    })
+
+    expect(onRewindRefused).toHaveBeenCalledWith("beforeCompaction")
+    expect(onSendFailed).not.toHaveBeenCalled()
+    expect(toastError).not.toHaveBeenCalled()
+  })
+
+  it("reports an unsent prompt separately from a failed send", async () => {
+    sendPrompt.mockResolvedValue(false)
+    const onNotSent = vi.fn()
+    const onSendFailed = vi.fn()
+    const { result } = renderLifecycle()
+
+    await act(async () => {
+      await result.current.handleSend(draft(), null, {
+        onNotSent,
+        onSendFailed,
+      })
+    })
+
+    expect(onNotSent).toHaveBeenCalledTimes(1)
+    expect(onSendFailed).not.toHaveBeenCalled()
     expect(toastError).not.toHaveBeenCalled()
   })
 })

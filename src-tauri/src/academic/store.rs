@@ -1,6 +1,9 @@
 //! Persistent academic records and the ordinary-conversation association boundary.
 use super::types::{AcademicConversation, AcademicPaper};
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement, TransactionTrait};
+use sea_orm::{
+    ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbBackend, DbErr, Statement,
+    TransactionTrait,
+};
 
 fn stmt(sql: &str, values: Vec<sea_orm::Value>) -> Statement {
     Statement::from_sql_and_values(DbBackend::Sqlite, sql, values)
@@ -125,6 +128,33 @@ pub async fn bind_conversation_in<C: ConnectionTrait>(
     if bound_id != paper_id {
         return Err("Conversation is already associated with another paper".into());
     }
+    Ok(())
+}
+
+/// Copy the immediate source's paper onto a newly inserted Ask in the same
+/// transaction. The source and Ask must share a live folder: either the
+/// paper's repository or the source's dedicated chat folder. An Ask running
+/// elsewhere can still link to its sidebar parent without inheriting a paper.
+pub(crate) async fn inherit_ask_paper_in(
+    txn: &DatabaseTransaction,
+    source_id: i32,
+    ask_id: i32,
+) -> Result<(), DbErr> {
+    txn.execute(stmt(
+        "INSERT INTO academic_conversation (conversation_id, paper_id)
+         SELECT ask.id, binding.paper_id
+         FROM academic_conversation binding
+         JOIN academic_paper paper ON paper.id = binding.paper_id
+         JOIN conversation source ON source.id = binding.conversation_id
+         JOIN conversation ask ON ask.folder_id = source.folder_id
+         JOIN folder f ON f.id = ask.folder_id
+         WHERE source.id = ? AND ask.id = ? AND ask.kind = 'ask'
+           AND source.deleted_at IS NULL AND ask.deleted_at IS NULL AND f.deleted_at IS NULL
+           AND (ask.parent_id = source.id OR (source.kind = 'ask' AND ask.parent_id = source.parent_id))
+           AND (f.kind = 'chat' OR (f.kind = 'regular' AND json_extract(paper.payload, '$.folder_id') = f.id))",
+        vec![source_id.into(), ask_id.into()],
+    ))
+    .await?;
     Ok(())
 }
 
